@@ -1,0 +1,487 @@
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  UnauthorizedException,
+  InternalServerErrorException,
+  Logger,
+} from '@nestjs/common';
+import { PrismaService } from '../../../infrastructure/databases/prisma';
+import { PreviewBuyDto } from '../dto';
+import {
+  PaymentType,
+  TransactionType,
+  TransactionContext,
+  TransactionStatus,
+} from '../../../infrastructure/databases/prisma';
+import {
+  BASE_CURRENCY,
+  ConvertCurrency,
+  LiquidityReservationStatus,
+} from '../../../shared';
+import { TransactionService } from './transaction.service';
+import { TempStoreService } from '../../../infrastructure';
+import { PaystackService } from '../../../infrastructure/providers/paystack';
+import { CompanyLiquidityService } from './company-liquidity.service';
+import { IBuyQuote } from './types';
+import { TransactionNotificationService } from './transaction-notification.service';
+
+@Injectable()
+export class BuyService {
+  private readonly logger = new Logger(BuyService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly transactionService: TransactionService,
+    private readonly tempStore: TempStoreService,
+    private readonly paystackService: PaystackService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
+    private readonly transactionNotificationService: TransactionNotificationService,
+  ) {}
+
+  getPaymentMethods() {
+    return [
+      {
+        id: '1083464737464',
+        type: PaymentType.CARD,
+        description: 'Pay using a saved debit or credit card',
+      },
+      {
+        id: '3646737378364',
+        type: PaymentType.PAYSTACK,
+        description: 'Pay using Paystack (new card or bank)',
+      },
+    ];
+  }
+
+  // ===================================================================
+  // PREVIEW BUY
+  // ===================================================================
+  async previewBuy(userId: string, dto: PreviewBuyDto) {
+    const { quoteId, paymentMethodId, cardId } = dto;
+
+    const quoteKey = `buy:${quoteId}`;
+    const quoteRaw = await this.tempStore.get(quoteKey);
+    if (!quoteRaw)
+      throw new NotFoundException('Buy quote not found or expired');
+
+    const quote: IBuyQuote =
+      typeof quoteRaw === 'string' ? JSON.parse(quoteRaw) : quoteRaw;
+
+    if (quote.userId !== userId) {
+      throw new UnauthorizedException('Quote does not belong to this user');
+    }
+
+    if (Date.now() > quote.expiresAt) {
+      await this.tempStore.del(quoteKey);
+      throw new BadRequestException(
+        'Buy quote has expired. Please request a new one.',
+      );
+    }
+
+    const paymentMethod = this.getPaymentMethods().find(
+      (m) => m.id === paymentMethodId,
+    );
+    if (!paymentMethod)
+      throw new BadRequestException('Invalid payment method ID');
+
+    let cardDetails: { cardType: string | null; last4: string } | null = null;
+
+    if (paymentMethod.type === PaymentType.CARD) {
+      if (!cardId)
+        throw new BadRequestException(
+          'cardId is required when paymentType is CARD',
+        );
+
+      cardDetails = await this.prisma.paymentCard.findFirst({
+        where: { id: cardId, userId, reusable: true },
+        select: { cardType: true, last4: true },
+      });
+      if (!cardDetails)
+        throw new BadRequestException('Invalid or unauthorized card');
+
+      quote.paymentMethodId = paymentMethodId;
+      quote.cardId = cardId;
+    } else if (paymentMethod.type === PaymentType.PAYSTACK) {
+      quote.paymentMethodId = paymentMethodId;
+    }
+
+    const ttlSeconds = Math.max(
+      1,
+      Math.floor((quote.expiresAt - Date.now()) / 1000),
+    );
+    await this.tempStore.set(quoteKey, JSON.stringify(quote), ttlSeconds);
+
+    let paymentDetails: any = null;
+    if (paymentMethod.type === PaymentType.CARD) {
+      paymentDetails = {
+        method: 'CARD',
+        last4: cardDetails?.last4,
+        cardType: cardDetails?.cardType || 'Debit Card',
+      };
+    } else if (paymentMethod.type === PaymentType.PAYSTACK) {
+      paymentDetails = {
+        method: PaymentType.PAYSTACK,
+        description: 'Pay with Paystack (new card or bank)',
+      };
+    }
+
+    return {
+      message: 'Buy preview retrieval success',
+      data: {
+        previewId: quoteId,
+        side: 'buy',
+        crypto: quote.crypto,
+        network: quote.network,
+        fiatCurrency: quote.fiatCurrency,
+        fiatAmount: ConvertCurrency.fromBase(
+          quote.totalFiatMinor,
+          quote.fiatCurrency,
+        ),
+        estimatedCrypto: ConvertCurrency.fromBase(
+          quote.volumeCryptoMinor,
+          quote.crypto,
+          quote.cryptoDecimals,
+        ),
+        platformFee: ConvertCurrency.fromBase(
+          quote.platformFeeMinor,
+          quote.fiatCurrency,
+        ),
+        bufferSpread: ConvertCurrency.fromBase(
+          quote.bufferSpreadMinor,
+          quote.fiatCurrency,
+        ),
+        marketRate: ConvertCurrency.fromBase(
+          quote.marketPriceMinor,
+          quote.fiatCurrency,
+        ),
+        bufferedRate: ConvertCurrency.fromBase(
+          quote.bufferedPriceMinor,
+          quote.fiatCurrency,
+        ),
+        bufferPercent: quote.bufferPercent,
+        expiresIn: Math.max(
+          0,
+          Math.floor((quote.expiresAt - Date.now()) / 1000),
+        ),
+        paymentType: paymentMethod.type,
+        paymentDetails,
+        requiresPinVerification: true,
+      },
+    };
+  }
+
+    async confirmBuy(userId: string, previewId: string) {
+      await this.transactionService.enforceConfirmationCooldown(userId);
+      const quoteKey = `buy:${previewId}`;
+      const quoteRaw = await this.tempStore.get(quoteKey);
+      if (!quoteRaw)
+        throw new NotFoundException('Buy quote not found or expired');
+
+      const quote: IBuyQuote =
+        typeof quoteRaw === 'string' ? JSON.parse(quoteRaw) : quoteRaw;
+
+      if (quote.userId !== userId)
+        throw new UnauthorizedException('Not your quote');
+      if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
+       if (Date.now() > quote.expiresAt) {
+        await this.tempStore.del(quoteKey);
+        throw new BadRequestException('Quote expired. Please request a new one.');
+      }
+
+      // Slippage protection: check current price against quoted buffered price
+      await this.transactionService.checkPriceSlippage(
+        quote.crypto,
+        quote.fiatCurrency,
+        quote.bufferedPriceMinor,
+        true // isBuy
+      );
+
+      const existingTransaction = await this.prisma.transaction.findFirst({
+        where: { transactionUniqueId: previewId },
+        select: { id: true, status: true },
+      });
+      if (existingTransaction) {
+        return {
+          message: 'Buy already submitted',
+          data: {
+            transactionId: existingTransaction.id,
+            status: existingTransaction.status,
+          },
+        };
+      }
+
+    const paymentMethod = this.getPaymentMethods().find(
+      (m) => m.id === quote.paymentMethodId,
+    );
+    if (!paymentMethod)
+      throw new BadRequestException('Payment method not found');
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    const userCryptoWallet = await this.prisma.wallet.findUnique({
+      where: {
+        userId_currency: {
+          userId,
+          currency: quote.crypto.toLowerCase(),
+        },
+      },
+      select: { quidaxWalletId: true },
+    });
+
+    if (!userCryptoWallet?.quidaxWalletId) {
+      throw new NotFoundException(`Wallet not found for ${quote.crypto}`);
+    }
+
+    const totalFiatMinor = BigInt(quote.totalFiatMinor);
+    const platformFeeMinor = BigInt(quote.platformFeeMinor);
+    const bufferSpreadMinor = BigInt(quote.bufferSpreadMinor);
+    const volumeCryptoMinor = BigInt(quote.volumeCryptoMinor);
+
+    const fiatOriginal = ConvertCurrency.fromBase(
+      quote.totalFiatMinor,
+      quote.fiatCurrency,
+    );
+    const cryptoOriginal = ConvertCurrency.fromBase(
+      quote.volumeCryptoMinor,
+      quote.crypto,
+      quote.cryptoDecimals,
+    );
+    const companyDepositReference = `company-deposit-${previewId}`;
+
+    let transactionRecord: any;
+    let queuedForLiquidity = false;
+    let isDuplicate = false;
+
+    const totalFiatMinorAsNumber = Number(totalFiatMinor);
+
+    await this.prisma.$transaction(async (tx) => {
+      const existingTransaction = await tx.transaction.findFirst({
+        where: { transactionUniqueId: previewId },
+        select: { id: true, status: true },
+      });
+      if (existingTransaction) {
+        transactionRecord = existingTransaction;
+        isDuplicate = true;
+        return;
+      }
+
+      const reserved = await this.companyLiquidityService.reserveLiquidity(
+        BASE_CURRENCY,
+        totalFiatMinor,
+        tx,
+      );
+
+      const liquidityReservationStatus = reserved
+        ? LiquidityReservationStatus.RESERVED
+        : LiquidityReservationStatus.INSUFFICIENT;
+
+      transactionRecord = await this.transactionService.createTransaction(tx, {
+        userId,
+        receiverWalletAddress: userCryptoWallet.quidaxWalletId,
+        senderWalletAddress: null,
+        paymentType: paymentMethod.type,
+        paymentMetadata: {
+          companyDepositReference,
+          liquidityReservationStatus,
+          paymentMethodId: quote.paymentMethodId,
+          cardId: quote.cardId ?? null,
+        },
+        platformWalletAddress: null,
+        transactionUniqueId: previewId,
+        network: quote.network,
+        currency: quote.crypto,
+        cryptoAmountBase: volumeCryptoMinor,
+        fiatAmountBase: totalFiatMinor,
+        cryptoAmountOriginal: cryptoOriginal,
+        fiatAmountOriginal: fiatOriginal,
+        transactionType: TransactionType.CREDIT,
+        transactionContext: TransactionContext.BUY,
+        bufferAmountBase: bufferSpreadMinor,
+        bufferAmountOriginal: ConvertCurrency.fromBase(
+          quote.bufferSpreadMinor,
+          quote.fiatCurrency,
+        ),
+        platformFeeBase: platformFeeMinor,
+        platformFeeOriginal: ConvertCurrency.fromBase(
+          quote.platformFeeMinor,
+          quote.fiatCurrency,
+        ),
+        status: TransactionStatus.PENDING,
+      });
+
+      if (!reserved) {
+        queuedForLiquidity = true;
+        await tx.failedCompanyLiquidityTransaction.create({
+          data: {
+            transactionId: transactionRecord.id,
+            currency: BASE_CURRENCY,
+            amountBase: totalFiatMinor.toString(),
+            providerResponse: {
+              reason: 'Insufficient company NGN liquidity for buy processing',
+              paymentType: paymentMethod.type,
+            },
+          },
+        });
+      }
+    });
+
+    // Delete quote only for duplicates — otherwise delete after payment succeeds
+    if (isDuplicate) {
+      await this.tempStore.del(quoteKey);
+      return {
+        message: 'Buy already submitted',
+        data: {
+          transactionId: transactionRecord.id,
+          status: transactionRecord.status,
+        },
+      };
+    }
+
+    const transactionWithUser = await this.prisma.transaction.findUnique({
+      where: { id: transactionRecord.id },
+      select: {
+        id: true,
+        userId: true,
+        transactionUniqueId: true,
+        transactionContext: true,
+        status: true,
+        User: { select: { email: true, firstName: true } },
+        paymentMetadata: true,
+      },
+    });
+
+    if (transactionWithUser) {
+      try {
+        await this.transactionNotificationService.sendTransactionInitiatedNotification(
+          transactionWithUser,
+        );
+      } catch (error) {
+        this.logger.error(
+          `Failed to send notification for buy transaction ${transactionRecord.id}: ${error.message}`,
+          error.stack,
+        );
+      }
+    }
+
+    if (queuedForLiquidity) {
+      await this.tempStore.del(quoteKey);
+      return {
+        message: 'Buy transaction queued. You will be notified.',
+        data: {
+          transactionId: transactionRecord.id,
+        },
+      };
+    }
+
+    if (paymentMethod.type === PaymentType.CARD) {
+      if (!quote.cardId)
+        throw new BadRequestException('Card not found in quote');
+
+      const chargeResponse = await this.paystackService.chargeSavedCard({
+        paymentCardId: quote.cardId,
+        amount: totalFiatMinorAsNumber,
+        reference: previewId,
+        metadata: {
+          userId,
+          quoteId: previewId,
+          companyDepositReference,
+        },
+      });
+
+      if (!chargeResponse?.status) {
+        await this.companyLiquidityService.releaseLiquidity(
+          BASE_CURRENCY,
+          totalFiatMinor,
+        );
+        await this.prisma.transaction.update({
+          where: { id: transactionRecord.id },
+          data: { status: TransactionStatus.FAILED },
+        });
+        throw new InternalServerErrorException('Card charge failed');
+      }
+
+      await this.prisma.transaction.update({
+        where: { id: transactionRecord.id },
+        data: {
+          paymentMetadata: {
+            ...transactionRecord.paymentMetadata,
+            paystackReference: chargeResponse.data.reference,
+            cardId: quote.cardId,
+          },
+        },
+      });
+
+      await this.tempStore.del(quoteKey);
+
+      return {
+        message:
+          'Card payment successful. Your transaction is being processed.',
+        data: {
+          transactionId: transactionRecord.id,
+          status: TransactionStatus.PENDING,
+        },
+      };
+    }
+
+    if (paymentMethod.type === PaymentType.PAYSTACK) {
+      const channels = ['bank_transfer'];
+
+      const initializeResponse = await this.paystackService.initializePayment({
+        email: user.email,
+        amount: totalFiatMinorAsNumber,
+        reference: previewId,
+        currency: quote.fiatCurrency,
+        channels,
+        metadata: {
+          userId,
+          quoteId: previewId,
+          companyDepositReference,
+        },
+      });
+
+      if (!initializeResponse?.status) {
+        await this.companyLiquidityService.releaseLiquidity(
+          BASE_CURRENCY,
+          totalFiatMinor,
+        );
+        await this.prisma.transaction.update({
+          where: { id: transactionRecord.id },
+          data: { status: TransactionStatus.FAILED },
+        });
+        throw new InternalServerErrorException('Payment initialization failed');
+      }
+
+      await this.prisma.transaction.update({
+        where: { id: transactionRecord.id },
+        data: {
+          paymentMetadata: {
+            ...transactionRecord.paymentMetadata,
+            paystackReference: initializeResponse.data.reference,
+            channels,
+          },
+        },
+      });
+
+      await this.tempStore.del(quoteKey);
+
+      return {
+        message: 'Payment initialization successful',
+        data: {
+          transactionId: transactionRecord.id,
+          paymentType: PaymentType.PAYSTACK,
+          reference: initializeResponse.data.reference,
+          authorizationUrl: initializeResponse.data.authorization_url,
+          quoteId: previewId,
+          status: TransactionStatus.PENDING,
+        },
+      };
+    }
+
+    throw new BadRequestException('Unsupported payment type');
+  }
+}

@@ -1,0 +1,25 @@
+model Admin {
+  id                 String        @id @default(cuid())
+  email              String        @unique
+  password           String        @default("admin")
+  firstName          String        @default("admin")
+  lastName           String
+  fullName           String
+  phoneNumber        String?
+  gender             Gender?
+  role               AdminRole     @default(ADMIN)
+  internalRoleId     String?
+  avatar             String?       @default("https://ik.imagekit.io/o59kpgo8iz/Backbone/user%20images/default_user.jpg?updatedAt=1718689050953")
+  avatarPublicId     String?
+  accountStatus      AccountStatus @default(ACTIVE)
+  residentialAddress String?
+  country            String?
+  refreshToken       String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  internalRole       Role?         @relation("AdminInternalRoles", fields: [internalRoleId], references: [id])
+  tokens             Token[]
+  resolvedWebhooks   Webhook[]     @relation("AdminResolvedWebhooks")
+
+  @@map("admins")
+}

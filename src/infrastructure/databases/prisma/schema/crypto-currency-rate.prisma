@@ -1,0 +1,12 @@
+model CryptoCurrencyRate {
+  id                     String          @id @default(cuid())
+  cryptoCurrencyId       String          @unique
+  dailyRatePercent       Decimal          @default(0) @db.Decimal(5, 2)
+  lockedFundsRatePercent Decimal          @default(0) @db.Decimal(5, 2)
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  cryptoCurrency         CryptoCurrency  @relation(fields: [cryptoCurrencyId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "crypto_currency_rates_cryptocurrencyid_fkey")
+
+  @@index([cryptoCurrencyId])
+  @@map("crypto_currency_rates")
+}

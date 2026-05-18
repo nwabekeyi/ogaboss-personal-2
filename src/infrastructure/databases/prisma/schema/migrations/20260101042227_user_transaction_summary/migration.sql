@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "users" ADD COLUMN     "amountBought" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "amountReceived" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "amountSent" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "amountSold" BIGINT NOT NULL DEFAULT 0;

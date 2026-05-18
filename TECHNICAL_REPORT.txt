@@ -1,0 +1,1036 @@
+OGABOSS WEB SERVICES — FULL TECHNICAL REPORT
+==============================================
+Date: 2026-04-02
+Scope: Complete application architecture and feature documentation
+Audience: Engineering team lead / technical stakeholders
+
+
+TABLE OF CONTENTS
+=================
+1.  System Overview
+2.  Technology Stack & Infrastructure
+3.  Application Bootstrap
+4.  Module Architecture
+5.  Authentication & Authorization
+6.  User Onboarding Flow
+7.  KYC (Know Your Customer)
+8.  Wallet System
+9.  Bank Accounts & Cards
+10. Transaction Types
+11. Buy Flow (Crypto Purchase)
+12. Sell Flow (Crypto Sale)
+13. Swap Flow (Crypto-to-Crypto)
+14. Withdrawal / Send Flow
+15. Deposit Flow
+16. Webhook Processing
+17. Queue Infrastructure
+18. Circuit Breakers
+19. Company Liquidity Management
+20. Price & Ticker System
+21. Currency Management
+22. User Settings
+23. Admin Panel
+24. Dashboard & Analytics
+25. Notifications
+26. Scheduled Jobs
+27. Audit Logging
+28. Security
+29. Error Handling
+30. Testing
+31. Known Limitations
+
+
+1. SYSTEM OVERVIEW
+==================
+
+Ogaboss is a fintech platform that provides crypto-to-fiat services for users
+in Nigeria. It enables users to:
+
+- Buy cryptocurrency (BTC, USDT, ETH, etc.) using Nigerian Naira via card payment
+- Sell cryptocurrency and receive NGN via bank transfer
+- Swap one cryptocurrency for another
+- Send/withdraw cryptocurrency to external wallets
+- Deposit cryptocurrency from external wallets
+
+The platform acts as an intermediary: users interact with Ogaboss (not directly
+with exchanges), and the company holds crypto in its own Quidax exchange account,
+reflecting balances in an internal ledger. Paystack handles fiat (NGN) payments
+and bank transfers.
+
+
+2. TECHNOLOGY STACK & INFRASTRUCTURE
+=====================================
+
+Runtime:          Node.js 18+ with NestJS framework
+Language:         TypeScript (strict mode)
+Database:         PostgreSQL (primary data store)
+ORM:              Prisma (schema-first, type-safe)
+Cache:            Redis (sessions, OTP, rate limiting, dashboard cache)
+Queue:            Redis + BullMQ (async job processing)
+HTTP Client:      Axios with opossum circuit breakers
+Auth:             JWT (access + refresh tokens), PIN-based transaction auth
+Crypto Exchange:  Quidax API (orders, wallets, swaps, deposits, withdrawals)
+Payments:         Paystack API (card payments, bank transfers, payouts)
+Push Notifications: Firebase Cloud Messaging (FCM)
+Email:            Nodemailer (transactional emails)
+Identity:         KYC verification (NIN, BVN, address, documents)
+Monitoring:       Sentry (error tracking)
+API Docs:         Swagger (auto-generated)
+Rate Limiting:    @nestjs/throttler
+
+Infrastructure Services:
+- PostgreSQL: primary data store (users, transactions, orders, wallets)
+- Redis: OTP storage, session cache, rate limiting, dashboard stats cache,
+  BullMQ job storage, bank verification tokens
+
+
+3. APPLICATION BOOTSTRAP
+=========================
+
+Entry point: src/main.ts
+
+Startup sequence:
+1. Config validation — assertNoUndefined(config) blocks startup if any
+   required env var is missing
+2. NestJS app creation with full logging (log, error, warn, debug, verbose)
+3. Security middleware: helmet (HTTP headers), CORS (currently origin: '*')
+4. Validation pipe: whitelist mode, strict unknown value rejection, transforms
+   incoming data to DTO types
+5. Global exception filter: catches all errors, formats JSON response,
+   reports to Sentry
+6. Response interceptor: standardizes API response format
+7. Logging interceptor: logs request/response timing
+8. API versioning: URI-based (e.g., /api/v1/...)
+9. BigInt serialization: BigInt.prototype.toJSON returns string (for Prisma
+   Decimal/BigInt fields)
+10. Swagger documentation generation
+11. Listen on configured port
+
+Module registration (AppModule):
+- SentryModule (error tracking)
+- ConfigModule (global, .env)
+- EventEmitterModule (internal events)
+- JwtModule (access token signing)
+- BullModule (queue registration)
+- ThrottlerModule (rate limiting)
+- PrismaModule, RedisModule, HttpModule (global infrastructure)
+- QuidaxModule (crypto exchange provider)
+- FirebaseModule (push notifications)
+- AuditLogModule (audit trail)
+- AuthModule, UserModule, KycModule, WalletModule, TransactionModule,
+  AccountModule, CardModule, CurrencyModule, SettingsModule, WebhooksModule,
+  DashboardModule, AdminModule, SchedulerModule (feature modules)
+
+
+4. MODULE ARCHITECTURE
+=======================
+
+src/modules/
+├── auth/               Authentication (user signup, login, PIN, 2FA, admin)
+├── user/               User profile management
+├── kyc/                Identity verification (NIN, BVN, address, documents)
+├── wallet/             Wallet balances and payment addresses
+├── account/            Bank account management (add, verify, delete)
+├── card/               Saved debit/credit card management
+├── transaction/        Transaction lifecycle (buy, sell, swap, withdrawal)
+├── order/              Order management (legacy, currently commented out)
+├── currency/           Supported cryptocurrency management
+├── webhook/            Inbound webhook handlers (Quidax, Paystack)
+├── settings/           User preferences (notifications, security, display)
+├── dashboard/          Admin dashboard stats
+├── admin/              Admin endpoints (users, transactions, currencies, roles)
+├── scheduler/          Cron jobs (reconciliation, balance checks, cleanup)
+└── coincord/           Quidax ticker/price service
+
+src/infrastructure/
+├── databases/prisma/   PostgreSQL schema, migrations, generated client
+├── databases/redis/    Redis connection and service
+├── httpService/        Axios wrapper with circuit breakers
+├── bullMQ/             Queue service, workers, queue registration
+└── providers/
+    ├── quidax/         Quidax exchange API client
+    └── paystack/       Paystack payment API client
+
+
+5. AUTHENTICATION & AUTHORIZATION
+==================================
+
+Two separate auth systems:
+
+A. User Auth (mobile app users)
+   - Email + PIN based authentication
+   - JWT access tokens (short-lived) + refresh tokens (long-lived)
+   - Optional 2FA (two-factor authentication)
+   - Token stored in Token table for tracking and revocation
+   - PIN used for transaction authorization (separate from login)
+
+B. Admin Auth (back-office users)
+   - Email + password based authentication
+   - JWT tokens with admin role information
+   - Role-based access control (AdminRolesGuard)
+   - Internal user roles with granular permissions
+
+Auth Endpoints (all under /api/v1/auth):
+  POST /sign-up-user          Initiate registration (send OTP)
+  POST /verify-otp            Verify OTP for signup or PIN reset
+  POST /complete-signup-user  Complete registration with PIN
+  POST /login-user            Login with email + PIN
+  POST /forgot-pin            Request PIN reset OTP
+  POST /reset-pin             Reset PIN using reset token
+  POST /resend-otp            Resend OTP
+  POST /set-pin               Set PIN (authenticated)
+  POST /change-pin/initiate   Initiate PIN change
+  POST /refresh-token         Refresh access token
+  POST /logout                Invalidate refresh token
+  DELETE /delete-account      Request account deletion
+
+  POST /admin/login           Admin login
+  POST /admin/forgot-password Admin password reset request
+  POST /admin/reset-password  Admin password reset
+
+Security measures:
+- AuthGuard protects all authenticated endpoints
+- AdminRolesGuard checks admin permissions
+- Rate limiting via @nestjs/throttler
+- PIN is hashed (bcrypt) before storage
+- Refresh tokens are revocable (stored in Token table)
+
+
+6. USER ONBOARDING FLOW
+========================
+
+Step 1: Initiate Signup
+  POST /auth/sign-up-user
+  Body: { email, firstName, lastName }
+  Action: Creates pending registration in Redis, sends OTP to email
+  Response: { message, email, expiresIn }
+
+Step 2: Verify OTP
+  POST /auth/verify-otp
+  Body: { email, otp }
+  Action: Validates OTP against Redis, detects purpose (signup vs PIN reset)
+  Response (signup): { registrationId } — temporary token for step 3
+  Response (PIN reset): { pinResetToken, expiresInSeconds }
+
+Step 3: Complete Signup
+  POST /auth/complete-signup-user
+  Body: { registrationId, phoneNumber, pin, dialCode }
+  Action:
+  - Creates User record in PostgreSQL
+  - Creates Quidax sub-account via Quidax API
+  - Creates crypto wallets for all supported currencies (BTC, USDT, ETH, etc.)
+  - Generates wallet deposit addresses via Quidax API
+  - Issues JWT access + refresh tokens
+  Response: { user, tokens }
+
+Step 4: Login
+  POST /auth/login-user
+  Body: { email, pin }
+  Response: { user, tokens, requiresTwoFactor }
+
+Post-onboarding state:
+- User record with PENDING status (upgrades to ACTIVE after KYC)
+- Quidax sub-account created (quidaxAccountId stored on user)
+- Wallets created for each supported currency
+- No deposit addresses yet (generated via worker)
+
+
+7. KYC (KNOW YOUR CUSTOMER)
+=============================
+
+KYC is required for full account access and higher transaction limits.
+
+Endpoints (all under /api/v1/kyc, authenticated):
+  POST /nin                Validate National Identification Number
+  POST /address            Verify residential address
+  POST /document           Upload identity document
+  GET  /document/types     Get supported document types
+
+KYC Levels (AccountTier):
+- TIER_1: Basic (email verified) — limited transactions
+- TIER_2: NIN verified — higher limits
+- TIER_3: Full KYC (NIN + address + document) — full access
+
+KYC verification flow:
+1. User submits NIN → validated against Nigerian identity database
+2. User submits address → verified via address verification service
+3. User uploads document (passport, driver's license, NIN card, voter's card)
+   → reviewed by admin or automated service
+
+Each KYC action is audit logged (KYC_VALIDATE_NIN, KYC_VERIFY_ADDRESS,
+KYC_UPLOAD_DOCUMENT).
+
+KYC status stored on User.kycVerificationStatus:
+- NOT_VERIFIED → PENDING → VERIFIED → REJECTED
+
+
+8. WALLET SYSTEM
+=================
+
+Each user has multiple wallets — one per supported cryptocurrency.
+
+Wallet model:
+  id                    Unique identifier
+  userId                Owner
+  currency              Cryptocurrency (btc, usdt, eth, etc.)
+  baseBalance           Balance in smallest unit (satoshis for BTC)
+  reservedBalance       Amount locked for pending operations
+  originalBalance       Human-readable balance (e.g., "0.001")
+  isCrypto              Whether this is a crypto wallet
+  blockchainEnabled     Whether deposits are enabled
+  defaultNetwork        Default blockchain network
+
+Wallet endpoints (GET /api/v1/wallet, authenticated):
+  GET /all-wallets                    Get all wallets with NGN/USD conversion
+  GET /payment-addresses/:walletId    Get deposit addresses for a wallet
+
+Available balance = baseBalance - reservedBalance
+
+Balance operations (all use atomic raw SQL):
+  reserveBalance:   UPDATE wallets SET reservedBalance = reservedBalance + amount
+                    WHERE (baseBalance - reservedBalance) >= amount
+  releaseBalance:   UPDATE wallets SET reservedBalance = reservedBalance - amount
+                    WHERE reservedBalance >= amount
+  creditBalance:    UPDATE wallets SET baseBalance = baseBalance + amount
+
+These use WHERE guards to prevent negative balances. The RETURNING clause
+provides post-update values without a separate read, avoiding race conditions.
+
+Payment addresses:
+- Generated by Quidax when blockchain is enabled for a wallet
+- Stored in PaymentAddress table
+- Network-specific (e.g., BTC address on Bitcoin network, USDT on Tron)
+- Status: PROCESSING → ACTIVE
+
+
+9. BANK ACCOUNTS & CARDS
+==========================
+
+Bank Accounts (for NGN withdrawals):
+  POST /account/verify-bank           Step 1: Verify account via Paystack
+  POST /account                       Step 2: Save verified account
+  GET  /account                       List user's saved accounts
+  GET  /account/:id                   Get specific account
+  DELETE /account/:id                 Delete account
+  GET  /account/list-banks            List all Nigerian banks
+
+Bank verification flow:
+1. User enters account number + bank code
+2. Paystack verifies the account (returns account name)
+3. Temporary JWT token generated, stored in Redis (5 min TTL)
+4. User submits token → account saved to UserBankAccount table
+5. Account number stored masked (only last 4 digits visible)
+
+Saved Cards (for quick buy payments):
+  POST /card/initialize               Initialize card addition (Paystack redirect)
+  GET  /card/verify                   Callback from Paystack
+  POST /card/confirm-card-added       Poll for card addition status
+  GET  /card                          List saved cards
+  DELETE /card/:id                    Delete a card
+
+Card flow:
+1. Initialize → Paystack authorization URL returned
+2. User redirected to Paystack → enters card details
+3. Paystack redirects back → /verify callback fires
+4. Frontend polls /confirm-card-added until card is saved
+5. Card stored in PaymentCard table (authorization code encrypted)
+6. Used for repeat purchases without re-entering card details
+
+
+10. TRANSACTION TYPES
+======================
+
+Transaction model stores all financial activities:
+  transactionUniqueId     Unique reference (e.g., Quidax order ID, Paystack ref)
+  transactionType         CREDIT or DEBIT
+  transactionContext      BUY, SELL, SWAP, DEPOSIT, WITHDRAWAL
+  status                  PENDING → PROCESSING → COMPLETED / FAILED
+  currency                Cryptocurrency
+  cryptoAmountBase        Crypto amount in base units
+  fiatAmountBase          Fiat amount in base units (kobo for NGN)
+  platformFeeBase         Platform fee
+  networkFeeBase          Blockchain network fee
+  bufferAmountBase        Price buffer amount
+  paymentMetadata         JSON blob with context-specific data
+  isProcessed             Whether the transaction has been fully processed
+
+Transaction context determines the flow:
+- BUY: User pays NGN, receives crypto
+- SELL: User gives crypto, receives NGN
+- SWAP: User exchanges one crypto for another
+- DEPOSIT: User receives crypto from external wallet
+- WITHDRAWAL: User sends crypto to external wallet
+
+
+11. BUY FLOW (CRYPTO PURCHASE)
+===============================
+
+Endpoints (under /api/v1/buy-order, authenticated):
+  GET  /payment-methods    Get available payment methods
+  POST /preview            Preview purchase (shows amount, fees, rate)
+  POST /confirm            Confirm purchase (triggers payment)
+
+Flow:
+1. Preview: User selects crypto + amount → system calculates rate, fees, buffer
+   - Rate fetched from Quidax ticker
+   - Buffer percentage applied for price protection
+   - Platform fee calculated
+   - Preview stored in Redis with TTL (rate lock)
+
+2. Confirm: User confirms with previewId
+   - Transaction created (PENDING)
+   - Company liquidity reserved (reservedBalance incremented)
+   - Paystack payment initialized (card charge)
+   - User redirected to Paystack for payment
+
+3. Paystack webhook (charge.success):
+   - payment-status.handler.ts processes the event
+   - Paystack transaction verified
+   - Quidax buy order placed (company's account buys crypto)
+   - Order record created
+   - Transaction metadata updated (quidaxOrderId, quidaxOrderReference)
+
+4. Quidax webhook (order.done, side=buy):
+   - order-done.handler.ts processes the event
+   - Company liquidity consumed (totalBalance decremented)
+   - User wallet credited with crypto (baseBalance incremented)
+   - Order marked COMPLETED
+   - Transaction marked COMPLETED
+   - Notification sent
+   - Dashboard stats updated
+
+Key detail: The company buys crypto on its own Quidax account and credits
+the user's internal ledger. The user never interacts with Quidax directly.
+
+
+12. SELL FLOW (CRYPTO SALE)
+=============================
+
+Endpoints (under /api/v1/sell-order, authenticated):
+  POST /preview    Preview sale (shows NGN amount, fees, rate)
+  POST /confirm    Confirm sale (reserves crypto, places Quidax sell order)
+
+Flow:
+1. Preview: System calculates sell rate, platform fee, buffer
+2. Confirm:
+   - Transaction created (PENDING)
+   - Crypto reserved in user's wallet (reservedBalance incremented)
+   - Company liquidity reserved for fiat payout
+   - Quidax sell order placed
+
+3. Quidax webhook (order.done, side=sell):
+   - Crypto already sold on Quidax (converted to NGN)
+   - Paystack transfer initiated to user's bank account
+   - Order marked PROCESSING
+   - Transaction updated with payout reference
+
+4. Paystack webhook (transfer.success):
+   - Company liquidity consumed
+   - User wallet debited (reservedBalance released, baseBalance decremented)
+   - Order marked COMPLETED
+   - Transaction marked COMPLETED
+
+Sell payout failure:
+- If Paystack transfer fails after 10 retries:
+  - Transaction and order marked FAILED
+  - Reserved balance and liquidity released
+  - Crypto already sold on Quidax — exists as NGN in company's account
+  - Admin manually re-triggers payout via failed webhook resolution
+  - Admin resolution requires a comment (audit logged)
+
+
+13. SWAP FLOW (CRYPTO-TO-CRYPTO)
+=================================
+
+Endpoints (under /api/v1/swap-order, authenticated):
+  POST /preview    Preview swap (shows exchange rate, fees)
+  POST /confirm    Confirm swap (reserves source crypto, places swap)
+
+Flow:
+1. Preview: Quote fetched from Quidax for from→to currency pair
+2. Confirm:
+   - SwapTransaction record created
+   - Source crypto reserved in wallet
+   - Transaction created (PENDING)
+   - Quidax swap quotation confirmed
+
+3. Quidax webhook (swap_transaction.completed):
+   - swap-transaction.handler.ts processes the event
+   - Source wallet debited (baseBalance decremented, reservedBalance released)
+   - Target wallet credited (baseBalance incremented)
+   - Company liquidity adjusted for both currencies
+   - Credit transaction created
+   - SwapTransaction marked COMPLETED
+
+
+14. WITHDRAWAL / SEND FLOW
+============================
+
+Endpoints (under /api/v1/withdrawal, authenticated):
+  POST /preview    Preview withdrawal (shows total with fees)
+  POST /confirm    Confirm withdrawal (reserves crypto, initiates send)
+
+Flow:
+1. User provides destination wallet address, amount, network
+2. Preview calculates total (amount + network fee + platform fee + buffer)
+3. Confirm:
+   - Transaction created (PENDING)
+   - Crypto reserved (reservedBalance incremented)
+   - Withdrawal record created in Quidax
+   - CompanyWithdrawal record created
+
+4. Quidax webhook (withdraw.successful):
+   - withdrawal.handler.ts processes the event
+   - Wallet debited (baseBalance decremented)
+   - Reserved balance released
+   - Transaction marked COMPLETED
+   - Withdrawal marked SUCCESS
+
+5. If withdrawal fails:
+   - Quidax sends withdraw.failed webhook
+   - Reserved balance released
+   - Transaction marked FAILED
+
+
+15. DEPOSIT FLOW
+=================
+
+Deposits are push-based — user receives crypto from an external wallet.
+
+Flow:
+1. User shares their deposit address (from /wallet/payment-addresses/:walletId)
+2. External sender sends crypto to that address
+3. Quidax detects the deposit → sends deposit.successful webhook
+4. deposit-successful.handler.ts:
+   - Fetches deposit details from Quidax API
+   - Verifies deposit status (must be "accepted")
+   - Credits user wallet (baseBalance incremented)
+   - Creates Deposit record
+   - Creates Transaction record (COMPLETED)
+   - Initiates auto-sweep to company main account
+   - Creates CompanyWithdrawal record for the sweep
+   - Sends notification
+
+Auto-sweep:
+- After crediting the user, the deposit is swept from the user's Quidax
+  sub-account to the company's main account
+- This keeps the company's main account balance accurate
+- If sweep fails, CompanyWithdrawal is created with FAILED status for
+  manual handling
+
+Idempotency:
+- Handler checks for existing deposit by providerDepositId
+- Transaction created with transactionUniqueId = providerDepositId
+- Duplicate webhooks are detected and skipped
+
+
+16. WEBHOOK PROCESSING
+=======================
+
+Two webhook endpoints:
+  POST /webhook/quidax      Receives Quidax events
+  POST /webhook/paystack    Receives Paystack events
+
+Webhook events handled:
+  Quidax:
+  - wallet.address.generated  → AddressGeneratedHandler
+  - deposit.successful        → DepositSuccessfulHandler
+  - order.done                → OrderDoneHandler (buy and sell)
+  - swap_transaction.completed → SwapTransactionHandler
+  - withdraw.successful       → WithdrawalWebhookHandler
+
+  Paystack:
+  - charge.success            → PaymentStatusHandler (buy payment)
+  - transfer.success          → PaymentStatusHandler (sell payout)
+
+Processing pipeline:
+1. Signature verification (HMAC-SHA256 for Quidax, header check for Paystack)
+2. Idempotency check — Webhook table with idempotencyKey (unique)
+3. Webhook record created (status: pending)
+4. Job queued to BullMQ (queue based on event type)
+5. Worker picks up job → calls handler
+6. Handler processes event → updates DB
+7. Webhook marked processed (status: processed)
+8. If handler throws → BullMQ retries (10 attempts, 1 min backoff)
+9. If all retries exhausted → webhook marked failed (status: failed)
+
+Failed webhook recovery:
+- GET  /admin/transactions/failed-webhooks       List unresolved failures
+- POST /admin/transactions/failed-webhooks/:id/resolve  Mark as resolved
+  (requires resolutionComment, audit logged)
+
+The Webhook table acts as a dead-letter queue (DLQ). When BullMQ exhausts
+all 10 retries for a webhook job, the webhook record is marked status=failed
+with a failedReason. This enables:
+- Admin visibility into incomplete transactions caused by webhook failures
+- Manual resolution via the admin endpoint (requires a resolution comment)
+- Audit trail of what failed and why, with admin's resolution explanation
+- Workers and the failed event listener populate the table automatically
+
+
+17. QUEUE INFRASTRUCTURE
+=========================
+
+BullMQ with Redis backend.
+
+Queues:
+  SWAP           Swap transaction processing
+  ORDERS         Order processing (buy/sell)
+  SEND           Withdrawal processing
+  RECEIVE        Deposit processing
+  PAYSTACK       Paystack webhook processing
+  QUIDAX_WALLET  Wallet address generation
+  EMAIL          Email sending
+  PUSH           Push notification sending
+  DASHBOARD      Dashboard stats updates
+
+Worker configuration:
+  Concurrency: 10 per worker
+  Each queue has a dedicated worker class
+
+Webhook queue settings:
+  attempts: 10
+  backoff: { type: 'fixed', delay: 60000 }  (1 minute between retries)
+  removeOnComplete: true
+  removeOnFail: 100  (keeps last 100 failed jobs)
+
+Other queues (email, push, quidax-account, dashboard):
+  attempts: 5
+  backoff: { type: 'exponential', delay: 5000 }
+  removeOnComplete: true
+  removeOnFail: 100
+
+Email and push notifications both route through BullMQ with retry logic.
+Push worker concurrency: 25. Email worker concurrency: 25.
+
+Failed job handling:
+- Each worker listens for 'failed' event
+- When all attempts exhausted, webhook marked as failed in DB
+- Jobs kept in Redis for debugging (removeOnFail: 100)
+
+
+18. CIRCUIT BREAKERS
+=====================
+
+The app uses opossum (https://github.com/nodeshift/opossum) for circuit
+breakers on synchronous external API calls.
+
+Service: CircuitBreakerService
+Location: src/infrastructure/httpService/circuit-breaker.service.ts
+
+Configuration:
+  timeout: 30000ms
+  errorThresholdPercentage: 50%
+  rollingCountTimeout: 60000ms
+  volumeThreshold: 5 requests
+  resetTimeout: 30000ms (half-open probe)
+
+Scope:
+- Circuit breakers apply ONLY to synchronous calls (from controllers)
+- Queue workers and schedulers bypass the circuit breaker
+
+Provider services accept an optional opts parameter:
+  // Synchronous (circuit breaker active)
+  await this.orderService.buyOrSellOrderRequest(userId, options);
+
+  // Queue/scheduler (circuit breaker bypassed)
+  await this.orderService.buyOrSellOrderRequest(userId, options,
+    { skipCircuitBreaker: true });
+
+When the circuit opens:
+- Synchronous calls get immediate 503 Service Unavailable
+- Prevents cascading failures when providers are down
+- Auto-recovers after resetTimeout (30s half-open probe)
+
+Cleanup:
+- OnModuleDestroy: removes all listeners and shuts down breakers
+
+
+19. COMPANY LIQUIDITY MANAGEMENT
+=================================
+
+The company acts as a market maker, holding NGN and crypto on behalf of users.
+
+CompanyLiquidity model:
+  totalBalance      Total available balance
+  reservedBalance   Amount reserved for pending orders
+  currency          Currency (ngn, btc, usdt, etc.)
+
+Liquidity lifecycle:
+1. Reserve: reserveLiquidity()
+   - Increments reservedBalance
+   - Total balance unchanged
+   - Ensures available >= totalBalance - reservedBalance
+
+2. Consume: consumeReservedLiquidity()
+   - Decrements both totalBalance and reservedBalance
+   - Only if both balances >= amount
+   - Used when order completes successfully
+
+3. Release: releaseLiquidity()
+   - Decrements reservedBalance only
+   - Used when order fails or is cancelled
+
+Why this matters:
+- Prevents over-committing company funds
+- Tracks exactly how much is at risk
+- Available liquidity = totalBalance - reservedBalance
+- If available liquidity drops too low, new orders should be rejected
+
+
+20. PRICE & TICKER SYSTEM
+==========================
+
+QuidaxTickerService fetches real-time prices from Quidax.
+
+QuidaxTickerScheduler runs on a cron schedule to update prices.
+
+Prices are used for:
+- Buy/sell rate calculations
+- Wallet balance conversions (NGN/USD)
+- Fee calculations
+- Dashboard stats
+
+Price storage:
+- Prices cached in Redis for fast access
+- Ticker format: {currency}ngn (e.g., btcngn, usdtngn)
+- Used by ConvertCurrency.toBase() and fromBase() for unit conversions
+
+Buffer system:
+- Price buffer protects against volatility during order processing
+- Buy: user pays slightly more than market rate
+- Sell: user receives slightly less than market rate
+- Buffer percentage configurable per currency
+
+
+21. CURRENCY MANAGEMENT
+========================
+
+Endpoints (under /api/v1/currencies, authenticated):
+  GET /all                    List all supported cryptocurrencies
+  GET /:symbol                Get specific currency details
+  PATCH /:symbol              Update currency settings (admin)
+
+Supported currencies:
+  Crypto: BTC, ETH, USDT, USDC, BNB, DOGE, XRP, SOL, LINK, TRX
+  Fiat: NGN, USD
+
+Currency configuration:
+  CURRENCY_PRECISION maps each currency to its supported networks and decimals:
+  - BTC: 8 decimals, networks: btc, bep20
+  - USDT: 6 decimals, networks: bep20, erc20, trc20, polygon, solana, etc.
+  - ETH: 18 decimals, networks: erc20
+
+Currency utilities:
+  ConvertCurrency.toBase(amount, currency, network)
+    Converts human-readable to base units (e.g., "0.001" BTC → 100000 satoshis)
+  ConvertCurrency.fromBase(baseUnits, currency, network)
+    Converts base units to human-readable
+
+  toCryptoNetwork(raw) validates and maps provider network names to
+  CryptoNetwork enum values (e.g., "bitcoin" → "btc", "tron" → "trc20")
+
+
+22. USER SETTINGS
+==================
+
+Endpoints (under /api/v1/settings, authenticated):
+  GET  /notifications          Get notification preferences
+  PATCH /notifications         Update notification preferences
+  GET  /security               Get security settings
+  PATCH /security              Update security settings (2FA, login method)
+  GET  /display                Get display settings (currency, theme)
+
+Notification settings:
+  accountActivityAlert    Login, password changes
+  transactionAlert        Deposits, withdrawals, swaps
+  appUpdates              New features and updates
+  maintenanceAlert        Scheduled maintenance
+
+Security settings:
+  isTwoFactorEnabled      Enable/disable 2FA
+  loginWithPin            Use PIN for login
+  loginWithBiometric      Use biometric for login
+  hideAccountOnLogin      Hide balance on login screen
+
+Display settings:
+  displayCurrency         NGN or USD (default: NGN)
+
+
+23. ADMIN PANEL
+===============
+
+Admin modules:
+  /admin/transactions     Transaction management
+  /admin/users            User management
+  /admin/account          Admin account management
+  /admin/currencies       Currency management
+  /admin/Internal-user    Internal admin user management (roles, permissions)
+
+Admin Transaction Management:
+  GET  /admin/transactions                    List all transactions (paginated, filtered)
+  GET  /admin/transactions/:id                Transaction detail
+  GET  /admin/transactions/failed-webhooks    Unresolved failed webhooks
+  POST /admin/transactions/failed-webhooks/:id/resolve  Resolve failed webhook
+
+Admin User Management:
+  GET  /admin/users                           List all users
+  GET  /admin/users/:id                       User detail
+  PATCH /admin/users/:id/status               Update user status (activate, suspend, flag)
+
+Internal Admin Management:
+  CRUD for admin users
+  Role assignment (SUPER_ADMIN, ADMIN, SUPPORT, etc.)
+  Permission management
+
+Admin Dashboard:
+  GET /admin/dashboard  Real-time stats (cached in Redis)
+  - Total transaction value and volume
+  - Total users
+  - Recent transactions
+  - Daily/monthly trends
+
+All admin endpoints require:
+  - AuthGuard (valid JWT)
+  - AdminRolesGuard (admin role check)
+  - Specific permissions (e.g., ACCESS_TRANSACTION_HISTORY)
+
+
+24. DASHBOARD & ANALYTICS
+==========================
+
+Dashboard stats are precomputed and cached in Redis.
+
+Two update mechanisms:
+
+A. Real-time: DashboardStatsQueueService queues a job to the DASHBOARD_STATS
+   queue on every transaction creation or status update. This keeps stats
+   incrementally up-to-date without full DB scans.
+
+B. Periodic: AdminDashboardScheduler runs on a cron schedule to recompute
+   full stats from scratch (safety net for consistency).
+
+Stats tracked:
+  - Total transaction value (all time + daily)
+  - Total transaction volume (count)
+  - Total users (all time + monthly growth)
+  - Recent transactions (last 10)
+
+Stats are served from Redis cache (no DB queries on each request).
+
+
+25. NOTIFICATIONS
+==================
+
+Two channels, both routed through BullMQ queues with retry logic:
+
+A. Push Notifications (Firebase Cloud Messaging)
+   Service: FirebaseCloudMessagingService
+   Queue: PUSH (concurrency: 25)
+   Retries: 5 attempts, exponential backoff starting at 5s
+   Device tokens: UserDeviceToken table
+   Events: deposit received, buy completed, sell completed, withdrawal sent
+
+B. Email Notifications
+   Service: EmailService
+   Queue: EMAIL (concurrency: 25)
+   Retries: 5 attempts, exponential backoff starting at 5s
+   Events: welcome email, OTP delivery, transaction confirmations,
+   password reset, account locked
+
+Notification delivery does not block transaction processing:
+- Handlers fire-and-forget the queue job
+- If FCM/email fails, BullMQ retries automatically
+- If all retries exhausted, job kept in Redis (removeOnFail: 100) for
+  debugging but transaction processing continues unaffected
+
+
+26. SCHEDULED JOBS
+===================
+
+All schedulers run via @nestjs/schedule cron decorators.
+
+  admin-dashboard.scheduler.ts     Updates dashboard stats in Redis
+  company-wallet.scheduler.ts      Syncs company wallet balances from Quidax
+  company-withdrawal-retry.scheduler.ts  Reconciliation: checks unprocessed
+                                   withdrawal webhooks against Quidax status
+  daily-limit-reset.scheduler.ts   Resets daily transaction limits
+  daily-percentage.scheduler.ts    Calculates daily price percentage changes
+  failed-company-liquidity.scheduler.ts  Detects and logs liquidity inconsistencies
+  paystack-balance.scheduler.ts    Syncs Paystack balance for monitoring
+  paystack-banks.scheduler.ts      Syncs Nigerian bank list from Paystack
+  quidax-ticker.scheduler.ts       Fetches and caches crypto prices from Quidax
+
+Key scheduler: company-withdrawal-retry
+- Runs daily at midnight
+- Queries unprocessed withdrawal webhooks (isProcessed: false)
+- Checks Quidax for actual withdrawal status
+- Marks as processed regardless of outcome (prevents infinite loops)
+- This is a reconciliation sweep, not a retry mechanism
+
+
+27. AUDIT LOGGING
+==================
+
+AuditLogModule provides decorator-based audit logging.
+
+Usage:
+  @AuditLog({
+    action: AuditAction.BUY_CONFIRM,
+    resource: AuditResource.TRANSACTION_BUY,
+    resourceIdPath: 'params.id',  // extracts ID from request
+    maskFields: ['pin'],          // masks sensitive fields in logs
+  })
+
+Audit actions tracked:
+  Auth: login, logout, signup, PIN changes
+  KYC: NIN validation, address verification, document upload
+  Transactions: buy preview/confirm, sell preview/confirm, swap, withdrawal
+  Cards: initialize, verify, confirm, delete
+  Bank accounts: verify, add, delete
+  Admin: user management, transaction management, webhook resolution
+
+Audit resources:
+  USER, USER_BANK_ACCOUNT, USER_CARD, KYC_NIN, KYC_ADDRESS, KYC_DOCUMENT,
+  TRANSACTION_BUY, TRANSACTION_SELL, TRANSACTION_SWAP,
+  TRANSACTION_WITHDRAWAL, TRANSACTION_DEPOSIT, ADMIN_TRANSACTIONS,
+  ADMIN_WEBHOOKS
+
+Audit logs stored in AuditLog table with:
+  userId, action, resource, resourceId, metadata, ipAddress, userAgent, timestamp
+
+
+28. SECURITY
+============
+
+Transport:
+- Helmet middleware (HTTP security headers)
+- CORS configured (currently origin: '*')
+- HTTPS expected at load balancer level
+
+Authentication:
+- JWT access tokens (short-lived, ~15 min)
+- JWT refresh tokens (long-lived, ~7 days, revocable)
+- PIN hashed with bcrypt
+- Password hashed with bcrypt (admin accounts)
+
+Authorization:
+- AuthGuard validates JWT on protected endpoints
+- AdminRolesGuard checks admin roles
+- Permission-based access control for admin features
+
+Input validation:
+- class-validator DTOs on all endpoints
+- Whitelist mode (unknown properties rejected)
+- Strict type transformation
+
+Rate limiting:
+- @nestjs/throttler global rate limiting
+- Per-endpoint overrides where needed
+
+Sensitive data:
+- Card authorization codes encrypted at rest
+- Bank account numbers masked (last 4 digits visible)
+- PIN never stored in plaintext
+- Environment variables for all secrets (no hardcoded values)
+
+Error handling:
+- Global exception filter catches all errors
+- Stack traces never exposed to clients in production
+- All errors reported to Sentry
+
+SQL injection prevention:
+- Prisma parameterized queries for all ORM operations
+- Raw SQL uses Prisma tagged template literals (auto-parameterized)
+- No string concatenation in SQL queries
+
+
+29. ERROR HANDLING
+==================
+
+Three layers:
+
+1. Global Exception Filter (core/filters/global-exception.filter.ts)
+   - Catches all unhandled exceptions
+   - Formats error response: { statusCode, message, errors[], timestamp, path }
+   - Reports to Sentry via @SentryExceptionCaptured
+   - Non-HTTP exceptions logged with stack trace
+
+2. HTTP Exception Interceptor
+   - Wraps HTTP exceptions in standard format
+   - BadRequestException: validation errors extracted and formatted
+   - Other HttpException: message extracted from response
+
+3. Handler-level error handling
+   - Transient Prisma errors: re-thrown for BullMQ retry
+   - Non-transient errors: thrown (webhook marked failed)
+   - Compensation errors: CompensatedError thrown (webhook marked failed)
+   - Notification errors: caught and logged (non-blocking)
+
+Error classification:
+- Transient (retryable): connection errors, timeouts, 5xx from providers
+- Permanent (non-retryable): validation errors, constraint violations
+- Compensated: handler ran corrective action, webhook marked failed
+
+
+30. TESTING
+============
+
+Test framework: Jest (configured but not extensively used)
+
+Webhook test scripts (src/scripts/webhook-tests/):
+  Standalone scripts that test each webhook handler end-to-end.
+
+  Each script:
+  1. Bootstraps full NestJS app context (DI container)
+  2. Seeds test data (user, wallets, transactions, liquidity, device tokens)
+  3. Overrides provider service methods with fakes (no real API calls)
+  4. Calls handler directly with fake webhook payload
+  5. Verifies DB state after handler execution
+  6. Cleans up all test data in finally block (runTest wrapper)
+
+  Scripts:
+  - address-generated.ts       wallet.address.generated handler
+  - deposit-successful.ts      deposit.successful handler
+  - order-done-buy.ts          order.done (buy) handler
+  - order-done-sell.ts         order.done (sell) handler
+  - swap-transaction.ts        swap_transaction.completed handler
+  - withdrawal.ts              withdraw.successful handler
+  - payment-status-charge-success.ts    charge.success handler
+  - payment-status-transfer-success.ts  transfer.success handler
+
+  Run: npx tsx src/scripts/webhook-tests/<script>.ts
+
+  Test utilities (test-utils.ts):
+  - bootstrap(): creates NestJS app context
+  - runTest(fn): wraps in try/finally with cleanup
+  - seedUser(): creates test user + mock device token
+  - seedWallet(): creates wallet with specified currency/balance
+  - seedCompanyLiquidity(): upserts liquidity record
+  - seedTransaction(): creates transaction record
+  - seedOrder(): creates order record
+  - cleanup(): deletes all test data for test user
+
+
+31. KNOWN LIMITATIONS
+======================
+
+1. Sell payout failures require manual admin intervention.
+   The crypto is sold on Quidax, NGN exists in the company's account,
+   but the Paystack transfer failed. Admin must manually re-trigger.
+
+2. CompanyLiquidity records persist across test runs.
+   Tests use upsert to ensure correct balances, but cleanup doesn't
+   delete liquidity records (shared resource). So, kindly run test in a local DB or a stating DB.
+
+3. Circuit breaker stats are not exposed via a health endpoint.
+   Consider adding GET /health/circuit-breakers for monitoring.
+
+4. BigInt.prototype.toJSON is monkey-patched globally for Prisma
+   Decimal/BigInt serialization. This affects all BigInt usage in the app.
+
+5. The order module controller is fully commented out.
+   Transaction management has moved to the transaction module controllers.
+
+6. No database-level soft deletes for most models.
+    Deletion is hard-deleted. Only User has isDeleted flag.

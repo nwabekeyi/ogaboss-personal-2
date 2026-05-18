@@ -1,0 +1,27 @@
+model Vault {
+  id              String    @id @default(cuid())
+  userId          String
+  currencyId      String
+  quoteId         String?   @unique
+  amountLocked    Decimal   @default(0) @db.Decimal(78, 0)
+  maturityDate    DateTime
+  totalGain       Decimal   @default(0) @db.Decimal(78, 0)
+  interestRatePerAnum Decimal @default(0) @db.Decimal(5, 2)
+  transactionFee  Decimal   @default(0) @db.Decimal(78, 0)
+  rate            Decimal   @default(0) @db.Decimal(78, 0)
+  amountToReceive Decimal   @default(0) @db.Decimal(78, 0)
+  bufferAmount    Decimal   @default(0) @db.Decimal(78, 0)
+  bufferPercent   Decimal   @default(0) @db.Decimal(5, 2)
+  requestedAt     DateTime  @default(now())
+  status          VaultStatus @default(ACTIVE)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cryptoCurrency  CryptoCurrency @relation(fields: [currencyId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([currencyId])
+  @@index([status])
+  @@index([quoteId])
+  @@map("vaults")
+}

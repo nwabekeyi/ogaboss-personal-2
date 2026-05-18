@@ -1,0 +1,14 @@
+model UserBankAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  bankAccountName   String
+  bankAccountNumber String
+  bankName          String
+  bankCode          String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  User              User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("userbankaccounts")
+}

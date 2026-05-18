@@ -1,0 +1,23 @@
+model PaymentAddress {
+  id              String               @id @default(cuid())
+  quidaxAddressId String?              @unique
+  walletId        String
+  currency        String
+  address         String?
+  name            String?
+  network         String?
+  destinationTag  String?
+  status          PaymentAddressStatus @default(PROCESSING)
+  totalPayments   Decimal              @default(0) @db.Decimal(78, 0)
+  depositCount    Int                  @default(0)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  wallet          Wallet               @relation(fields: [walletId], references: [id])
+
+  @@unique([walletId, currency, network])
+  @@index([currency])
+  @@index([network])
+  @@index([quidaxAddressId])
+  @@index([address])
+  @@map("payment_addresses")
+}

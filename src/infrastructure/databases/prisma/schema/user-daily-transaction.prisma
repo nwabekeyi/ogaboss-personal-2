@@ -1,0 +1,14 @@
+model UserDailyTransaction {
+  id            String   @id @default(cuid())
+  userId        String
+  date          DateTime
+  totalDebited  Decimal  @default(0) @db.Decimal(20, 2)
+  totalCredited Decimal  @default(0) @db.Decimal(20, 2)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@index([date])
+  @@map("user_daily_transactions")
+}

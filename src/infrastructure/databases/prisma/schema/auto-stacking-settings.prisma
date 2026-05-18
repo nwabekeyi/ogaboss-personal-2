@@ -1,0 +1,24 @@
+model AutoStackingSettings {
+  id              String        @id @default(cuid())
+  dailyInterestRatePercent Decimal @default(0) @db.Decimal(5, 2)
+  currency        String        @default("NGN")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("auto_stacking_settings")
+}
+
+model AutoStackingTransactionFee {
+  id        String   @id @default(cuid())
+  fromAmount Decimal @db.Decimal(78, 0)
+  toAmount   Decimal @db.Decimal(78, 0)
+  currency   String  @default("NGN")
+  feeAmount  Decimal @default(0) @db.Decimal(78, 0)
+  feeCurrency String @default("NGN")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([currency, fromAmount, toAmount])
+  @@index([currency])
+  @@map("auto_stacking_transaction_fees")
+}

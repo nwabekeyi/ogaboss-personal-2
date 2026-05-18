@@ -1,0 +1,21 @@
+model General {
+  id             String     @id @default(cuid())
+  tableName      ModelNames
+  tableID        String
+  associatedData Json?
+  isValid        Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@map("generals")
+}
+
+model Account {
+  id        String          @id @default(cuid())
+  signType  AccountSignType
+  status    AccountStatus
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@map("accounts")
+}

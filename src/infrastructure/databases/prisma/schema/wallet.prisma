@@ -1,0 +1,30 @@
+model Wallet {
+  id                String           @id @default(cuid())
+  quidaxWalletId    String           @unique
+  userId            String
+  name              String
+  currency          String
+  currencyId        String?
+  baseBalance       Decimal          @default(0) @db.Decimal(78, 0)
+  reservedBalance   Decimal          @default(0) @db.Decimal(78, 0)
+  lockedAmount      Decimal          @default(0) @db.Decimal(78, 0)
+  stackedAmount     Decimal          @default(0) @db.Decimal(78, 0)
+  totalStackedInterest Decimal       @default(0) @db.Decimal(78, 0)
+  originalBalance   String           @default("0")
+  isCrypto          Boolean
+  blockchainEnabled Boolean          @default(false)
+  defaultNetwork    String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  paymentAddresses  PaymentAddress[]
+  user              User             @relation(fields: [userId], references: [id])
+  transactions      Transaction[]    @relation("TransactionToWallet")
+  cryptoCurrency    CryptoCurrency?  @relation(fields: [currencyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([userId, currency])
+  @@index([quidaxWalletId])
+  @@index([userId])
+  @@index([userId, currency])
+  @@index([userId, originalBalance], map: "wallets_userId_balance_desc_idx")
+  @@map("wallets")
+}

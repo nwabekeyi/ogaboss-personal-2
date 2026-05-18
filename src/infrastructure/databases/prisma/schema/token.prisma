@@ -1,0 +1,23 @@
+model Token {
+  id        String    @id @default(cuid())
+  token     String    @unique
+  type      TokenType
+  userType  UserType
+  userId    String?
+  adminId   String?
+  expiresAt DateTime
+  isRevoked Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  admin     Admin?    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@unique([adminId, type])
+  @@index([adminId])
+  @@index([userId])
+  @@index([type])
+  @@index([expiresAt])
+  @@index([token, type, isRevoked])
+  @@map("tokens")
+}

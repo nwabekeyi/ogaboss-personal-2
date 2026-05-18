@@ -1,0 +1,22 @@
+<div style="margin:24px 0;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+    <% if (transactionId) { %>
+    <tr>
+      <td style="padding:14px 20px;background:#f8fafc;font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:40%;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;border-bottom:1px solid #f1f5f9;">Transaction ID</td>
+      <td style="padding:14px 20px;font-size:14px;color:#0f172a;font-weight:600;font-family:'Courier New',Courier,monospace;border-bottom:1px solid #f1f5f9;word-break:break-all;"><%= transactionId %></td>
+    </tr>
+    <% } %>
+    <% if (transactionContext) { %>
+    <tr>
+      <td style="padding:14px 20px;background:#f8fafc;font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;border-bottom:1px solid #f1f5f9;">Type</td>
+      <td style="padding:14px 20px;font-size:14px;color:#0f172a;font-weight:500;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;border-bottom:1px solid #f1f5f9;"><%= transactionContext %></td>
+    </tr>
+    <% } %>
+    <% if (transactionStatus) { %>
+    <tr>
+      <td style="padding:14px 20px;background:#f8fafc;font-size:12px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">Status</td>
+      <td style="padding:14px 20px;font-size:14px;color:#0f172a;font-weight:700;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"><%= transactionStatus %></td>
+    </tr>
+    <% } %>
+  </table>
+</div>

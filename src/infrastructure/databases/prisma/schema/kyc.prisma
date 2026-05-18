@@ -1,0 +1,59 @@
+model KycVerification {
+  id                          String                    @id @default(cuid())
+  user_id                     String                    @unique
+  bvn                         String?
+  verificationSelfine         String?
+  hasVerifiedBvn              Boolean                   @default(false)
+  nin                         String?                   @unique
+  hasVerifiedNin              Boolean                   @default(false)
+  hasVerifiedLivenessCheck    Boolean                   @default(false)
+  hasVerifiedAddress          Boolean                   @default(false)
+  addressVerificationStatus   AddressVerificationStatus @default(PENDING)
+  addressVerificationRef      String?
+  hasUpdatedNextOfKin         Boolean                   @default(false)
+  ninFirstName                String?
+  ninLastName                 String?
+  ninPhoneNumber              String?
+  ninDateOfBirth              DateTime?
+  ninImageUrl                 String?
+  bvnFirstName                String?
+  bvnLastName                 String?
+  bvnPhoneNumber              String?
+  bvnDateOfBirth              DateTime?
+  bvnImageUrl                 String?
+  nextOfKinFullName           String?
+  nextOfKinRelationship       String?
+  nextOfKinPhoneNumber        String?
+  nextOfKinGender             Gender?
+  nextOfKinDob                String?
+  nextOfKinResidentialAddress String?
+  countryOfResidence          String?
+  zipCode                     String?
+  streetName                  String?
+  streetNumber                String?
+  state                       String?
+  city                        String?
+  lga                         String?
+  landmark                    String?
+  documentTypeInternal        DocumentTypeInternal?
+  documentType                String?
+  documentNumber              String?
+  documentIssuedCountryCode   String?
+  documentIssuedby            String?
+  documentIssueDate           DateTime?
+  documentExpirationDate      DateTime?
+  documentFrontPageUrl        String?
+  documentBackPageUrl         String?
+  sourceOfIncome              String?
+  occupation                  String?
+  incomeBand                  String?
+  employmentStatus            String?
+  accountDesignation          String?
+  taxCountry                  String?
+  taxnumber                   String?
+  createdat                   DateTime                  @default(now())
+  updatedat                   DateTime                  @updatedAt
+  user                        User                      @relation(fields: [user_id], references: [id])
+
+  @@map("kyc_verifications")
+}

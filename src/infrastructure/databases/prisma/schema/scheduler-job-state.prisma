@@ -1,0 +1,11 @@
+model SchedulerJobState {
+  id             String   @id @default(cuid())
+  jobName        String   @unique
+  lastExecutedAt DateTime?
+  nextExecutionAt DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([jobName, nextExecutionAt])
+  @@map("scheduler_job_states")
+}

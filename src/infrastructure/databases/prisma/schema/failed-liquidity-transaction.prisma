@@ -1,0 +1,19 @@
+model FailedCompanyLiquidityTransaction {
+  id               String      @id @default(cuid())
+  transactionId    String?     @unique
+  transactionType  String?     // SWAP | BUY | SELL etc. — discriminator
+  amountOriginal   String?     // human-readable amount at time of failure
+  currency         String      // the currency whose balance was checked
+  amountBase       Decimal     @db.Decimal(78, 0)
+  providerResponse Json?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  Transaction      Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionType])
+  @@index([fromCurrency])
+  @@index([toCurrency])
+  @@index([currency])
+  @@index([createdAt])
+  @@map("failed_company_liquidity_transactions")
+}

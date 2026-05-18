@@ -1,0 +1,28 @@
+model SwapTransaction {
+  id                     String   @id @default(cuid())
+  userId                 String
+  quidaxAccountId        String
+  fromCurrency           String
+  toCurrency             String
+  amountOriginal         String
+  quotedPriceOriginal    String?
+  executionPriceOriginal String?
+  toAmountOriginal       String?
+  receivedAmountOriginal String?
+  feeOriginal            String?
+  quoteId                String?
+  confirmed              Boolean? @default(false)
+  swapId                 String?
+  status                 String   @default("pending")
+  description            String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([userId])
+  @@index([quidaxAccountId])
+  @@index([swapId])
+  @@index([quoteId])
+  @@index([status])
+  @@index([fromCurrency, toCurrency])
+  @@map("swaptransactions")
+}

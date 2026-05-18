@@ -1,0 +1,52 @@
+model Transaction {
+  id                                 String                              @id @default(cuid())
+  userId                             String
+  receiverWalletAddress              String?
+  receiverWalletId                   String?
+  senderWalletAddress                String?
+  senderWalletId                     String?
+  paymentType                        PaymentType?
+  paymentMetadata                    Json?
+  platformWalletAddress              String?
+  transactionUniqueId                String                              @unique
+  network                            String?
+  currency                           String
+  fromCurrency                       String?   // populated for swap transactions
+  toCurrency                         String?   // populated for swap transactions
+  cryptoAmountBase                   Decimal?                            @db.Decimal(78, 0)
+  fiatAmountBase                     Decimal                             @default(0) @db.Decimal(78, 0)
+  description                        String?
+  platformFeeBase                    Decimal?                            @db.Decimal(78, 0)
+  networkFeeBase                     Decimal?                            @db.Decimal(78, 0)
+  bufferAmountBase                   Decimal?                            @db.Decimal(78, 0)
+  totalAmountSentBase                Decimal?                            @db.Decimal(78, 0)
+  cryptoAmountOriginal               String?
+  fiatAmountOriginal                 String?
+  platformFeeOriginal                String?
+  networkFeeOriginal                 String?
+  bufferAmountOriginal               String?
+  totalAmountSentOriginal            String?
+  executedCryptoAmountBase           Decimal?                            @db.Decimal(78, 0)
+  executedFiatAmountBase             Decimal?                            @db.Decimal(78, 0)
+  executionPrice                     String?
+  executedAt                         DateTime?
+  status                             TransactionStatus                   @default(PENDING)
+  transactionType                    TransactionType
+  transactionContext                 TransactionContext
+  isProcessed                        Boolean                             @default(false)
+  createdAt                          DateTime                            @default(now())
+  updatedAt                          DateTime                            @updatedAt
+  User                               User                                @relation(fields: [userId], references: [id])
+  Wallet                             Wallet[]                            @relation("TransactionToWallet")
+  Withdrawals                        Withdrawal[]                        @relation("TransactionToWithdrawal")
+  CompanyWithdrawals                 CompanyWithdrawal[]
+  FailedCompanyLiquidityTransactions FailedCompanyLiquidityTransaction[]
+
+  @@index([senderWalletAddress])
+  @@index([receiverWalletAddress])
+  @@index([platformWalletAddress])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([createdAt, status])
+  @@index([userId, status])
+  @@map("transactions")
+}

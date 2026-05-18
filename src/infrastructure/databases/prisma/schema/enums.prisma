@@ -1,0 +1,231 @@
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum UserType {
+  INDIVIDUAL
+  CORPORATE
+  ADMIN
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum PaymentAddressStatus {
+  ACTIVE
+  INACTIVE
+  FAILED
+  PROCESSING
+}
+
+enum DevicePlatform {
+  ANDROID
+  IOS
+}
+
+enum Permission {
+  DOWNLOAD_TRANSACTION_HISTORY
+  FLAG_USER
+  EDIT_PERMISSION
+  ACCESS_TRANSACTION_HISTORY
+  ADD_USER
+  USER_ACCOUNT_ACCESS
+  EDIT_USER_ACCOUNT
+  CURRENCY_MANAGEMENT
+}
+
+enum VerificationStatus {
+  NOT_VERIFIED
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AddressVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum DocumentTypeInternal {
+  INTERNATIONAL_PASSPORT
+  DRIVERS_LICENSE
+  VOTER_CARD
+  NATIONAL_IDENTITY_CARD
+  NIN
+}
+
+enum KycDocument {
+  BVN
+  NIN
+  PASSPORT
+}
+
+enum AccountTier {
+  TIER_1
+  TIER_2
+  TIER_3
+}
+
+enum Status {
+  ACTIVE
+  FLAGGED
+  PENDING
+  DELETED
+}
+
+enum TokenType {
+  REFRESH
+  ACCESS
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  PASSWORD_CHANGE
+}
+
+enum TransactionStatus {
+  COMPLETED
+  PENDING
+  FAILED
+  SUCCESS
+  CONFIRM
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+  CARD_VERIFICATION_DEBIT
+  REFUND
+  COMPANY_NGN_DEPOSIT
+}
+
+enum PaymentType {
+  CARD
+  BANK_TRANSFER
+  PAYSTACK
+  CRYPTO_WALLET
+}
+
+enum TransactionContext {
+  DEPOSIT
+  WITHDRAWAL
+  TRANSFER
+  BUY
+  SELL
+  CARD_VERIFICATION
+  CARD_REFUND
+  SWAP
+  VAULT_SWAP
+}
+
+enum TransactionProcess {
+  PROCESSING
+}
+
+enum OrderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+  PROCESSING
+  FAILED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum OrderType {
+  BUY
+  SELL
+}
+
+enum ModelNames {
+  GENERAL
+  USER
+  TOKEN
+  ADMIN
+}
+
+enum AccountSignType {
+  GOOGLE
+  FACEBOOK
+  DIRECT
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  BANNED
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+}
+
+enum Currency {
+  NGN
+  USD
+}
+
+enum DepositStatus {
+  PENDING
+  CONFIRMED
+  CREDITED
+  FAILED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  REJECTED
+  FAILED
+}
+
+enum AuditActorType {
+  USER
+  ADMIN
+  SYSTEM
+  UNKNOWN
+}
+
+enum AuditStatus {
+  SUCCESS
+  FAILURE
+}
+
+enum Providers {
+  QUDIAX
+  PAYSTACK
+}
+
+enum WebhookStatus {
+  pending
+  processed
+  failed
+}
+
+enum VaultStatus {
+  PENDING
+  ACTIVE
+  MATURED
+  TERMINATED
+}
+
+enum AutoStackFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+enum AutoStackStatus {
+  ACTIVE
+  ENDED
+}

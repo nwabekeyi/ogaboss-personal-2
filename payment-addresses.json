@@ -1,0 +1,638 @@
+{
+  "btc": [
+    {
+      "id": "87f47f93-5c5b-4b77-a1ba-652b455d9754",
+      "reference": null,
+      "currency": "btc",
+      "address": "bc1q5agmz2zdm3tq8dl5yt6k4acwmqgh384het7v8l",
+      "network": "btc",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:09.000Z",
+      "updated_at": "2026-02-07T12:47:09.000Z"
+    },
+    {
+      "id": "10183627-31bc-4d25-9309-b92199ab7d69",
+      "reference": null,
+      "currency": "btc",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "bep20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:10.000Z",
+      "updated_at": "2026-02-07T12:47:14.000Z"
+    }
+  ],
+  "usdt": [
+    {
+      "id": "3d073a42-5c0e-4834-bc3a-cf1d979ea8f5",
+      "reference": null,
+      "currency": "usdt",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "bep20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:13.000Z",
+      "updated_at": "2026-02-07T12:47:14.000Z"
+    },
+    {
+      "id": "381b1796-2e35-4639-a5ed-3ffd24f39549",
+      "reference": null,
+      "currency": "usdt",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "erc20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:14.000Z",
+      "updated_at": "2026-02-07T12:47:14.000Z"
+    },
+    {
+      "id": "15469ec7-3c58-4deb-89e7-a2e991bbac42",
+      "reference": null,
+      "currency": "usdt",
+      "address": "TFPCzjhFgEvmo1WBnDgrWC7qsLNuZcWcfi",
+      "network": "trc20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:23.000Z",
+      "updated_at": "2026-02-07T12:47:23.000Z"
+    },
+    {
+      "id": "9dd507d8-a7d3-4c02-ab3c-193b02172215",
+      "reference": null,
+      "currency": "usdt",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "polygon",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:24.000Z",
+      "updated_at": "2026-02-07T12:47:24.000Z"
+    },
+    {
+      "id": "fc2bd060-d091-44a0-8c13-372e86c54152",
+      "reference": null,
+      "currency": "usdt",
+      "address": "Ff9pSX3iKe1SpSDFWJUw7Syy5cMts13c7MKTrkAxm6xQ",
+      "network": "solana",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:25.000Z",
+      "updated_at": "2026-02-07T12:47:25.000Z"
+    },
+    {
+      "id": "56d36dcd-c8d2-4ecb-a8ff-7a55b81f5243",
+      "reference": null,
+      "currency": "usdt",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "celo",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:26.000Z",
+      "updated_at": "2026-02-07T12:47:26.000Z"
+    },
+    {
+      "id": "41b0bdf7-7329-484d-837a-00e40603b8d0",
+      "reference": null,
+      "currency": "usdt",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "optimism",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:27.000Z",
+      "updated_at": "2026-02-07T12:47:27.000Z"
+    },
+    {
+      "id": "f2dd7336-8cff-4d71-ba5d-d20369b90075",
+      "reference": null,
+      "currency": "usdt",
+      "address": "UQCzTH14er4qh4gDlAsgg0NBve7hMpg2fDXR2H52skAKptPY",
+      "network": "ton",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": "A938F78D231B23CCDF7C",
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:28.000Z",
+      "updated_at": "2026-02-07T12:47:29.000Z"
+    },
+    {
+      "id": "b3c23dc1-9d6e-4093-a8ae-2da16cf10507",
+      "reference": null,
+      "currency": "usdt",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "arbitrum",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:29.000Z",
+      "updated_at": "2026-02-07T12:47:30.000Z"
+    }
+  ],
+  "usdc": [
+    {
+      "id": "70280fbf-5102-4c9f-93ed-2a9303c3c524",
+      "reference": null,
+      "currency": "usdc",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "bep20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:32.000Z",
+      "updated_at": "2026-02-07T12:47:33.000Z"
+    },
+    {
+      "id": "df0dd051-b49c-4c26-9a3b-2595ec6270d3",
+      "reference": null,
+      "currency": "usdc",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "erc20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:33.000Z",
+      "updated_at": "2026-02-07T12:47:33.000Z"
+    },
+    {
+      "id": "7ae9c688-3206-40b1-b03e-1197bd879a6c",
+      "reference": null,
+      "currency": "usdc",
+      "address": "TFPCzjhFgEvmo1WBnDgrWC7qsLNuZcWcfi",
+      "network": "trc20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:34.000Z",
+      "updated_at": "2026-02-07T12:47:34.000Z"
+    },
+    {
+      "id": "8ef675da-9dd5-4e61-80ba-df5f95aa4faa",
+      "reference": null,
+      "currency": "usdc",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "polygon",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:49.000Z",
+      "updated_at": "2026-02-07T12:47:49.000Z"
+    },
+    {
+      "id": "d3bb3a1e-18c8-4923-adc8-4e902f7dadf5",
+      "reference": null,
+      "currency": "usdc",
+      "address": "Ff9pSX3iKe1SpSDFWJUw7Syy5cMts13c7MKTrkAxm6xQ",
+      "network": "solana",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:50.000Z",
+      "updated_at": "2026-02-07T12:47:50.000Z"
+    },
+    {
+      "id": "922da70a-2454-4296-a86b-7d6901981ed8",
+      "reference": null,
+      "currency": "usdc",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "base",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:51.000Z",
+      "updated_at": "2026-02-07T12:47:51.000Z"
+    },
+    {
+      "id": "8441fdac-7dc8-46fa-8d24-b3ae534fde5b",
+      "reference": null,
+      "currency": "usdc",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "arbitrum",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:52.000Z",
+      "updated_at": "2026-02-07T12:47:52.000Z"
+    }
+  ],
+  "eth": [
+    {
+      "id": "7ff440c4-a6fa-4a99-92bc-951fe8fc83a2",
+      "reference": null,
+      "currency": "eth",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "erc20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:47:55.000Z",
+      "updated_at": "2026-02-07T12:47:55.000Z"
+    },
+    {
+      "id": "841d4a2d-9f61-4de6-8558-a53fb40e5566",
+      "reference": null,
+      "currency": "eth",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "bep20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:04.000Z",
+      "updated_at": "2026-02-07T12:48:04.000Z"
+    },
+    {
+      "id": "a0e2bfed-a349-44e8-b9a2-e431e5b238e3",
+      "reference": null,
+      "currency": "eth",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "base",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:05.000Z",
+      "updated_at": "2026-02-07T12:48:05.000Z"
+    }
+  ],
+  "bnb": [
+    {
+      "id": "6a4d155b-c5a5-49bf-9e47-93c0c5bbfe1d",
+      "reference": null,
+      "currency": "bnb",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "bep20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:08.000Z",
+      "updated_at": "2026-02-07T12:48:08.000Z"
+    }
+  ],
+  "doge": [
+    {
+      "id": "8e74aa66-1498-46c8-afef-7c271f70236d",
+      "reference": null,
+      "currency": "doge",
+      "address": "DDnWmDPzDvSnHXMXTWzZdMknrBqXVP8tFU",
+      "network": "doge",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:11.000Z",
+      "updated_at": "2026-02-07T12:48:12.000Z"
+    }
+  ],
+  "xrp": [
+    {
+      "id": "e2b9ef34-d696-4f0e-aa03-d8616b8db103",
+      "reference": null,
+      "currency": "xrp",
+      "address": "rnZboEfo3HhKXwoxoSthHVxf5zpbBkXghU",
+      "network": "ripple",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": "2030315280",
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:14.000Z",
+      "updated_at": "2026-02-07T12:48:15.000Z"
+    }
+  ],
+  "sol": [
+    {
+      "id": "ae993998-ba74-40cf-8ad2-eded4b0f793b",
+      "reference": null,
+      "currency": "sol",
+      "address": "Ff9pSX3iKe1SpSDFWJUw7Syy5cMts13c7MKTrkAxm6xQ",
+      "network": "solana",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:33.000Z",
+      "updated_at": "2026-02-07T12:48:33.000Z"
+    },
+    {
+      "id": "93d2d579-91dd-4c50-959c-4165413f974d",
+      "reference": null,
+      "currency": "sol",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "bep20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:34.000Z",
+      "updated_at": "2026-02-07T12:48:34.000Z"
+    }
+  ],
+  "link": [
+    {
+      "id": "f1311c94-fdef-4f6a-bf28-b53110d2c254",
+      "reference": null,
+      "currency": "link",
+      "address": "0xB054875c1EeC48D6eda63908074BF8C4E185CdEa",
+      "network": "bep20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:37.000Z",
+      "updated_at": "2026-02-07T12:48:37.000Z"
+    }
+  ],
+  "trx": [
+    {
+      "id": "efb4015d-2238-4ad7-996b-35a91fbaf5d6",
+      "reference": null,
+      "currency": "trx",
+      "address": "TFPCzjhFgEvmo1WBnDgrWC7qsLNuZcWcfi",
+      "network": "trc20",
+      "user": {
+        "id": "352bc58b-0625-4898-be61-ca3a8c9437e7",
+        "sn": "QDX6SURUGWW",
+        "email": "okwudiliamaechi2020@gmail.com",
+        "reference": null,
+        "first_name": "Chidi",
+        "last_name": "Mwabekeyi",
+        "display_name": null,
+        "created_at": "2026-02-07T12:47:04.000Z",
+        "updated_at": "2026-02-07T12:47:04.000Z"
+      },
+      "destination_tag": null,
+      "total_payments": null,
+      "created_at": "2026-02-07T12:48:40.000Z",
+      "updated_at": "2026-02-07T12:48:40.000Z"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+model UserDailyPercentage {
+  id                     String   @id @default(cuid())
+  userId                 String
+  percentChangeYesterday Decimal  @default(0) @db.Decimal(10, 2)
+  previousTotal          Decimal  @default(0) @db.Decimal(20, 2)
+  netChange              Decimal  @default(0) @db.Decimal(20, 2)
+  calculatedAt           DateTime @default(now())
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@unique([userId, calculatedAt])
+  @@index([userId])
+  @@index([calculatedAt])
+  @@map("user_daily_percentages")
+}

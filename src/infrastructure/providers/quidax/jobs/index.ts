@@ -1,0 +1,1 @@
+export * from './quidax-ticker.service'

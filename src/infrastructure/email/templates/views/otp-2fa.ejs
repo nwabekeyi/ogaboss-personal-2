@@ -1,0 +1,16 @@
+<div style="margin:24px 0;">
+  <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+    <tr>
+      <td style="background:#eff6ff;border:2px solid #bfdbfe;border-radius:12px;padding:28px 16px;text-align:center;">
+        <p style="margin:0 0 8px;font-size:12px;color:#3b82f6;text-transform:uppercase;letter-spacing:1.5px;font-weight:600;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">Your 2FA code</p>
+        <p style="margin:0;font-size:36px;font-weight:800;letter-spacing:8px;color:#1d4ed8;font-family:'Courier New',Courier,monospace;"><%= otp %></p>
+      </td>
+    </tr>
+  </table>
+  <p style="margin:16px 0 0;font-size:14px;color:#64748b;text-align:center;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    This code expires in <strong style="color:#1d4ed8;"><%= timeLeft %> minutes</strong>
+  </p>
+  <% if (warning) { %>
+  <p style="margin:12px 0 0;font-size:13px;color:#94a3b8;text-align:center;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"><%= warning %></p>
+  <% } %>
+</div>

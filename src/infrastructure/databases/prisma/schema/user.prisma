@@ -1,0 +1,53 @@
+model User {
+  id                    String             @id @default(cuid())
+  firstName             String?
+  lastName              String?
+  email                 String             @unique
+  userType              UserType           @default(INDIVIDUAL)
+  pin                   String?
+  isEmailVerified       Boolean            @default(false)
+  kycVerificationStatus VerificationStatus @default(NOT_VERIFIED)
+  avatar                String?            @default("https://ik.imagekit.io/o59kpgo8iz/Backbone/user%20images/default_user.jpg?updatedAt=1718689050953")
+  country               String?
+  dateOfBirth           DateTime?
+  gender                Gender?
+  phoneNumber           String?
+  residentialAddress    String?
+  quidaxAccountId       String?            @unique
+  quidaxSnId            String?            @unique
+  tier                  AccountTier?       @default(TIER_1)
+  isTwoFactorEnabled    Boolean            @default(false)
+  loginWithPin          Boolean            @default(true)
+  loginWithBiometric    Boolean            @default(false)
+  hideAccountOnLogin    Boolean            @default(false)
+  displayCurrency       Currency           @default(NGN)
+  accountActivityAlert  Boolean            @default(false)
+  transactionAlert      Boolean            @default(false)
+  appUpdates            Boolean            @default(false)
+  maintenanceAlert      Boolean            @default(false)
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  status                Status?            @default(PENDING)
+  flaggedReason         String?
+  refreshToken          String?
+  amountSent            Decimal            @default(0) @db.Decimal(78, 0)
+  amountReceived        Decimal            @default(0) @db.Decimal(78, 0)
+  amountBought          Decimal            @default(0) @db.Decimal(78, 0)
+  amountSold            Decimal            @default(0) @db.Decimal(78, 0)
+  KycVerification       KycVerification?
+  PaymentCards          PaymentCard[]
+  Token                 Token[]
+  Transaction           Transaction[]
+  UserBankAccount       UserBankAccount[]
+  Wallet                Wallet[]
+  Order                 Order[]
+  Deposit               Deposit[]
+  Withdrawal            Withdrawal[]
+  Webhook               Webhook[]
+  Vault                 Vault[]
+  AutoStack             AutoStack[]
+
+  @@index([email])
+  @@index([quidaxAccountId])
+  @@map("users")
+}

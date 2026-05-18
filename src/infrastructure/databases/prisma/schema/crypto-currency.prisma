@@ -1,0 +1,34 @@
+model CryptoCurrency {
+  id                   String       @id @default(cuid())
+  name                 String
+  symbol               String       @unique
+  logoUrl              String?
+  description          String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  defaultBufferPercent Decimal      @default(0) @db.Decimal(5, 2)
+  maxBufferPercent     Decimal      @default(0) @db.Decimal(5, 2)
+  buffer_tiers         BufferTier[]
+  orders               Order[]
+  rate                 CryptoCurrencyRate?
+  vaults               Vault[]
+  autoStacks           AutoStack[]
+  wallets              Wallet[]
+
+  @@index([symbol])
+  @@map("cryptocurrencies")
+}
+
+model BufferTier {
+  id               String          @id @default(cuid())
+  cryptoId         String?
+  orderType        String?
+  createdat        DateTime        @default(now()) @db.Timestamp(6)
+  updatedat        DateTime        @default(now()) @db.Timestamp(6)
+  minAmount        Decimal?        @db.Decimal(78, 0)
+  maxAmount        Decimal?        @db.Decimal(78, 0)
+  bufferPercent    Decimal?        @db.Decimal(5, 2)
+  cryptocurrencies CryptoCurrency? @relation(fields: [cryptoId], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "buffer_tiers_cryptoid_fkey")
+
+  @@map("buffer_tiers")
+}

@@ -1,0 +1,17 @@
+model UserDeviceToken {
+  id         String         @id @default(cuid())
+  userId     String
+  token      String
+  platform   DevicePlatform
+  deviceName String?
+  deviceId   String?
+  isActive   Boolean        @default(true)
+  lastUsedAt DateTime       @default(now())
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@unique([userId, token])
+  @@index([userId])
+  @@index([token])
+  @@map("user_device_tokens")
+}

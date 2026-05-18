@@ -1,0 +1,27 @@
+model Webhook {
+  id                String        @id @default(cuid())
+  provider          String
+  eventType         String
+  idempotencyKey    String        @unique
+  payload           Json
+  isProcessed       Boolean       @default(false)
+  status            WebhookStatus @default(pending)
+  failedReason      String?
+  isResolved        Boolean       @default(false)
+  resolvedAt        DateTime?
+  resolutionComment String?
+  resolvedBy        String?
+  resolvedByAdmin   Admin?        @relation("AdminResolvedWebhooks", fields: [resolvedBy], references: [id], onDelete: SetNull)
+  processedAt       DateTime      @default(now())
+  createdAt         DateTime      @default(now())
+  userId            String?
+  user              User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([provider, eventType])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([isProcessed, createdAt])
+  @@index([status])
+  @@index([status, isResolved])
+  @@index([resolvedBy])
+}
