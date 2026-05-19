@@ -192,27 +192,47 @@ export class SwapService {
     }
 
     // ============================================
-    // STEP 2: CHECK COMPANY LIQUIDITY
+    // STEP 2: CREATE TRANSACTION ROW + CHECK COMPANY LIQUIDITY
     // ============================================
+    const pendingTransaction = await this.prisma.transaction.create({
+      data: {
+        userId,
+        fromCurrency: q.from,
+        toCurrency: q.to,
+        currency: q.from,
+        network: fromNet || null,
+        transactionContext: TransactionContext.SWAP,
+        transactionType: TransactionType.DEBIT,
+        transactionUniqueId: quoteId,
+        cryptoAmountBase: toDecimal(exactFromMinor),
+        cryptoAmountOriginal: fromAmountHuman,
+        platformFeeBase: toDecimal(platformFeeMinor),
+        platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
+        totalAmountSentBase: toDecimal(reservedAmount),
+        totalAmountSentOriginal: ConvertCurrency.fromBase(reservedAmount, q.from, fromNet),
+        fiatAmountBase: toDecimal(0n),
+        fiatAmountOriginal: '0',
+        status: TransactionStatus.PENDING,
+        isProcessed: false,
+        description: `Swap: ${q.from} → ${q.to}`,
+      },
+    });
+
     const availableLiquidity = await this.companyLiquidityService.getAvailableLiquidity(q.from);
     const hasSufficientLiquidity = availableLiquidity >= exactFromMinor;
 
     if (!hasSufficientLiquidity) {
-      // Record the failure before returning — include complete swap pair so
-      // ops can see from/to tokens and restart the transaction without guesswork.
-      await this.prisma.$transaction(async (tx) => {
-        await tx.failedCompanyLiquidityTransaction.create({
-          data: {
-            transactionId: 'none',
-            transactionType: 'SWAP',
-            fromCurrency: q.from,
-            toCurrency: q.to,
-            amountOriginal: fromAmountHuman,
-            currency: q.from,
-            amountBase: exactFromMinor.toString(),
-            providerResponse: { reason: 'Insufficient company liquidity' },
-          },
-        });
+      await this.prisma.failedCompanyLiquidityTransaction.create({
+        data: {
+          transactionId: pendingTransaction.id,
+          transactionType: 'SWAP',
+          fromCurrency: q.from,
+          toCurrency: q.to,
+          amountOriginal: fromAmountHuman,
+          currency: q.from,
+          amountBase: exactFromMinor.toString(),
+          providerResponse: { reason: 'Insufficient company liquidity' },
+        },
       });
       await this.tempStore.del(`swap:${quoteId}`);
       return {
@@ -265,28 +285,12 @@ export class SwapService {
 
     try {
       const result = await this.prisma.$transaction(async (tx) => {
-        const transaction = await tx.transaction.create({
+        const transaction = await tx.transaction.update({
+          where: { id: pendingTransaction.id },
           data: {
-            userId,
-            fromCurrency: q.from,
-            toCurrency: q.to,
-            currency: q.from,
-            network: fromNet || null,
-            transactionContext: TransactionContext.SWAP,
-            transactionType: TransactionType.DEBIT,
             transactionUniqueId: confirmedSwap.id,
-            cryptoAmountBase: toDecimal(exactFromMinor),
             cryptoAmountOriginal: confirmedSwap.from_amount,
-            platformFeeBase: toDecimal(platformFeeMinor),
-            platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
-            totalAmountSentBase: toDecimal(reservedAmount),
-            totalAmountSentOriginal: ConvertCurrency.fromBase(reservedAmount, q.from, fromNet),
-            fiatAmountBase: toDecimal(0n),
-            fiatAmountOriginal: '0',
-            status: TransactionStatus.PENDING,
-            isProcessed: false,
             executionPrice: confirmedSwap.execution_price,
-            description: `Swap: ${q.from} → ${q.to}`,
           },
         });
 

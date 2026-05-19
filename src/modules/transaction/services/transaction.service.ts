@@ -10,6 +10,7 @@ import { CreatedTransaction, CreateTransactionParams } from './types';
 import { toBigInt, toDecimal, Decimalish } from '../../../shared';
 import { QuidaxTickerService } from '../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import Decimal from 'decimal.js';
+import { CompanyLiquidityService } from './company-liquidity.service';
 
 @Injectable()
 export class TransactionService {
@@ -17,7 +18,12 @@ export class TransactionService {
     private readonly prisma: PrismaService,
     private readonly tempStore: TempStoreService,
     private readonly quidaxTickerService: QuidaxTickerService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
   ) {}
+
+  async syncCompanyLiquidityCache(): Promise<void> {
+    await this.companyLiquidityService.syncAllToCache();
+  }
 
   async getQuidaxUserId(userId: string): Promise<string> {
     const user = await this.prisma.user.findUnique({

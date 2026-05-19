@@ -798,6 +798,8 @@ export class PaystackWebhookHandler {
         `Failed to queue dashboard stats for sell payout ${transaction.id}: ${error?.message}`,
       );
     }
+
+    await this.transactionService.syncCompanyLiquidityCache();
   }
 
   private async handleTransferFailure(

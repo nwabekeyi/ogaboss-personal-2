@@ -22,6 +22,7 @@ import {
   LiquidityReservationStatus,
   toBigInt,
 } from '../../../shared';
+import { TransactionService } from './transaction.service';
 
 @Injectable()
 export class FailedCompanyLiquidityService {
@@ -34,6 +35,7 @@ export class FailedCompanyLiquidityService {
     private readonly quidaxSwapService: QuidaxSwapService,
     private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
     private readonly paystackService: PaystackService,
+    private readonly transactionService: TransactionService,
   ) {}
 
   async getPending(limit = 100) {
@@ -121,7 +123,7 @@ export class FailedCompanyLiquidityService {
     if (txRecord.transactionContext === TransactionContext.SELL) {
       success = await this.resumeSell(txRecord.id);
     } else if (txRecord.transactionContext === TransactionContext.SWAP) {
-      success = await this.resumeSwap(txRecord.id);
+      success = await this.resumeSwap(failed, txRecord.id);
     } else if (txRecord.transactionContext === TransactionContext.WITHDRAWAL) {
       success = await this.resumeWithdrawal(txRecord.id);
     } else if (txRecord.transactionContext === TransactionContext.BUY) {
@@ -198,7 +200,7 @@ export class FailedCompanyLiquidityService {
     return true;
   }
 
-  private async resumeSwap(transactionId: string) {
+  private async resumeSwap(failed: any, transactionId: string) {
     const tx = await this.prisma.transaction.findUnique({
       where: { id: transactionId },
     });
@@ -206,18 +208,33 @@ export class FailedCompanyLiquidityService {
       where: { quoteId: tx?.transactionUniqueId, userId: tx?.userId },
       orderBy: { createdAt: 'desc' },
     });
-    if (!tx || !swap) return false;
+    if (!tx || !swap || !failed.fromCurrency || !failed.toCurrency) return false;
 
     const quotationRes = await this.quidaxSwapService.createInstantSwapRequest(
       'me',
       {
-        from_currency: swap.fromCurrency.toLowerCase(),
-        to_currency: swap.toCurrency.toLowerCase(),
+        from_currency: failed.fromCurrency.toLowerCase(),
+        to_currency: failed.toCurrency.toLowerCase(),
         from_amount: swap.amountOriginal,
       },
     );
 
     if (!quotationRes?.data?.id) return false;
+    if (swap.quotedPriceOriginal) {
+      try {
+        await this.transactionService.checkPriceSlippage(
+          failed.fromCurrency,
+          failed.toCurrency,
+          swap.quotedPriceOriginal,
+          false,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Swap retry slippage guard triggered for ${transactionId}: ${error?.message || 'slippage check failed'}`,
+        );
+        return false;
+      }
+    }
 
     const confirmRes = await this.quidaxSwapService.confirmInstantSwap({
       user_id: 'me',

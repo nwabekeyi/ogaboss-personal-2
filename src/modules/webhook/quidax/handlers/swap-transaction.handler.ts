@@ -15,6 +15,7 @@ import {
 } from '../../../../shared';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import { CompanyLiquidityService } from '../../../../modules/transaction/services/company-liquidity.service';
+import { TransactionService } from '../../../../modules/transaction/services/transaction.service';
 import { QuidaxSwapService } from '../../../../infrastructure/providers/quidax';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import Decimal from 'decimal.js';
@@ -33,6 +34,7 @@ export class SwapTransactionHandler {
    private readonly dashboardStatsQueueService: DashboardStatsQueueService,
    private readonly transactionNotificationService: TransactionNotificationService,
    private readonly tickerService: QuidaxTickerService,
+   private readonly transactionService: TransactionService,
  ) {}
 
  private async withRetry<T>(
@@ -733,6 +735,10 @@ export class SwapTransactionHandler {
      this.logger.error(
        `Dashboard queue failed for swap ${swapId}: ${err.message}`,
      );
+   }
+
+   if (event === 'swap_transaction.completed') {
+     await this.transactionService.syncCompanyLiquidityCache();
    }
  }
 }

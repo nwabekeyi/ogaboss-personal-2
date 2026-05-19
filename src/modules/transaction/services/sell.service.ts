@@ -13,6 +13,7 @@ import {
    PrismaService,
    TransactionStatus as TxStatus,
  } from '../../../infrastructure/databases/prisma';
+ import { RedisService } from '../../../infrastructure';
  import { QuotationService } from './quotation.service';
  import {
    QuidaxOrderService,
@@ -24,12 +25,14 @@ import {
    TransactionContext,
    TransactionStatus,
  } from '../../../infrastructure/databases/prisma';
- import {
-   BASE_CURRENCY,
-   ConvertCurrency,
-   CryptoNetwork,
-   LiquidityReservationStatus,
- } from '../../../shared';
+  import {
+    BASE_CURRENCY,
+    COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY,
+   COMPANY_PAYSTACK_NGN_WALLET_ID,
+    ConvertCurrency,
+    CryptoNetwork,
+    LiquidityReservationStatus,
+   } from '../../../shared';
  import { TransactionService } from './transaction.service';
  import { CompanyLiquidityService } from './company-liquidity.service';
  import { ISellQuote } from './types';
@@ -45,6 +48,7 @@ export class SellService {
     private readonly quotationService: QuotationService,
     private readonly transactionService: TransactionService,
     private readonly companyLiquidityService: CompanyLiquidityService,
+    private readonly redisService: RedisService,
     private readonly quidaxOrderService: QuidaxOrderService,
     private readonly transactionNotificationService: TransactionNotificationService,
 
@@ -358,6 +362,92 @@ export class SellService {
     }
 
     if (result.queued) {
+      await this.quotationService.deleteQuote(previewId);
+      return {
+        success: true,
+        message: 'Sell order is queued for processing',
+        data: {
+          previewId,
+          sold: cryptoOriginal.toString(),
+          currency: quote.crypto,
+          estimatedNgnCredit: estimatedNgn.toString(),
+          ngnCurrency: quote.fiatCurrency || BASE_CURRENCY.toUpperCase(),
+        },
+      };
+    }
+
+    // Confirm Paystack liquidity from scheduler-synced company_liquidity record
+    // dedicated to paystack balance, reading from Redis cache first.
+    const paystackLiquidityCache = await this.redisService.get<{
+      id: string;
+      totalBalance: string;
+      reservedBalance?: string;
+    }>(COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY);
+
+    const totalPaystackLiquidityBase =
+      paystackLiquidityCache?.id === COMPANY_PAYSTACK_NGN_WALLET_ID
+        ? BigInt(paystackLiquidityCache.totalBalance || '0')
+        : 0n;
+    const paystackReservedLiquidityBase = BigInt(
+      paystackLiquidityCache?.reservedBalance || '0',
+    );
+
+    const availablePaystackLiquidityBase =
+      totalPaystackLiquidityBase - paystackReservedLiquidityBase;
+    if (availablePaystackLiquidityBase < netFiatBase) {
+      await this.prisma.$transaction(async (tx) => {
+        await this.companyLiquidityService.releaseLiquidity(
+          BASE_CURRENCY,
+          netFiatBase,
+          tx,
+        );
+
+        await tx.failedCompanyLiquidityTransaction.upsert({
+          where: { transactionId: result.transaction.id },
+          update: {
+            transactionType: TransactionContext.SELL,
+            fromCurrency: quote.crypto,
+            toCurrency: quote.fiatCurrency || BASE_CURRENCY.toUpperCase(),
+            amountOriginal: estimatedNgn.toString(),
+            currency: BASE_CURRENCY,
+            amountBase: netFiatBase.toString(),
+            providerResponse: {
+              reason: 'Insufficient Paystack liquidity for sell payout',
+              availablePaystackLiquidityBase:
+                availablePaystackLiquidityBase.toString(),
+              requiredAmountBase: netFiatBase.toString(),
+            },
+          },
+          create: {
+            transactionId: result.transaction.id,
+            transactionType: TransactionContext.SELL,
+            fromCurrency: quote.crypto,
+            toCurrency: quote.fiatCurrency || BASE_CURRENCY.toUpperCase(),
+            amountOriginal: estimatedNgn.toString(),
+            currency: BASE_CURRENCY,
+            amountBase: netFiatBase.toString(),
+            providerResponse: {
+              reason: 'Insufficient Paystack liquidity for sell payout',
+              availablePaystackLiquidityBase:
+                availablePaystackLiquidityBase.toString(),
+              requiredAmountBase: netFiatBase.toString(),
+            },
+          },
+        });
+
+        await tx.transaction.update({
+          where: { id: result.transaction.id },
+          data: {
+            paymentMetadata: {
+              ...((result.transaction.paymentMetadata as Record<string, any>) ||
+                {}),
+              liquidityReservationStatus: LiquidityReservationStatus.INSUFFICIENT,
+              providerLiquiditySource: 'paystack',
+            },
+          },
+        });
+      });
+
       await this.quotationService.deleteQuote(previewId);
       return {
         success: true,

@@ -19,6 +19,7 @@ import { QuidaxWithdrawalService } from '../../../../infrastructure/providers/qu
 import { QuidaxWalletService } from '../../../../infrastructure/providers/quidax/wallet.service';
 import {
   CompanyLiquidityService,
+  TransactionService,
   TransactionNotificationService,
 } from '../../../../modules/transaction/services';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
@@ -34,6 +35,7 @@ export class WithdrawalWebhookHandler {
     private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
     private readonly quidaxWalletService: QuidaxWalletService,
     private readonly companyLiquidityService: CompanyLiquidityService,
+    private readonly transactionService: TransactionService,
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly tickerService: QuidaxTickerService,
   ) {}
@@ -411,6 +413,9 @@ export class WithdrawalWebhookHandler {
             `Failed to send notification for withdrawal ${reference}: ${notifyErr?.message}`,
           );
         }
+      }
+      if (event === 'withdraw.successful') {
+        await this.transactionService.syncCompanyLiquidityCache();
       }
     } catch (error: any) {
       if (isTransientPrismaError(error)) {
