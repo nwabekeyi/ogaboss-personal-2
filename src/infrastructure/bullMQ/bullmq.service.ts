@@ -36,6 +36,15 @@ export class QueueService {
     removeOnFail: 1000,
   };
 
+
+  private sanitizeJobId(jobId: string): string {
+    if (!jobId.includes(':')) return jobId;
+
+    const sanitized = jobId.replace(/:/g, '-');
+    this.logger.warn(`Sanitized BullMQ jobId to remove invalid ":" characters | original: ${jobId} | sanitized: ${sanitized}`);
+    return sanitized;
+  }
+
   private getQueue(name: QueueName): Queue {
     switch (name) {
       case QueueName.EMAIL:
@@ -77,7 +86,7 @@ export class QueueService {
     try {
 
       const queue = this.getQueue(queueName);
-      const jobId = opts.jobId ?? uuidv4();
+      const jobId = this.sanitizeJobId(String(opts.jobId ?? uuidv4()));
       
       const jobOptions: JobsOptions = {
         ...this.defaultJobOptions,
@@ -104,7 +113,7 @@ export class QueueService {
       const addedJobs: Job[] = [];
       
       for (const job of jobs) {
-        const jobId = job.opts?.jobId ?? uuidv4();
+        const jobId = this.sanitizeJobId(String(job.opts?.jobId ?? uuidv4()));
         const jobOptions: JobsOptions = {
           ...this.defaultJobOptions,
           ...job.opts,
