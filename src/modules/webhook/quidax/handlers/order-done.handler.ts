@@ -704,5 +704,9 @@ export class OrderDoneHandler {
     this.logger.log(
       `${isBuy ? 'Buy' : 'Sell'} order executed for user ${transaction.userId}, order ID: ${order.id}`,
     );
+
+    if (isBuy) {
+      await this.transactionService.syncCompanyLiquidityCache();
+    }
   }
 }

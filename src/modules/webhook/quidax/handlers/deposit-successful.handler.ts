@@ -26,6 +26,7 @@ import { Prisma } from '../../../../infrastructure/databases/prisma/generated/pr
 import Decimal from 'decimal.js';
 import { Company_withdrawal_type } from '../../../../shared';
 import { TransactionNotificationService } from '../../../../modules/transaction/services';
+import { TransactionService } from '../../../../modules/transaction/services/transaction.service';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import { CompanyLiquidityService } from '../../../../modules/transaction/services/company-liquidity.service';
 
@@ -41,6 +42,7 @@ export class DepositSuccessfulHandler {
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly tickerService: QuidaxTickerService,
     private readonly companyLiquidityService: CompanyLiquidityService,
+    private readonly transactionService: TransactionService,
   ) {}
 
   async process(data: any): Promise<void> {
@@ -417,5 +419,7 @@ export class DepositSuccessfulHandler {
         `Failed to queue dashboard stats for deposit ${providerDepositId}: ${error?.message}`,
       );
     }
+
+    await this.transactionService.syncCompanyLiquidityCache();
   }
 }

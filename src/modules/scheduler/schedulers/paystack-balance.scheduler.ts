@@ -1,10 +1,11 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron} from '@nestjs/schedule';
-import { PrismaService } from '../../../infrastructure';
+import { PrismaService, RedisService } from '../../../infrastructure';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { ConvertCurrency } from '../../../shared';
 import {
   BASE_CURRENCY,
+  COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY,
   COMPANY_PAYSTACK_NGN_WALLET_ID,
 } from '../../../shared/constants';
 
@@ -15,6 +16,7 @@ export class CompanyPaystackScheduler implements OnModuleInit {
   constructor(
     private readonly paystackService: PaystackService,
     private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
   ) {}
 
   /** Run once at startup */
@@ -55,7 +57,7 @@ export class CompanyPaystackScheduler implements OnModuleInit {
         BASE_CURRENCY,
       ).toString();
 
-      await this.prisma.companyLiquidity.upsert({
+      const paystackLiquidity = await this.prisma.companyLiquidity.upsert({
         where: { id: COMPANY_PAYSTACK_NGN_WALLET_ID },
         update: {
           totalBalance: totalBalanceBase,
@@ -67,6 +69,14 @@ export class CompanyPaystackScheduler implements OnModuleInit {
           reservedBalance: '0',
           currency: BASE_CURRENCY,
         },
+      });
+
+      await this.redisService.set(COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY, {
+        id: COMPANY_PAYSTACK_NGN_WALLET_ID,
+        currency: BASE_CURRENCY,
+        totalBalance: paystackLiquidity.totalBalance.toString(),
+        reservedBalance: paystackLiquidity.reservedBalance.toString(),
+        updatedAt: new Date().toISOString(),
       });
     } catch (error) {
       this.logger.error('Failed syncing Paystack liquidity', error);
