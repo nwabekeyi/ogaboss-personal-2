@@ -193,7 +193,7 @@ export class BuyService {
       await this.transactionService.checkPriceSlippage(
         quote.crypto,
         quote.fiatCurrency,
-        quote.bufferedPriceMinor,
+        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
         true // isBuy
       );
 

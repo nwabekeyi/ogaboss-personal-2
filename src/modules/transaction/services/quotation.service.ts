@@ -58,10 +58,19 @@ export class QuotationService {
   private async validateMinimumAmount(
     fiatValue: Decimal,
     cryptoSymbol: string,
+    cryptoAmount?: Decimal,
   ): Promise<void> {
     const usdtNgnPrice = await this.tickerService.getPrice('usdtngn');
     if (!usdtNgnPrice || parseFloat(usdtNgnPrice) <= 0) {
       throw new NotFoundException('No valid USDT/NGN price available');
+    }
+
+    if (
+      cryptoSymbol.toUpperCase() === 'USDT' &&
+      cryptoAmount &&
+      cryptoAmount.gte(MIN_TRANSACTION_USDT)
+    ) {
+      return;
     }
 
     const minFiatValue = new Decimal(usdtNgnPrice).mul(MIN_TRANSACTION_USDT);
@@ -397,7 +406,7 @@ export class QuotationService {
      const netFiatDec = grossFiatDec.sub(platformFeeDec);
 
      // Validate the gross transaction amount (before platform fee deduction)
-     await this.validateMinimumAmount(grossFiatDec, symbol);
+     await this.validateMinimumAmount(grossFiatDec, symbol, new Decimal(amount));
 
     const marketPriceMinor = this.toMinorString(marketPriceDec, fiat.code);
     const bufferedPriceMinor = this.toMinorString(bufferedPriceDec, fiat.code);

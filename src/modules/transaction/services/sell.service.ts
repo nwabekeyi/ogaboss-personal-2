@@ -148,7 +148,7 @@ export class SellService {
       await this.transactionService.checkPriceSlippage(
         quote.crypto,
         quote.fiatCurrency,
-        quote.bufferedPriceMinor,
+        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
         false // isBuy (false for sell)
       );
 
