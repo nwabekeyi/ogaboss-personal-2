@@ -14,14 +14,14 @@ export class CircuitBreakerService implements OnModuleDestroy {
 
   private readonly defaultOptions: CircuitBreaker.Options = {
     timeout: 30000,
-    errorThresholdPercentage: 50,
+    errorThresholdPercentage: 100,
     rollingCountTimeout: 60000,
     rollingCountBuckets: 6,
-    volumeThreshold: 5,
+    volumeThreshold: 20,
     resetTimeout: 30000,
     errorFilter: (error: Error) => {
       if (error instanceof HttpServiceException) {
-        return error.status >= 500;
+        return error.status < 500;
       }
       return false;
     },

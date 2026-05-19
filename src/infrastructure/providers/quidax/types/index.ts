@@ -336,12 +336,13 @@ export interface ConfirmInstantSwapOptions {
 
 export type ConfirmInstantSwapRequestResponse = SwapTransaction;
 
-export interface RefreshInstantSwapOptions {
+export type RefreshInstantSwapOptions = {
     from_currency: string; //the currency you are swapping from
     to_currency: string; //the currency you are swapping to.
-    from_amount: string; //the amount you want to swap.
-    to_amount: string; //the amount you want to swap to.
-}
+} & (
+    { from_amount: string; to_amount?: never } |
+    { to_amount: string; from_amount?: never }
+);
 
 export type RefreshInstantSwapResponse = InstantSwapQuote;
 
