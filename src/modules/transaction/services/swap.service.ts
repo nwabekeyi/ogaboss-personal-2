@@ -12,7 +12,7 @@ import {
    TransactionType,
  } from '../../../infrastructure/databases/prisma';
  import { PreviewSwapDto, ConfirmSwapDto } from '../dto';
- import { ConvertCurrency, CryptoNetwork, toDecimal } from '../../../shared';
+ import { ConvertCurrency, CryptoNetwork } from '../../../shared';
  import Decimal from 'decimal.js';
  import { TransactionService } from './transaction.service';
   import { TempStoreService } from '../../../infrastructure/databases/redis/temp-store.service';
@@ -157,10 +157,8 @@ export class SwapService {
     const quidaxAccountId = await this.transactionService.getQuidaxUserId(userId);
 
     const fromAmountHuman = ConvertCurrency.fromBase(q.exactFromMinor, q.from, fromNet);
-    const toAmountHuman = ConvertCurrency.fromBase(q.estimatedOutMinor, q.to, toNet);
 
     const exactFromMinor = BigInt(q.exactFromMinor);
-    const estimatedToMinor = BigInt(q.estimatedOutMinor);
     const platformFeeMinor = BigInt(q.platformFeeMinor);
     const reservedAmount = exactFromMinor + platformFeeMinor;
 
@@ -191,68 +189,58 @@ export class SwapService {
     }
 
     // ============================================
-    // STEP 2: CREATE TRANSACTION ROW + CHECK COMPANY LIQUIDITY
+    // STEP 2: CREATE TRANSACTION + RESERVE BALANCES (atomic)
     // ============================================
-    const pendingTransaction = await this.prisma.transaction.create({
-      data: {
-        userId,
-        fromCurrency: q.from,
-        toCurrency: q.to,
-        currency: q.from,
-        network: fromNet || null,
-        transactionContext: TransactionContext.SWAP,
-        transactionType: TransactionType.DEBIT,
-        transactionUniqueId: quoteId,
-        cryptoAmountBase: toDecimal(exactFromMinor),
-        cryptoAmountOriginal: fromAmountHuman,
-        platformFeeBase: toDecimal(platformFeeMinor),
-        platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
-        totalAmountSentBase: toDecimal(reservedAmount),
-        totalAmountSentOriginal: ConvertCurrency.fromBase(reservedAmount, q.from, fromNet),
-        fiatAmountBase: toDecimal(0n),
-        fiatAmountOriginal: '0',
-        status: TransactionStatus.PENDING,
-        isProcessed: false,
-        description: `Swap: ${q.from} → ${q.to}`,
-      },
-    });
+    let pendingTransaction: any;
+    let companyLiquidityReserved = false;
 
-    const availableLiquidity = await this.companyLiquidityService.getAvailableLiquidity(q.from);
-    const hasSufficientLiquidity = availableLiquidity >= exactFromMinor;
-
-    if (!hasSufficientLiquidity) {
-      await this.prisma.failedCompanyLiquidityTransaction.create({
-        data: {
-          transactionId: pendingTransaction.id,
-          transactionType: 'SWAP',
-          fromCurrency: q.from,
-          toCurrency: q.to,
-          amountOriginal: fromAmountHuman,
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        pendingTransaction = await this.transactionService.createTransaction(tx, {
+          userId,
+          transactionUniqueId: quoteId,
+          network: fromNet || null,
           currency: q.from,
-          amountBase: exactFromMinor.toString(),
-          providerResponse: { reason: 'Insufficient company liquidity' },
-        },
+          cryptoAmountBase: exactFromMinor,
+          cryptoAmountOriginal: fromAmountHuman,
+          platformFeeBase: platformFeeMinor,
+          platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
+          fiatAmountBase: 0n,
+          fiatAmountOriginal: '0',
+          transactionType: TransactionType.DEBIT,
+          transactionContext: TransactionContext.SWAP,
+          status: TransactionStatus.PENDING,
+        });
+
+        await this.transactionService.reserveBalance(tx, userId, q.from, reservedAmount);
+        companyLiquidityReserved = await this.companyLiquidityService.reserveLiquidity(q.from, exactFromMinor, tx);
+
+        if (!companyLiquidityReserved) {
+          await tx.failedCompanyLiquidityTransaction.create({
+            data: {
+              transactionId: pendingTransaction.id,
+              transactionType: 'SWAP',
+              fromCurrency: q.from,
+              toCurrency: q.to,
+              amountOriginal: fromAmountHuman,
+              currency: q.from,
+              amountBase: exactFromMinor.toString(),
+              providerResponse: { reason: 'Insufficient company liquidity' },
+            },
+          });
+        }
       });
+    } catch (error: any) {
+      this.logger.error(`Balance/liquidity reservation failed: ${error.message}`, error.stack);
+      throw new BadRequestException('Cannot confrim swap at the moment. Please try again later');
+    }
+
+    if (!companyLiquidityReserved) {
       await this.tempStore.del(`swap:${quoteId}`);
       return {
         success: true,
         message: 'Swap request successful. Awaiting confirmation',
       };
-    }
-
-    // ============================================
-    // STEP 3: RESERVE BALANCES (both user and company)
-    // ============================================
-    try {
-      await this.prisma.$transaction(async (tx) => {
-        await this.transactionService.reserveBalance(tx, userId, q.from, reservedAmount);
-        // Company liquidity reservation works on the from-currency pool and
-        // uses the exact user input amount — not the estimated output.
-        await this.companyLiquidityService.reserveLiquidity(q.from, exactFromMinor, tx);
-      });
-    } catch (error: any) {
-      this.logger.error(`Balance reservation failed: ${error.message}`, error.stack);
-      throw new BadRequestException('Cannot confrim swap at the moment. Please try again later');
     }
 
     // ============================================
