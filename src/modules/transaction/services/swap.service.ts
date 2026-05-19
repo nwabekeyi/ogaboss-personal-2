@@ -173,7 +173,6 @@ export class SwapService {
         from_currency: q.from.toLowerCase(),
         to_currency: q.to.toLowerCase(),
         from_amount: fromAmountHuman,
-        to_amount: toAmountHuman,
       });
 
       const refreshedData = refreshResponse?.data;
