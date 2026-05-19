@@ -232,6 +232,9 @@ export class SwapService {
       });
     } catch (error: any) {
       this.logger.error(`Balance/liquidity reservation failed: ${error.message}`, error.stack);
+      if (error instanceof BadRequestException && error.message?.toLowerCase().includes('insufficient')) {
+        throw error;
+      }
       throw new BadRequestException('Cannot confrim swap at the moment. Please try again later');
     }
 
