@@ -21,6 +21,8 @@ import { QueueName } from '../../infrastructure/bullMQ';
 import { PrismaService } from '../../infrastructure';
 import { Providers } from '../../shared';
 import { backoff_retries, BackoffType, BackoffTypes } from './constant';
+import { ConfigService } from '@nestjs/config';
+import { XpresspayWebhookHandler } from './xpresspay/xpresspay-webhook.handler';
 
 @VersionedController(apiTags.webhook)
 export class WebhooksController {
@@ -32,6 +34,8 @@ export class WebhooksController {
     private readonly idempotencyService: WebhookIdempotencyService,
     private readonly usersService: UserService,
     private readonly prismaService: PrismaService,
+    private readonly configService: ConfigService,
+    private readonly xpresspayWebhookHandler: XpresspayWebhookHandler,
   ) {}
 
   private resolveQuidaxQueue(event: string): QueueName {
@@ -259,3 +263,13 @@ export class WebhooksController {
     return { received: true };
   }
 }
+
+
+  @Post('xpresspay')
+  @HttpCode(200)
+  async handleXpresspayWebhook(@Body() payload: any) {
+    const merchantId = Number(this.configService.get<string>('XPRESSPAY_MERCHANT_ID', '0'));
+    if (!payload || Number(payload.Merchant) !== merchantId) return { received: true };
+    await this.xpresspayWebhookHandler.process(payload);
+    return { received: true };
+  }
