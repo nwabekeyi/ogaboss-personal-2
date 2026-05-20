@@ -41,6 +41,7 @@ model Transaction {
   Withdrawals                        Withdrawal[]                        @relation("TransactionToWithdrawal")
   CompanyWithdrawals                 CompanyWithdrawal[]
   FailedCompanyLiquidityTransactions FailedCompanyLiquidityTransaction[]
+  billPayment                        BillPayment?
 
   @@index([senderWalletAddress])
   @@index([receiverWalletAddress])

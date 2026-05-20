@@ -27,6 +27,7 @@ import {
 } from '../../../../modules/transaction/services';
 import { PaystackService } from '../../../../infrastructure/providers/paystack';
 import { CompensatedError } from '../../compensated-error';
+import { XpresspayService } from '../../../../infrastructure/providers/xpresspay/xpresspay.service';
 import { backoff_retries } from '../../constant';
 
 @Injectable()
@@ -40,6 +41,7 @@ export class OrderDoneHandler {
     private readonly paystackService: PaystackService,
     private readonly transactionService: TransactionService,
     private readonly transactionNotificationService: TransactionNotificationService,
+    private readonly xpresspayService: XpresspayService,
   ) {}
 
   /**
@@ -637,6 +639,37 @@ export class OrderDoneHandler {
     // ────────────────────────────────────────────────
     // Common final step — notification + dashboard stats
     // ────────────────────────────────────────────────
+
+
+    // Billing hook: if this SELL belongs to bills flow, trigger xpress payment here
+    const billingMeta = (transaction.paymentMetadata || {}) as Record<string, any>;
+    if (billingMeta.billingFlow === true && billingMeta.billingStatus === 'PROCESSING') {
+      try {
+        const providerResponse = await this.xpresspayService.payBill({
+          amount: Number(billingMeta.billAmountNgn),
+          category: billingMeta.category,
+          billerCode: billingMeta.billerCode,
+          customerReference: billingMeta.customerReference,
+          productCode: billingMeta.productCode,
+          reference: transaction.id,
+        });
+
+        await this.prisma.$transaction([
+          this.prisma.transaction.update({ where: { id: transaction.id }, data: {
+            paymentMetadata: { ...billingMeta, billingStatus: 'PROCESSING', xpresspayResponse: providerResponse } as any,
+          } }),
+          this.prisma.billPayment.updateMany({ where: { transactionId: transaction.id }, data: { status: 'PROCESSING', providerResponse } }),
+        ]);
+      } catch (billingErr) {
+        await this.prisma.$transaction([
+          this.prisma.transaction.update({ where: { id: transaction.id }, data: {
+            paymentMetadata: { ...billingMeta, billingStatus: 'FAILED' } as any,
+            status: TransactionStatus.FAILED,
+          } }),
+          this.prisma.billPayment.updateMany({ where: { transactionId: transaction.id }, data: { status: 'FAILED' } }),
+        ]);
+      }
+    }
 
     // Send notification (buy is completed, sell is still PENDING)
     try {

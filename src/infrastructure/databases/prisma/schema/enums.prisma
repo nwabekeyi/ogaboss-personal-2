@@ -118,6 +118,7 @@ enum TransactionContext {
   CARD_REFUND
   SWAP
   VAULT_SWAP
+  BILL_PAYMENT
 }
 
 enum TransactionProcess {
@@ -228,4 +229,12 @@ enum AutoStackFrequency {
 enum AutoStackStatus {
   ACTIVE
   ENDED
+}
+
+
+enum BillPaymentStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
 }

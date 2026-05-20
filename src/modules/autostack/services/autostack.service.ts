@@ -17,9 +17,15 @@ export class AutoStackService {
     if (!['USDT', 'USDC'].includes(symbol)) throw new BadRequestException('Only USDT and USDC are allowed for autostack');
     if (!crypto.rate || crypto.rate.dailyRatePercent.toNumber() <= 0) throw new BadRequestException('Daily interest rate is not configured for this currency');
 
-    const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({ where: { currency: symbol, isActive: true } });
-    const feePercent = feeSetting?.feePercent?.toNumber() || 0;
-    const txFee = (dto.amount * feePercent) / 100;
+    const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({
+      where: {
+        currency: symbol,
+        fromAmount: { lte: dto.amount },
+        toAmount: { gte: dto.amount },
+      },
+      orderBy: { fromAmount: 'desc' },
+    });
+    const txFee = feeSetting?.feeAmount?.toNumber() || 0;
     const amountToReceive = dto.amount - txFee;
 
     return { success: true, data: { frequency: dto.frequency, planName: dto.planName, transactionFee: txFee.toFixed(8), amountToReceive: amountToReceive.toFixed(8) } };
