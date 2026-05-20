@@ -106,17 +106,33 @@ export class BillsService {
         status: 'PENDING', provider: 'xpresspay', providerValidation: quote.providerValidation,
       }});
 
+      await tx.order.create({ data: {
+        transactionId: transaction.id,
+        userId,
+        cryptoAmountBase: totalMinor.toString(),
+        cryptoAmountOriginal: String(quote.totalToPay),
+        fiatAmountBase: netFiatBase.toString(),
+        fiatAmountOriginal: String(quote.billAmountNgn),
+        fiatCurrency: 'NGN',
+        status: 'PENDING' as any,
+        type: 'SELL' as any,
+        referenceNo: transaction.transactionUniqueId,
+        paymentStatus: 'PENDING' as any,
+        paymentAmountBase: netFiatBase.toString(),
+        paymentAmountOriginal: String(quote.billAmountNgn),
+      }});
+
       return { transaction, billPayment };
     });
 
     try {
       const orderResponse = await this.quidaxOrderService.buyOrSellOrderRequest(QUIDAX_COMPANY_USERID, { market: 'usdtngn', side: 'sell', ord_type: 'market', volume: Number(quote.cryptoAmount) } as any);
-      if (orderResponse.status !== 'success') throw new BadRequestException('Failed to place sell order');
+      if (orderResponse.status !== 'success') throw new BadRequestException('Something went wrong, try again later.');
       await this.prisma.$transaction([
         this.prisma.transaction.update({ where: { id: transaction.id }, data: {
           paymentMetadata: {
             billingFlow: true,
-            billingStatus: 'WAITING_SELL_WEBHOOK',
+            billingStatus: 'PROCESSING',
             quoteId: dto.quoteId,
             category: quote.category,
             billerCode: quote.billerCode,
@@ -126,7 +142,7 @@ export class BillsService {
             quidaxOrderReference: orderResponse.data.reference || orderResponse.data.id,
           }
         } }),
-        this.prisma.billPayment.update({ where: { id: billPayment.id }, data: { status: 'WAITING_SELL_WEBHOOK' } }),
+        this.prisma.billPayment.update({ where: { id: billPayment.id }, data: { status: 'PROCESSING' } }),
       ]);
       await this.tempStore.del(`${BILL_QUOTE_KEY_PREFIX}${dto.quoteId}`);
       return { success: true, message: 'Bill sell order submitted. Awaiting Quidax webhook to complete billing.', data: { reference: transaction.transactionUniqueId } };
