@@ -46,6 +46,7 @@ model User {
   Webhook               Webhook[]
   Vault                 Vault[]
   AutoStack             AutoStack[]
+  BillPayment           BillPayment[]
 
   @@index([email])
   @@index([quidaxAccountId])

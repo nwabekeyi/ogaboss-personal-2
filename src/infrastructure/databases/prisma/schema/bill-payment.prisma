@@ -1,0 +1,27 @@
+model BillPayment {
+  id                 String   @id @default(cuid())
+  userId             String
+  walletId           String
+  transactionId      String?  @unique
+  provider           String   @default("xpresspay")
+  category           String
+  billerCode         String
+  customerReference  String
+  productCode        String?
+  walletCurrency     String
+  amountBase         Decimal  @db.Decimal(78, 0)
+  amountOriginal     String
+  status             String   @default("PENDING")
+  providerValidation Json?
+  providerResponse   Json?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user         User        @relation(fields: [userId], references: [id])
+  wallet       Wallet      @relation(fields: [walletId], references: [id])
+  transaction  Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([userId, status])
+  @@index([walletId])
+  @@map("bill_payments")
+}

@@ -1,11 +1,18 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Min } from 'class-validator';
+
+export enum BillCategoryDto {
+  AIRTIME = 'airtime',
+  TV_SUBSCRIPTION = 'tv_subscription',
+  DATA = 'data',
+  ELECTRICITY = 'electricity',
+  BETTING = 'betting',
+}
 
 export class ValidateBillDto {
-  @ApiProperty({ example: 'electricity' })
-  @IsString()
-  @IsNotEmpty()
-  category: string;
+  @ApiProperty({ enum: BillCategoryDto, example: BillCategoryDto.ELECTRICITY })
+  @IsEnum(BillCategoryDto)
+  category: BillCategoryDto;
 
   @ApiProperty({ example: 'eko-electric' })
   @IsString()
@@ -23,7 +30,7 @@ export class ValidateBillDto {
   amount: number;
 }
 
-export class PayBillDto extends ValidateBillDto {
+export class BillPaymentPreviewDto extends ValidateBillDto {
   @ApiProperty({ example: 'USDT' })
   @IsString()
   @IsNotEmpty()
@@ -33,4 +40,16 @@ export class PayBillDto extends ValidateBillDto {
   @IsOptional()
   @IsString()
   productCode?: string;
+}
+
+export class BillPaymentConfirmDto {
+  @ApiProperty({ example: 'cm123previewid' })
+  @IsString()
+  @IsNotEmpty()
+  previewId: string;
+
+  @ApiProperty({ example: '123456' })
+  @IsString()
+  @IsNotEmpty()
+  pin: string;
 }
