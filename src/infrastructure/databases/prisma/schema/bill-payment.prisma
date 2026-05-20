@@ -11,7 +11,7 @@ model BillPayment {
   walletCurrency     String
   amountBase         Decimal  @db.Decimal(78, 0)
   amountOriginal     String
-  status             String   @default("PENDING")
+  status             BillPaymentStatus   @default(PENDING)
   providerValidation Json?
   providerResponse   Json?
   createdAt          DateTime @default(now())

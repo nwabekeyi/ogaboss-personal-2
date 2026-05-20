@@ -4,7 +4,7 @@ import { AuthenticatedRequest } from '../../common';
 import { AuthGuard, HttpExceptionInterceptor } from '../../core';
 import { VersionedController } from '../../core/decorators';
 import { BillsService } from './bills.service';
-import { BillCategoryDto, BillPaymentConfirmDto, BillPaymentPreviewDto, ValidateBillDto } from './dto/bills.dto';
+import { BillPaymentConfirmDto, BillQuoteDto, ValidateBillDto } from './dto/bills.dto';
 
 @ApiTags('Bills')
 @ApiBearerAuth('Bearer')
@@ -15,8 +15,8 @@ export class BillsController {
   constructor(private readonly billsService: BillsService) {}
 
   @Get('categories') categories() { return this.billsService.categories(); }
-  @Get('billers') billers(@Query('category') category: BillCategoryDto) { return this.billsService.billers(category); }
+  @Get('billers') billers(@Query('categoryId') categoryId: string) { return this.billsService.billers(categoryId); }
   @Post('validate') validate(@Body() dto: ValidateBillDto) { return this.billsService.validate(dto); }
-  @Post('preview') preview(@Req() req: AuthenticatedRequest, @Body() dto: BillPaymentPreviewDto) { return this.billsService.preview(req.user.id, dto); }
+  @Post('quote') quote(@Req() req: AuthenticatedRequest, @Body() dto: BillQuoteDto) { return this.billsService.quote(req.user.id, dto); }
   @Post('confirm') confirm(@Req() req: AuthenticatedRequest, @Body() dto: BillPaymentConfirmDto) { return this.billsService.confirm(req.user.id, dto); }
 }

@@ -10,9 +10,10 @@ export enum BillCategoryDto {
 }
 
 export class ValidateBillDto {
-  @ApiProperty({ enum: BillCategoryDto, example: BillCategoryDto.ELECTRICITY })
-  @IsEnum(BillCategoryDto)
-  category: BillCategoryDto;
+  @ApiProperty({ example: 'cat_electricity' })
+  @IsString()
+  @IsNotEmpty()
+  categoryId: string;
 
   @ApiProperty({ example: 'eko-electric' })
   @IsString()
@@ -30,7 +31,7 @@ export class ValidateBillDto {
   amount: number;
 }
 
-export class BillPaymentPreviewDto extends ValidateBillDto {
+export class BillQuoteDto extends ValidateBillDto {
   @ApiProperty({ example: 'USDT' })
   @IsString()
   @IsNotEmpty()
@@ -43,10 +44,10 @@ export class BillPaymentPreviewDto extends ValidateBillDto {
 }
 
 export class BillPaymentConfirmDto {
-  @ApiProperty({ example: 'cm123previewid' })
+  @ApiProperty({ example: 'cm123quoteid' })
   @IsString()
   @IsNotEmpty()
-  previewId: string;
+  quoteId: string;
 
   @ApiProperty({ example: '123456' })
   @IsString()

@@ -230,3 +230,12 @@ enum AutoStackStatus {
   ACTIVE
   ENDED
 }
+
+
+enum BillPaymentStatus {
+  PENDING
+  WAITING_SELL_WEBHOOK
+  WAITING_PROVIDER_WEBHOOK
+  COMPLETED
+  FAILED
+}
