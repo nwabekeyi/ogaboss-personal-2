@@ -19,6 +19,7 @@ export enum QueueName {
   DASHBOARD_STATS = 'dashboard-stats',
   PAYSTACK = 'paystack',
   QUIDAX_WALLET = 'quidax-wallet-addresses',
+  XPRESSPAY = 'xpresspay',
 }
 
 export interface JobData {

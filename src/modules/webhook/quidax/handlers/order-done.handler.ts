@@ -643,7 +643,7 @@ export class OrderDoneHandler {
 
     // Billing hook: if this SELL belongs to bills flow, trigger xpress payment here
     const billingMeta = (transaction.paymentMetadata || {}) as Record<string, any>;
-    if (billingMeta.billingFlow === true && billingMeta.billingStatus === 'WAITING_SELL_WEBHOOK') {
+    if (billingMeta.billingFlow === true && billingMeta.billingStatus === 'PROCESSING') {
       try {
         const providerResponse = await this.xpresspayService.payBill({
           amount: Number(billingMeta.billAmountNgn),
@@ -656,9 +656,9 @@ export class OrderDoneHandler {
 
         await this.prisma.$transaction([
           this.prisma.transaction.update({ where: { id: transaction.id }, data: {
-            paymentMetadata: { ...billingMeta, billingStatus: 'WAITING_PROVIDER_WEBHOOK', xpresspayResponse: providerResponse } as any,
+            paymentMetadata: { ...billingMeta, billingStatus: 'PROCESSING', xpresspayResponse: providerResponse } as any,
           } }),
-          this.prisma.billPayment.updateMany({ where: { transactionId: transaction.id }, data: { status: 'WAITING_PROVIDER_WEBHOOK', providerResponse } }),
+          this.prisma.billPayment.updateMany({ where: { transactionId: transaction.id }, data: { status: 'PROCESSING', providerResponse } }),
         ]);
       } catch (billingErr) {
         await this.prisma.$transaction([

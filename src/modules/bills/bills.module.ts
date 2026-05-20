@@ -4,9 +4,10 @@ import { XpresspayModule } from '../../infrastructure/providers/xpresspay/xpress
 import { BillsController } from './bills.controller';
 import { BillsService } from './bills.service';
 import { QuidaxModule } from '../../infrastructure/providers/quidax/quidax.module';
+import { TransactionModule } from '../transaction/transaction.module';
 
 @Module({
-  imports: [XpresspayModule, QuidaxModule],
+  imports: [XpresspayModule, QuidaxModule, TransactionModule],
   controllers: [BillsController],
   providers: [BillsService, PrismaService],
 })

@@ -27,6 +27,7 @@ export class QueueService {
     @InjectQueue(QueueName.DASHBOARD_STATS) private dashboardStatsQueue: Queue,
     @InjectQueue(QueueName.PAYSTACK) private paystackQueue: Queue,
     @InjectQueue(QueueName.QUIDAX_WALLET) private walletAddressQueue: Queue,
+    @InjectQueue(QueueName.XPRESSPAY) private xpresspayQueue: Queue,
   ) {}
 
   private readonly defaultJobOptions: JobsOptions = {
@@ -71,6 +72,8 @@ export class QueueService {
         return this.dashboardStatsQueue;
       case QueueName.PAYSTACK:
         return this.paystackQueue;
+      case QueueName.XPRESSPAY:
+        return this.xpresspayQueue;
       default:
         this.logger.error(`Unknown queue: ${name}`);
         throw new Error(`Unknown queue`);

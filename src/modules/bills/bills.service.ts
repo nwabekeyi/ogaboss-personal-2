@@ -9,6 +9,10 @@ import { BILL_CATEGORIES, BILL_QUOTE_KEY_PREFIX, BILL_QUOTE_TTL_SECONDS } from '
 import { TempStoreService } from '../../infrastructure/databases/redis';
 import { PLATFORM_SPREAD } from '../transaction/constants';
 import { QuidaxTickerService } from '../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
+import { QuidaxOrderService } from '../../infrastructure/providers/quidax/order.service';
+import { TransactionService, CompanyLiquidityService } from '../transaction/services';
+import { BASE_CURRENCY, LiquidityReservationStatus } from '../../shared';
+import { QUIDAX_COMPANY_USERID } from '../transaction/constants';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -17,7 +21,10 @@ export class BillsService {
     private readonly prisma: PrismaService,
     private readonly xpresspay: XpresspayService,
     private readonly tempStore: TempStoreService,
-    private readonly ticker: QuidaxTickerService
+    private readonly ticker: QuidaxTickerService,
+    private readonly quidaxOrderService: QuidaxOrderService,
+    private readonly transactionService: TransactionService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
   ) {}
 
   async categories() { return { success: true, data: BILL_CATEGORIES }; }
@@ -78,12 +85,19 @@ export class BillsService {
       const current = BigInt(wallet.baseBalance.toFixed(0));
       if (current < totalMinor) throw new BadRequestException('Insufficient balance');
 
+      await this.transactionService.reserveBalance(tx, userId, 'USDT', totalMinor);
+      const netFiatBase = ConvertCurrency.toBase(quote.billAmountNgn, 'NGN');
+      const reserved = await this.companyLiquidityService.reserveLiquidity(BASE_CURRENCY, netFiatBase, tx);
+      if (!reserved) throw new BadRequestException('Insufficient company NGN liquidity');
+
       const transaction = await tx.transaction.create({ data: {
         userId, transactionUniqueId: `BILL-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
         currency: 'USDT', cryptoAmountBase: totalMinor.toString(), cryptoAmountOriginal: String(quote.totalToPay),
+        fiatAmountBase: netFiatBase.toString(),
         platformFeeBase: feeMinor.toString(), platformFeeOriginal: String(quote.feeAmount),
         status: 'PENDING' as any, transactionType: 'DEBIT' as any, transactionContext: TransactionContext.BILL_PAYMENT, paymentType: 'CRYPTO_WALLET' as any, senderWalletId: wallet.id,
         description: `Bill payment: ${quote.category}`,
+        paymentMetadata: { liquidityReservationStatus: LiquidityReservationStatus.RESERVED },
       }});
 
       const billPayment = await tx.billPayment.create({ data: {
@@ -92,30 +106,51 @@ export class BillsService {
         status: 'PENDING', provider: 'xpresspay', providerValidation: quote.providerValidation,
       }});
 
+      await tx.order.create({ data: {
+        transactionId: transaction.id,
+        userId,
+        cryptoAmountBase: totalMinor.toString(),
+        cryptoAmountOriginal: String(quote.totalToPay),
+        fiatAmountBase: netFiatBase.toString(),
+        fiatAmountOriginal: String(quote.billAmountNgn),
+        fiatCurrency: 'NGN',
+        status: 'PENDING' as any,
+        type: 'SELL' as any,
+        referenceNo: transaction.transactionUniqueId,
+        paymentStatus: 'PENDING' as any,
+        paymentAmountBase: netFiatBase.toString(),
+        paymentAmountOriginal: String(quote.billAmountNgn),
+      }});
+
       return { transaction, billPayment };
     });
 
     try {
+      const orderResponse = await this.quidaxOrderService.buyOrSellOrderRequest(QUIDAX_COMPANY_USERID, { market: 'usdtngn', side: 'sell', ord_type: 'market', volume: Number(quote.cryptoAmount) } as any);
+      if (orderResponse.status !== 'success') throw new BadRequestException('Something went wrong, try again later.');
       await this.prisma.$transaction([
         this.prisma.transaction.update({ where: { id: transaction.id }, data: {
           paymentMetadata: {
             billingFlow: true,
-            billingStatus: 'WAITING_SELL_WEBHOOK',
+            billingStatus: 'PROCESSING',
             quoteId: dto.quoteId,
             category: quote.category,
             billerCode: quote.billerCode,
             customerReference: quote.customerReference,
             productCode: quote.productCode,
             billAmountNgn: quote.billAmountNgn,
+            quidaxOrderReference: orderResponse.data.reference || orderResponse.data.id,
           }
         } }),
-        this.prisma.billPayment.update({ where: { id: billPayment.id }, data: { status: 'WAITING_SELL_WEBHOOK' } }),
+        this.prisma.billPayment.update({ where: { id: billPayment.id }, data: { status: 'PROCESSING' } }),
       ]);
       await this.tempStore.del(`${BILL_QUOTE_KEY_PREFIX}${dto.quoteId}`);
       return { success: true, message: 'Bill sell order submitted. Awaiting Quidax webhook to complete billing.', data: { reference: transaction.transactionUniqueId } };
     } catch (error) {
       await this.prisma.$transaction(async (tx) => {
-        await tx.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' as any } });
+        await this.transactionService.releaseBalance(tx, userId, 'USDT', totalMinor);
+        await this.companyLiquidityService.releaseLiquidity(BASE_CURRENCY, ConvertCurrency.toBase(quote.billAmountNgn, 'NGN'), tx);
+        await tx.transaction.update({ where: { id: transaction.id }, data: { status: 'FAILED' as any, paymentMetadata: { liquidityReservationStatus: LiquidityReservationStatus.RELEASED } as any } });
         await tx.billPayment.update({ where: { id: billPayment.id }, data: { status: 'FAILED' } });
       });
       throw new BadRequestException(error?.response?.data || 'Bill payment failed');

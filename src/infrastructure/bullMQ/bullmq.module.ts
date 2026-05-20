@@ -20,6 +20,7 @@ import {
   QuidaxWalletAddressWorker,
 } from './workers/quidax-trades.worker';
 import { WebhooksModule } from '../../modules';
+import { XpresspayWorker } from './workers/xpresspay.worker';
 import { FirebaseModule } from '../providers/firebase/firebase.module';
 
 @Global()
@@ -48,6 +49,7 @@ import { FirebaseModule } from '../providers/firebase/firebase.module';
       { name: QueueName.DASHBOARD_STATS },
       { name: QueueName.PAYSTACK },
       { name: QueueName.QUIDAX_WALLET },
+      { name: QueueName.XPRESSPAY },
     ),
   ],
   providers: [
@@ -62,6 +64,7 @@ import { FirebaseModule } from '../providers/firebase/firebase.module';
     QuidaxSendTradesWorker,
     QuidaxReceiveTradesWorker,
     QuidaxWalletAddressWorker,
+    XpresspayWorker,
   ],
   exports: [QueueService, BullModule],
 })

@@ -234,8 +234,7 @@ enum AutoStackStatus {
 
 enum BillPaymentStatus {
   PENDING
-  WAITING_SELL_WEBHOOK
-  WAITING_PROVIDER_WEBHOOK
+  PROCESSING
   COMPLETED
   FAILED
 }
