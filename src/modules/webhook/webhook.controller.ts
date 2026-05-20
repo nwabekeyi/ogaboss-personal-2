@@ -260,6 +260,30 @@ export class WebhooksController {
 
     return { received: true };
   }
+
+  @Post('xpresspay')
+  @HttpCode(200)
+  async handleXpresspayWebhook(@Body() payload: any) {
+    const merchantId = Number(this.configService.get<string>('XPRESSPAY_MERCHANT_ID', '0'));
+    if (!payload || Number(payload.Merchant) !== merchantId) return { received: true };
+    const eventId = `xpresspay_${payload.TransactionId || payload.TransactionReference || payload.Id}`;
+    const { isNew, webhookId } = await this.idempotencyService.ensureUnique(
+      eventId,
+      Providers.XPRESSPAY,
+      'xpresspay.webhook',
+      payload,
+      undefined,
+    );
+    if (!isNew) return { received: true };
+
+    await this.queueService.add(
+      QueueName.XPRESSPAY,
+      'process-webhook-event',
+      { payload, webhookId },
+      { jobId: `xpresspay-webhook-${eventId}`, attempts: backoff_retries, backoff: { type: BackoffTypes.EXPONENTIAL as BackoffType, delay: 60000 } },
+    );
+    return { received: true };
+  }
 }
 
 
