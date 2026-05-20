@@ -2,7 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
-// import { AutoStackInterestScheduler } from './autostack-interest.scheduler';
+import { AutoStackInterestScheduler } from './autostack-interest.scheduler';
 import { FailedCompanyLiquidityScheduler } from './failed-company-liquidity.scheduler';
 import { VaultInterestScheduler } from './vault-interest.scheduler';
 import { DailyPercentageScheduler } from './daily-percentage.scheduler';
@@ -15,7 +15,7 @@ export class SchedulerJobsWorker extends WorkerHost {
   private readonly logger = new Logger(SchedulerJobsWorker.name);
 
   constructor(
-    // private readonly autoStackScheduler: AutoStackInterestScheduler,
+    private readonly autoStackScheduler: AutoStackInterestScheduler,
     private readonly failedCompanyLiquidityScheduler: FailedCompanyLiquidityScheduler,
     private readonly vaultInterestScheduler: VaultInterestScheduler,
     private readonly dailyPercentageScheduler: DailyPercentageScheduler,
@@ -28,10 +28,10 @@ export class SchedulerJobsWorker extends WorkerHost {
   async process(job: Job<any>): Promise<any> {
     switch (job.name) {
       case 'scheduler.autostack-interest':
-      // case 'scheduler.autostack-interest.dispatch':
-      //   return this.autoStackScheduler.execute();
-      // case 'scheduler.autostack-interest.shard':
-      //   return this.autoStackScheduler.executeShard(job.data?.ids ?? [], job.data?.asOf);
+      case 'scheduler.autostack-interest.dispatch':
+        return this.autoStackScheduler.execute();
+      case 'scheduler.autostack-interest.shard':
+        return this.autoStackScheduler.executeShard(job.data?.ids ?? [], job.data?.asOf);
       case 'scheduler.failed-company-liquidity':
         return this.failedCompanyLiquidityScheduler.execute();
       case 'scheduler.vault-interest':

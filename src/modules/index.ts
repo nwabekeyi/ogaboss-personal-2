@@ -13,4 +13,4 @@ export * from './card/card.module';
 export * from './scheduler/scheduler.module';
 export * from './settings/settings.module';
 export * from './vault/vault.module';
-// export * from './autostack/autostack.module';
+export * from './autostack/autostack.module';

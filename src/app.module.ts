@@ -19,7 +19,7 @@ import {
   CardModule,
   SettingsModule,
   VaultModule,
-  // AutoStackModule,
+  AutoStackModule,
 } from './modules';
 import { RedisModule } from './infrastructure/databases/redis';
 import { QuidaxModule } from './infrastructure/providers/quidax/quidax.module';
@@ -90,7 +90,7 @@ import { AuditLogModule, AuditLogInterceptor } from './core/audit';
     CardModule,
     SettingsModule,
     VaultModule,
-    // AutoStackModule,
+    AutoStackModule,
     RedisModule,
     QuidaxModule,
     BullModule,
