@@ -19,7 +19,7 @@ import { InternalBalanceScheduler } from './schedulers/internal-balance.schedule
 import { VaultInterestScheduler } from './schedulers/vault-interest.scheduler';
 import { BullModule } from '@nestjs/bullmq';
 import { QueueService } from '../../infrastructure/bullMQ/bullmq.service';
-// import { AutoStackInterestScheduler } from './schedulers/autostack-interest.scheduler';
+import { AutoStackInterestScheduler } from './schedulers/autostack-interest.scheduler';
 import { SchedulerJobsWorker } from './schedulers/scheduler-jobs.worker';
 import { SchedulerExecutionStateService } from './scheduler-execution-state.service';
 
@@ -47,7 +47,7 @@ import { SchedulerExecutionStateService } from './scheduler-execution-state.serv
     InternalBalanceScheduler,
     VaultInterestScheduler,
     QueueService,
-    // AutoStackInterestScheduler,
+    AutoStackInterestScheduler,
     SchedulerJobsWorker,
     SchedulerExecutionStateService,
   ],
