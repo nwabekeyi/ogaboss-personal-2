@@ -19,6 +19,7 @@ model Wallet {
   paymentAddresses  PaymentAddress[]
   user              User             @relation(fields: [userId], references: [id])
   transactions      Transaction[]    @relation("TransactionToWallet")
+  billPayments      BillPayment[]
   cryptoCurrency    CryptoCurrency?  @relation(fields: [currencyId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([userId, currency])

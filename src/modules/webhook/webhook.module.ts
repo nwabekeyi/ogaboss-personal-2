@@ -17,6 +17,8 @@ import { PaystackWebhookHandler } from './paystack';
 import { TransactionModule } from '../transaction/transaction.module';
 import { OrderDoneHandler } from './quidax/handlers/order-done.handler';
 import { AuthModule } from '../auth/auth.module';
+import { XpresspayModule } from '../../infrastructure/providers/xpresspay/xpresspay.module';
+import { XpresspayWebhookHandler } from './xpresspay/xpresspay-webhook.handler';
 @Module({
   imports: [
     BullMqModule,
@@ -25,6 +27,7 @@ import { AuthModule } from '../auth/auth.module';
     DashboardModule,
     TransactionModule,
     AuthModule,
+    XpresspayModule,
   ],
   controllers: [WebhooksController],
   providers: [
@@ -36,6 +39,7 @@ import { AuthModule } from '../auth/auth.module';
     WithdrawalWebhookHandler,
     PaystackWebhookHandler,
     OrderDoneHandler,
+    XpresspayWebhookHandler,
   ],
   exports: [
     QuidaxWebhookService,
@@ -45,6 +49,7 @@ import { AuthModule } from '../auth/auth.module';
     SwapTransactionHandler,
     WithdrawalWebhookHandler,
     OrderDoneHandler,
+    XpresspayWebhookHandler,
   ],
 })
 export class WebhooksModule {}
