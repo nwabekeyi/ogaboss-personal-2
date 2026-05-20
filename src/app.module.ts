@@ -20,6 +20,7 @@ import {
   SettingsModule,
   VaultModule,
   AutoStackModule,
+  BillsModule,
 } from './modules';
 import { RedisModule } from './infrastructure/databases/redis';
 import { QuidaxModule } from './infrastructure/providers/quidax/quidax.module';
@@ -91,6 +92,7 @@ import { AuditLogModule, AuditLogInterceptor } from './core/audit';
     SettingsModule,
     VaultModule,
     AutoStackModule,
+    BillsModule,
     RedisModule,
     QuidaxModule,
     BullModule,

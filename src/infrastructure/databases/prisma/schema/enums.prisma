@@ -118,6 +118,7 @@ enum TransactionContext {
   CARD_REFUND
   SWAP
   VAULT_SWAP
+  BILL_PAYMENT
 }
 
 enum TransactionProcess {
