@@ -175,6 +175,8 @@ export class SwapService {
 
      const refreshedData = refreshResponse?.data;
      if (!refreshedData?.id) throw new BadRequestException('Cannot complete swap at the moment. Try again later.');
+
+     this.logger.debug(`Quidax refresh quote response received: quotationId=${refreshedData.id}, confirmed=${refreshedData.confirmed}`);
      refreshedQuotationId = refreshedData.id;
 
      const quotedPriceDec = new Decimal(refreshedData.quoted_price);
@@ -255,8 +257,26 @@ export class SwapService {
        user_id: 'me',
        quotation_id: refreshedQuotationId,
      });
-      confirmedSwap = confirmRes?.data;
-      if (!confirmedSwap?.id) throw new BadRequestException('failed to confirm swap');
+
+     confirmedSwap = confirmRes?.data;
+     this.logger.debug(
+       `Quidax confirm swap response received: id=${confirmedSwap?.id}, status=${confirmedSwap?.status}, execution_price=${confirmedSwap?.execution_price}`,
+     );
+
+     // Guard against accidental quotation-shaped response; confirm must return swap-transaction shape
+     if (
+       !confirmedSwap?.id ||
+       !confirmedSwap?.execution_price ||
+       !confirmedSwap?.status ||
+       !confirmedSwap?.received_amount ||
+       !confirmedSwap?.swap_quotation?.id
+     ) {
+       this.logger.error('Unexpected Quidax confirm swap payload shape', {
+         quotationId: refreshedQuotationId,
+         payload: confirmRes,
+       });
+       throw new BadRequestException('Unexpected confirm response from swap provider.');
+     }
     } catch (error: any) {
       // Release reserves and mark transaction as FAILED on failure
       await this.prisma.$transaction(async (tx) => {

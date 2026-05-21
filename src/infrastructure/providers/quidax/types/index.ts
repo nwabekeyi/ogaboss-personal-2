@@ -6,6 +6,7 @@ import {
     MarketTickerData,
     OrderBookResponse,
     OrderStatus,
+    SwapQuotation,
     SwapTransaction,
     TradingPair,
 } from "./trade";
@@ -312,29 +313,33 @@ export interface CreateInstantSwapRequestOptions {
     to_amount?: string; //the amount you want to swap to.
 }
 
-export interface InstantSwapQuote {
+export type InstantSwapQuote = SwapQuotation;
+
+export type CreateInstantSwapRequestResponse = InstantSwapQuote;
+
+
+export interface ConfirmInstantSwapResponse {
     id: string;
     from_currency: string;
     to_currency: string;
-    quoted_price: string;
-    quoted_currency: string;
     from_amount: string;
-    to_amount: string;
-    confirmed: boolean;
-    expires_at: string;
+    received_amount: string;
+    execution_price: string;
+    status: "initiated" | "completed" | "reversed" | "failed";
     created_at: string;
     updated_at: string;
+    swap_quotation: SwapQuotation & {
+        confirmed: boolean;
+    };
     user: IAccount;
 }
-
-export type CreateInstantSwapRequestResponse = InstantSwapQuote;
 
 export interface ConfirmInstantSwapOptions {
     user_id: string;
     quotation_id: string;
 }
 
-export type ConfirmInstantSwapRequestResponse = SwapTransaction;
+export type ConfirmInstantSwapRequestResponse = ConfirmInstantSwapResponse;
 
 export type RefreshInstantSwapOptions = {
     from_currency: string; //the currency you are swapping from
