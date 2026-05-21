@@ -317,12 +317,29 @@ export type InstantSwapQuote = SwapQuotation;
 
 export type CreateInstantSwapRequestResponse = InstantSwapQuote;
 
+
+export interface ConfirmInstantSwapResponse {
+    id: string;
+    from_currency: string;
+    to_currency: string;
+    from_amount: string;
+    received_amount: string;
+    execution_price: string;
+    status: "initiated" | "completed" | "reversed" | "failed";
+    created_at: string;
+    updated_at: string;
+    swap_quotation: SwapQuotation & {
+        confirmed: boolean;
+    };
+    user: IAccount;
+}
+
 export interface ConfirmInstantSwapOptions {
     user_id: string;
     quotation_id: string;
 }
 
-export type ConfirmInstantSwapRequestResponse = SwapTransaction;
+export type ConfirmInstantSwapRequestResponse = ConfirmInstantSwapResponse;
 
 export type RefreshInstantSwapOptions = {
     from_currency: string; //the currency you are swapping from

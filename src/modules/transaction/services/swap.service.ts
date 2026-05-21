@@ -264,7 +264,13 @@ export class SwapService {
      );
 
      // Guard against accidental quotation-shaped response; confirm must return swap-transaction shape
-     if (!confirmedSwap?.id || !confirmedSwap?.execution_price || !confirmedSwap?.status) {
+     if (
+       !confirmedSwap?.id ||
+       !confirmedSwap?.execution_price ||
+       !confirmedSwap?.status ||
+       !confirmedSwap?.received_amount ||
+       !confirmedSwap?.swap_quotation?.id
+     ) {
        this.logger.error('Unexpected Quidax confirm swap payload shape', {
          quotationId: refreshedQuotationId,
          payload: confirmRes,
