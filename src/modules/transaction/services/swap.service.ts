@@ -255,9 +255,9 @@ export class SwapService {
        user_id: 'me',
        quotation_id: refreshedQuotationId,
      });
-     confirmedSwap = confirmRes?.data;
-     if (!confirmedSwap?.id) throw new BadRequestException('Provider confirmation failed');
-} catch (error: any) {
+      confirmedSwap = confirmRes?.data;
+      if (!confirmedSwap?.id) throw new BadRequestException('failed to confirm swap');
+    } catch (error: any) {
       // Release reserves and mark transaction as FAILED on failure
       await this.prisma.$transaction(async (tx) => {
         await this.transactionService.releaseBalance(tx, userId, q.from, reservedAmount);
