@@ -25,6 +25,7 @@ export class QuidaxSwapService extends BaseQuidaxService {
     return this.request({
       url: `/users/${options.user_id}/swap_quotation/${options.quotation_id}/confirm`,
       method: 'POST',
+      data: {},
       ...opts,
     });
   }
