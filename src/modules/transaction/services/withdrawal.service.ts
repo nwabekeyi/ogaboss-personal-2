@@ -13,7 +13,6 @@ import {
   TransactionType,
   WithdrawalStatus,
 } from '../../../infrastructure';
-import { QuidaxWithdrawalService } from '../../../infrastructure/providers/quidax';
 import { CreateSendPreviewDto, ConfirmSendDto } from '../dto';
 import {
   ConvertCurrency,
@@ -33,6 +32,7 @@ import { TransactionService } from './transaction.service';
 import { TempStoreService } from '../../../infrastructure';
 import { randomUUID } from 'crypto';
 import Decimal from 'decimal.js';
+import axios from 'axios';
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
 
@@ -42,7 +42,6 @@ export class WithdrawalService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
     private readonly transactionService: TransactionService,
     private readonly tempStore: TempStoreService,
     private readonly companyLiquidityService: CompanyLiquidityService,
@@ -107,10 +106,13 @@ export class WithdrawalService {
       normalizedNetwork as CryptoNetwork,
     );
 
-    const feeRes = await this.quidaxWithdrawalService.getWithdrawerFees({
-      currency: normalizedCurrency,
-      network: normalizedNetwork,
-    });
+    const feeRes = await axios.get(`${process.env.QUIDAX_API_URL}/fee`, {
+      params: { currency: normalizedCurrency, network: normalizedNetwork },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+      },
+    }).then((res) => res.data);
 
     if (!feeRes || feeRes.status !== 'success') {
       throw new BadRequestException(
@@ -379,8 +381,9 @@ export class WithdrawalService {
     let providerWithdrawalId: string;
   
     try {
-      const response =
-        await this.quidaxWithdrawalService.createWithdrawerRequest({
+      const response = await axios.post(
+        `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`,
+        {
           user_id: QUIDAX_COMPANY_USERID,
           currency: preview.currency,
           amount: preview.requestedAmount,
@@ -390,7 +393,14 @@ export class WithdrawalService {
           reference: previewId,
           transaction_note: 'External crypto withdrawal',
           narration: `Send to ${preview.toAddress.slice(0, 8)}...`,
-        });
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          },
+        },
+      ).then((res) => res.data);
   
       if (response.status !== 'success' || !response.data?.id) {
         await this.compensateFailedWithdrawal(
@@ -527,12 +537,16 @@ export class WithdrawalService {
     }
 
     // PROCESSING: provider was called — we must tell Quidax to cancel first
-    const response = await this.quidaxWithdrawalService.cancelWithdrawerRequest(
+    const response = await axios.post(
+      `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
+      { user_id: 'me', withdrawal_id: withdrawal.providerWithdrawalId },
       {
-        user_id: 'me',
-        withdrawal_id: withdrawal.providerWithdrawalId,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
       },
-    );
+    ).then((res) => res.data);
 
     if (response.status !== 'success') {
       throw new BadRequestException(

@@ -16,7 +16,6 @@ import {
  import { RedisService } from '../../../infrastructure';
  import { QuotationService } from './quotation.service';
  import {
-   QuidaxOrderService,
    TradingPair,
  } from '../../../infrastructure/providers/quidax';
  import { PreviewSellDto } from '../dto';
@@ -38,6 +37,7 @@ import {
  import { ISellQuote } from './types';
  import { TransactionNotificationService } from './transaction-notification.service';
  import { QUIDAX_COMPANY_USERID } from '../constants';
+ import axios from 'axios';
 
 @Injectable()
 export class SellService {
@@ -49,7 +49,6 @@ export class SellService {
     private readonly transactionService: TransactionService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly redisService: RedisService,
-    private readonly quidaxOrderService: QuidaxOrderService,
     private readonly transactionNotificationService: TransactionNotificationService,
 
   ) {}
@@ -463,15 +462,21 @@ export class SellService {
     }
 
     // Place Quidax order immediately to minimize race condition window
-    const orderResponse = await this.quidaxOrderService.buyOrSellOrderRequest(
-      QUIDAX_COMPANY_USERID,
+    const orderResponse = await axios.post(
+      `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/orders`,
       {
         market: marketPair,
         side: 'sell',
         ord_type: 'market',
         volume: Number(cryptoOriginal.toString()),
       },
-    );
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
+      },
+    ).then((res) => res.data);
 
     if (orderResponse.status !== 'success') {
       await this.prisma.$transaction(async (tx) => {
