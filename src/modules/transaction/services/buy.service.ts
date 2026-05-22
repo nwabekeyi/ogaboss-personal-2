@@ -19,6 +19,7 @@ import {
   ConvertCurrency,
   LiquidityReservationStatus,
 } from '../../../shared';
+import { MIN_TRANSACTION_USDT } from '../constants';
 import { TransactionService } from './transaction.service';
 import { TempStoreService } from '../../../infrastructure';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
@@ -187,6 +188,13 @@ export class BuyService {
        if (Date.now() > quote.expiresAt) {
         await this.tempStore.del(quoteKey);
         throw new BadRequestException('Quote expired. Please request a new one.');
+      }
+
+      if (quote.crypto?.toUpperCase() === 'USDT') {
+        const minUsdtBase = ConvertCurrency.toBase(MIN_TRANSACTION_USDT.toString(), 'usdt');
+        if (BigInt(quote.volumeCryptoMinor) < minUsdtBase) {
+          throw new BadRequestException(`Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`);
+        }
       }
 
       // Slippage protection: check current price against quoted buffered price

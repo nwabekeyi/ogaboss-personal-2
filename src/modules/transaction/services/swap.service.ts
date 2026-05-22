@@ -21,7 +21,7 @@ import { TransactionService } from './transaction.service';
 
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
-import { QUIDAX_COMPANY_USERID } from '../constants';
+import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
 
 @Injectable()
 export class SwapService {
@@ -134,6 +134,14 @@ export class SwapService {
      if (Date.now() > q.expiresAt) {
        await this.tempStore.del(`swap:${quoteId}`);
        throw new BadRequestException('Quote expired.');
+     }
+
+     const minimumSwapAmount = new Decimal(MIN_TRANSACTION_USDT);
+     if (q.from.toUpperCase() === 'USDT') {
+       const fromAmount = new Decimal(ConvertCurrency.fromBase(q.exactFromMinor, q.from, q.fromNetwork as CryptoNetwork));
+       if (fromAmount.lt(minimumSwapAmount)) {
+         throw new BadRequestException(`Minimum swap amount is ${MIN_TRANSACTION_USDT} USDT equivalent`);
+       }
      }
 
      // Duplicate check

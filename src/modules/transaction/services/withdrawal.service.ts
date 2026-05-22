@@ -26,6 +26,7 @@ import {
   QUOTE_TTL_SECONDS,
   COOLDOWN_KEY_PREFIX,
   QUOTE_COOLDOWN_SECONDS,
+  MIN_TRANSACTION_USDT,
   QUIDAX_COMPANY_USERID,
 } from '../constants';
 import { TransactionService } from './transaction.service';
@@ -238,6 +239,13 @@ export class WithdrawalService {
     const platformFeeBase = BigInt(preview.platformFeeBase);
     const totalDeductionBase = BigInt(preview.totalDeductionBase);
   
+    if (preview.currency?.toUpperCase() === 'USDT') {
+      const minUsdtBase = ConvertCurrency.toBase(MIN_TRANSACTION_USDT.toString(), 'usdt', preview.network as CryptoNetwork);
+      if (requestedAmountBase < minUsdtBase) {
+        throw new BadRequestException(`Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`);
+      }
+    }
+
     const isXRP = preview.currency.toLowerCase() === 'xrp';
   
     // SINGLE TRANSACTION BLOCK
@@ -327,10 +335,19 @@ export class WithdrawalService {
           await tx.failedCompanyLiquidityTransaction.create({
             data: {
               transactionId: transaction.id,
+              transactionType: 'WITHDRAWAL',
+              fromCurrency: preview.currency,
+              amountOriginal: preview.totalDeduction,
               currency: preview.currency,
               amountBase: totalDeductionBase.toString(),
               providerResponse: {
                 reason: 'Insufficient company liquidity at time of request',
+                requestedAmount: preview.requestedAmount,
+                networkFee: preview.networkFee,
+                platformFee: preview.platformFee,
+                totalDeduction: preview.totalDeduction,
+                recipientAddress: preview.toAddress,
+                network: preview.network,
               },
             },
           });
