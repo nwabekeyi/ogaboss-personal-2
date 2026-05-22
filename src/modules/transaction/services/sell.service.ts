@@ -16,7 +16,6 @@ import {
  import { RedisService } from '../../../infrastructure';
  import { QuotationService } from './quotation.service';
  import {
-   QuidaxOrderService,
    TradingPair,
  } from '../../../infrastructure/providers/quidax';
  import { PreviewSellDto } from '../dto';
@@ -37,7 +36,8 @@ import {
  import { CompanyLiquidityService } from './company-liquidity.service';
  import { ISellQuote } from './types';
  import { TransactionNotificationService } from './transaction-notification.service';
- import { QUIDAX_COMPANY_USERID } from '../constants';
+ import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
+ import axios from 'axios';
 
 @Injectable()
 export class SellService {
@@ -49,7 +49,6 @@ export class SellService {
     private readonly transactionService: TransactionService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly redisService: RedisService,
-    private readonly quidaxOrderService: QuidaxOrderService,
     private readonly transactionNotificationService: TransactionNotificationService,
 
   ) {}
@@ -143,6 +142,13 @@ export class SellService {
       if (quote.userId !== userId)
         throw new UnauthorizedException('Not your quote');
       if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
+
+      if (quote.crypto?.toUpperCase() === 'USDT') {
+        const minUsdtBase = ConvertCurrency.toBase(MIN_TRANSACTION_USDT.toString(), 'usdt');
+        if (BigInt(quote.exactCryptoMinor) < minUsdtBase) {
+          throw new BadRequestException(`Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`);
+        }
+      }
 
       // Slippage protection: check current price against quoted buffered price
       await this.transactionService.checkPriceSlippage(
@@ -463,15 +469,21 @@ export class SellService {
     }
 
     // Place Quidax order immediately to minimize race condition window
-    const orderResponse = await this.quidaxOrderService.buyOrSellOrderRequest(
-      QUIDAX_COMPANY_USERID,
+    const orderResponse = await axios.post(
+      `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/orders`,
       {
         market: marketPair,
         side: 'sell',
         ord_type: 'market',
         volume: Number(cryptoOriginal.toString()),
       },
-    );
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
+      },
+    ).then((res) => res.data);
 
     if (orderResponse.status !== 'success') {
       await this.prisma.$transaction(async (tx) => {

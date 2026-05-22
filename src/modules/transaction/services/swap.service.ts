@@ -14,14 +14,14 @@ import {
 import { PreviewSwapDto, ConfirmSwapDto } from '../dto';
 import { ConvertCurrency, CryptoNetwork } from '../../../shared';
 import Decimal from 'decimal.js';
+import axios from 'axios';
 import { TransactionService } from './transaction.service';
  import { TempStoreService } from '../../../infrastructure/databases/redis/temp-store.service';
- import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
  import { ISwapQuote } from './types';
 
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
-import { QUIDAX_COMPANY_USERID } from '../constants';
+import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
 
 @Injectable()
 export class SwapService {
@@ -29,7 +29,6 @@ export class SwapService {
 
  constructor(
    private readonly prisma: PrismaService,
-   private readonly quidaxSwapService: QuidaxSwapService,
    private readonly transactionService: TransactionService,
    private readonly tempStore: TempStoreService,
    private readonly companyLiquidityService: CompanyLiquidityService,
@@ -137,6 +136,14 @@ export class SwapService {
        throw new BadRequestException('Quote expired.');
      }
 
+     const minimumSwapAmount = new Decimal(MIN_TRANSACTION_USDT);
+     if (q.from.toUpperCase() === 'USDT') {
+       const fromAmount = new Decimal(ConvertCurrency.fromBase(q.exactFromMinor, q.from, q.fromNetwork as CryptoNetwork));
+       if (fromAmount.lt(minimumSwapAmount)) {
+         throw new BadRequestException(`Minimum swap amount is ${MIN_TRANSACTION_USDT} USDT equivalent`);
+       }
+     }
+
      // Duplicate check
    const existing = await this.prisma.swapTransaction.findFirst({
      where: { quoteId, userId },
@@ -167,14 +174,25 @@ export class SwapService {
    // ============================================
    let refreshedQuotationId: string;
    try {
-     const refreshResponse = await this.quidaxSwapService.refreshInstantSwapQuote(QUIDAX_COMPANY_USERID, q.quotationId, {
-       from_currency: q.from.toLowerCase(),
-       to_currency: q.to.toLowerCase(),
-       from_amount: fromAmountHuman,
-     });
+     const refreshResponse = await axios.post(
+       `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/swap_quotation/${q.quotationId}/refresh`,
+       {
+         from_currency: q.from.toLowerCase(),
+         to_currency: q.to.toLowerCase(),
+         from_amount: fromAmountHuman,
+       },
+       {
+         headers: {
+           'Content-Type': 'application/json',
+           Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+         },
+       },
+     ).then((res) => res.data);
 
      const refreshedData = refreshResponse?.data;
      if (!refreshedData?.id) throw new BadRequestException('Cannot complete swap at the moment. Try again later.');
+
+     this.logger.debug(`Quidax refresh quote response received: quotationId=${refreshedData.id}, confirmed=${refreshedData.confirmed}`);
      refreshedQuotationId = refreshedData.id;
 
      const quotedPriceDec = new Decimal(refreshedData.quoted_price);
@@ -251,12 +269,36 @@ export class SwapService {
    // ============================================
    let confirmedSwap: any;
    try {
-     const confirmRes = await this.quidaxSwapService.confirmInstantSwap({
-       user_id: 'me',
-       quotation_id: refreshedQuotationId,
-     });
-      confirmedSwap = confirmRes?.data;
-      if (!confirmedSwap?.id) throw new BadRequestException('failed to confirm swap');
+     const confirmRes = await axios.post(
+       `${process.env.QUIDAX_API_URL}/users/me/swap_quotation/${refreshedQuotationId}/confirm`,
+       {},
+       {
+         headers: {
+           'Content-Type': 'application/json',
+           Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+         },
+       },
+     ).then((res) => res.data);
+
+     confirmedSwap = confirmRes?.data;
+     this.logger.debug(
+       `Quidax confirm swap response received: id=${confirmedSwap?.id}, status=${confirmedSwap?.status}, execution_price=${confirmedSwap?.execution_price}`,
+     );
+
+     // Guard against accidental quotation-shaped response; confirm must return swap-transaction shape
+     if (
+       !confirmedSwap?.id ||
+       !confirmedSwap?.execution_price ||
+       !confirmedSwap?.status ||
+       !confirmedSwap?.received_amount ||
+       !confirmedSwap?.swap_quotation?.id
+     ) {
+       this.logger.error('Unexpected Quidax confirm swap payload shape', {
+         quotationId: refreshedQuotationId,
+         payload: confirmRes,
+       });
+       throw new BadRequestException('Unexpected confirm response from swap provider.');
+     }
     } catch (error: any) {
       // Release reserves and mark transaction as FAILED on failure
       await this.prisma.$transaction(async (tx) => {

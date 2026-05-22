@@ -147,7 +147,13 @@ export class CompanyLiquidityService {
       WHERE currency = ${lower}
       AND ("totalBalance" - "reservedBalance") >= ${dec}
     `;
-    return Number(result) > 0;
+
+    const reserved = Number(result) > 0;
+    if (!reserved) {
+      this.logger.warn(`Insufficient company liquidity to reserve ${amount.toString()} ${lower}`);
+    }
+
+    return reserved;
   }
 
   async releaseLiquidity(
