@@ -364,14 +364,6 @@ export class SwapTransactionHandler {
        toBigInt(linkedTx.platformFeeBase ?? 0)
      : exactFromMinorBooked;
 
-   const estimatedToMinor = swapRecord.toAmountOriginal
-     ? ConvertCurrency.toBase(
-         swapRecord.toAmountOriginal,
-         toCurrency,
-         toNet,
-       )
-     : 0n;
-
    if (
      event === 'swap_transaction.reversed' ||
      event === 'swap_transaction.failed'
@@ -383,13 +375,11 @@ export class SwapTransactionHandler {
        userId,
        fromCurrency,
        toCurrency,
-       fromNet,
        fromWallet.id,
        linkedTx?.id ?? null,
        reservedAmount,
        exactFromMinorBooked,
        data.from_amount,
-       estimatedToMinor,
      );
 
      await this.queueDashboard(swapId, userId, toCurrency, event, data.updated_at);
@@ -468,37 +458,18 @@ export class SwapTransactionHandler {
          tx,
        );
 
-       if (
-         await this.companyLiquidityService.isInternalBalanceExceeding(
-           toCurrency.toLowerCase(),
-           tx,
-         )
-       ) {
-         await tx.failedCompanyLiquidityTransaction.create({
-           data: {
-             transactionId: linkedTx?.id || swapRecord.transactionId,
-             currency: toCurrency.toLowerCase(),
-             amountBase: toDec.toString(),
-             providerResponse: {
-               reason: 'Internal balance exceeds company wallet balance after swap',
-               swapId,
-               fromCurrency: fromCurrency.toLowerCase(),
-               toCurrency: toCurrency.toLowerCase(),
-               amount: confirmedToAmount,
-             },
-           },
-         });
-       }
-
        if (linkedTx) {
          await tx.transaction.update({
            where: { id: linkedTx.id },
            data: {
              status: TransactionStatus.COMPLETED,
              isProcessed: true,
+             fromCurrency,
+             toCurrency,
              cryptoAmountBase: fromDec,
              cryptoAmountOriginal: confirmedFromAmount,
              executedCryptoAmountBase: fromDec,
+             executionPrice: confirmedExecutionPrice,
              executedAt: data.updated_at
                ? new Date(data.updated_at)
                : new Date(),
@@ -535,8 +506,15 @@ export class SwapTransactionHandler {
              network: toNet || null,
              transactionType: TransactionType.CREDIT,
              transactionContext: TransactionContext.SWAP,
+             fromCurrency,
+             toCurrency,
              cryptoAmountBase: toDec,
              cryptoAmountOriginal: confirmedToAmount,
+             executedCryptoAmountBase: toDec,
+             executionPrice: confirmedExecutionPrice,
+             executedAt: data.updated_at
+               ? new Date(data.updated_at)
+               : new Date(),
              fiatAmountBase: toDecimal(0n),
              fiatAmountOriginal: '0',
              description: `Swap received: ${confirmedToAmount} ${toCurrency}`,
@@ -644,13 +622,11 @@ export class SwapTransactionHandler {
    userId: string,
    fromCurrency: string,
    toCurrency: string,
-   fromNet: CryptoNetwork | undefined,
    fromWalletId: string,
    linkedTxId: string | null,
    reservedAmount: bigint,
    exactFromMinorBooked: bigint,
    fromAmountStr: string,
-   estimatedToMinor: bigint,
  ): Promise<void> {
    const isReversal = event === 'swap_transaction.reversed';
 
@@ -688,8 +664,8 @@ export class SwapTransactionHandler {
        }
 
        await this.companyLiquidityService.releaseLiquidity(
-         toCurrency,
-         estimatedToMinor,
+         fromCurrency,
+         exactFromMinorBooked,
          tx,
        );
      },

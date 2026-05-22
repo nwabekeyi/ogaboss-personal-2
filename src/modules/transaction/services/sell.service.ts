@@ -38,6 +38,8 @@ import {
  import { TransactionNotificationService } from './transaction-notification.service';
  import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
  import axios from 'axios';
+ import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+ import { QueueName } from '../../../infrastructure/bullMQ/types';
 
 @Injectable()
 export class SellService {
@@ -50,8 +52,20 @@ export class SellService {
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly redisService: RedisService,
     private readonly transactionNotificationService: TransactionNotificationService,
+    private readonly queueService: QueueService,
 
   ) {}
+
+  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+    const to = process.env.SUPERADMIN_EMAIL?.trim();
+    if (!to) return;
+    await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
+      to,
+      subject: '[ALERT] Insufficient company liquidity',
+      template: 'generic-notification',
+      context: { title: 'Insufficient company liquidity detected', data: payload },
+    });
+  }
 
   // ===================================================================
   // PREVIEW SELL
@@ -316,6 +330,13 @@ export class SellService {
             },
           },
         });
+        await this.notifySuperAdminLiquidityInsufficient({
+          context: 'SELL',
+          transactionId: transaction.id,
+          userId,
+          currency: BASE_CURRENCY,
+          amountBase: netFiatBase.toString(),
+        });
 
         return { transaction, order, queued: true };
       }
@@ -336,6 +357,13 @@ export class SellService {
               reason: 'Failed to reserve company NGN liquidity for sell payout',
             },
           },
+        });
+        await this.notifySuperAdminLiquidityInsufficient({
+          context: 'SELL',
+          transactionId: transaction.id,
+          userId,
+          currency: BASE_CURRENCY,
+          amountBase: netFiatBase.toString(),
         });
 
         return { transaction, order, queued: true };

@@ -36,6 +36,8 @@ import Decimal from 'decimal.js';
 import axios from 'axios';
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
+import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+import { QueueName } from '../../../infrastructure/bullMQ/types';
 
 @Injectable()
 export class WithdrawalService {
@@ -47,7 +49,19 @@ export class WithdrawalService {
     private readonly tempStore: TempStoreService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionNotificationService: TransactionNotificationService,
+    private readonly queueService: QueueService,
   ) {}
+
+  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+    const to = process.env.SUPERADMIN_EMAIL?.trim();
+    if (!to) return;
+    await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
+      to,
+      subject: '[ALERT] Insufficient company liquidity',
+      template: 'generic-notification',
+      context: { title: 'Insufficient company liquidity detected', data: payload },
+    });
+  }
 
    async previewSend(userId: string, dto: CreateSendPreviewDto) {
      const { currency, amount, toAddress, network, destinationTag } = dto;
@@ -350,6 +364,14 @@ export class WithdrawalService {
                 network: preview.network,
               },
             },
+          });
+          await this.notifySuperAdminLiquidityInsufficient({
+            context: 'WITHDRAWAL',
+            transactionId: transaction.id,
+            userId,
+            currency: preview.currency,
+            amountBase: totalDeductionBase.toString(),
+            amountOriginal: preview.totalDeduction,
           });
         }
   

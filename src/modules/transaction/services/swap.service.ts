@@ -22,6 +22,8 @@ import { TransactionService } from './transaction.service';
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
 import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
+import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+import { QueueName } from '../../../infrastructure/bullMQ/types';
 
 @Injectable()
 export class SwapService {
@@ -33,7 +35,19 @@ export class SwapService {
    private readonly tempStore: TempStoreService,
    private readonly companyLiquidityService: CompanyLiquidityService,
    private readonly transactionNotificationService: TransactionNotificationService,
+   private readonly queueService: QueueService,
  ) {}
+
+  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+    const to = process.env.SUPERADMIN_EMAIL?.trim();
+    if (!to) return;
+    await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
+      to,
+      subject: '[ALERT] Insufficient company liquidity',
+      template: 'generic-notification',
+      context: { title: 'Insufficient company liquidity detected', data: payload },
+    });
+  }
 
    /**
   * Preview a swap using an existing quote ID.
@@ -246,6 +260,15 @@ export class SwapService {
              providerResponse: { reason: 'Insufficient company liquidity' },
            },
          });
+         await this.notifySuperAdminLiquidityInsufficient({
+           context: 'SWAP',
+           transactionId: pendingTransaction.id,
+           userId,
+           currency: q.from,
+           amountBase: exactFromMinor.toString(),
+           fromCurrency: q.from,
+           toCurrency: q.to,
+         });
        }
      });
    } catch (error: any) {
@@ -334,7 +357,15 @@ export class SwapService {
          data: {
            transactionUniqueId: confirmedSwap.id,
            cryptoAmountOriginal: confirmedSwap.from_amount,
+           platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
+           totalAmountSentOriginal: new Decimal(confirmedSwap.from_amount)
+             .add(ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet))
+             .toString(),
+           executedCryptoAmountBase: toDecimal(exactFromMinor),
            executionPrice: confirmedSwap.execution_price,
+           executedAt: confirmedSwap.updated_at
+             ? new Date(confirmedSwap.updated_at)
+             : new Date(),
          },
        });
 

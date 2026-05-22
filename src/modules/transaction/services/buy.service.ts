@@ -26,6 +26,8 @@ import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { IBuyQuote } from './types';
 import { TransactionNotificationService } from './transaction-notification.service';
+import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+import { QueueName } from '../../../infrastructure/bullMQ/types';
 
 @Injectable()
 export class BuyService {
@@ -38,7 +40,22 @@ export class BuyService {
     private readonly paystackService: PaystackService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionNotificationService: TransactionNotificationService,
+    private readonly queueService: QueueService,
   ) {}
+
+  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+    const to = process.env.SUPERADMIN_EMAIL?.trim();
+    if (!to) return;
+    await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
+      to,
+      subject: '[ALERT] Insufficient company liquidity',
+      template: 'generic-notification',
+      context: {
+        title: 'Insufficient company liquidity detected',
+        data: payload,
+      },
+    });
+  }
 
   getPaymentMethods() {
     return [
@@ -334,6 +351,13 @@ export class BuyService {
               paymentType: paymentMethod.type,
             },
           },
+        });
+        await this.notifySuperAdminLiquidityInsufficient({
+          context: 'BUY',
+          transactionId: transactionRecord.id,
+          userId,
+          currency: BASE_CURRENCY,
+          amountBase: totalFiatMinor.toString(),
         });
       }
     });
