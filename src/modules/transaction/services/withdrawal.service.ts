@@ -13,7 +13,6 @@ import {
   TransactionType,
   WithdrawalStatus,
 } from '../../../infrastructure';
-import { QuidaxWithdrawalService } from '../../../infrastructure/providers/quidax';
 import { CreateSendPreviewDto, ConfirmSendDto } from '../dto';
 import {
   ConvertCurrency,
@@ -27,14 +26,18 @@ import {
   QUOTE_TTL_SECONDS,
   COOLDOWN_KEY_PREFIX,
   QUOTE_COOLDOWN_SECONDS,
+  MIN_TRANSACTION_USDT,
   QUIDAX_COMPANY_USERID,
 } from '../constants';
 import { TransactionService } from './transaction.service';
 import { TempStoreService } from '../../../infrastructure';
 import { randomUUID } from 'crypto';
 import Decimal from 'decimal.js';
+import axios from 'axios';
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
+import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+import { QueueName } from '../../../infrastructure/bullMQ/types';
 
 @Injectable()
 export class WithdrawalService {
@@ -42,12 +45,23 @@ export class WithdrawalService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
     private readonly transactionService: TransactionService,
     private readonly tempStore: TempStoreService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionNotificationService: TransactionNotificationService,
+    private readonly queueService: QueueService,
   ) {}
+
+  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+    const to = process.env.SUPERADMIN_EMAIL?.trim();
+    if (!to) return;
+    await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
+      to,
+      subject: '[ALERT] Insufficient company liquidity',
+      template: 'generic-notification',
+      context: { title: 'Insufficient company liquidity detected', data: payload },
+    });
+  }
 
    async previewSend(userId: string, dto: CreateSendPreviewDto) {
      const { currency, amount, toAddress, network, destinationTag } = dto;
@@ -107,10 +121,13 @@ export class WithdrawalService {
       normalizedNetwork as CryptoNetwork,
     );
 
-    const feeRes = await this.quidaxWithdrawalService.getWithdrawerFees({
-      currency: normalizedCurrency,
-      network: normalizedNetwork,
-    });
+    const feeRes = await axios.get(`${process.env.QUIDAX_API_URL}/fee`, {
+      params: { currency: normalizedCurrency, network: normalizedNetwork },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+      },
+    }).then((res) => res.data);
 
     if (!feeRes || feeRes.status !== 'success') {
       throw new BadRequestException(
@@ -236,6 +253,13 @@ export class WithdrawalService {
     const platformFeeBase = BigInt(preview.platformFeeBase);
     const totalDeductionBase = BigInt(preview.totalDeductionBase);
   
+    if (preview.currency?.toUpperCase() === 'USDT') {
+      const minUsdtBase = ConvertCurrency.toBase(MIN_TRANSACTION_USDT.toString(), 'usdt', preview.network as CryptoNetwork);
+      if (requestedAmountBase < minUsdtBase) {
+        throw new BadRequestException(`Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`);
+      }
+    }
+
     const isXRP = preview.currency.toLowerCase() === 'xrp';
   
     // SINGLE TRANSACTION BLOCK
@@ -325,12 +349,29 @@ export class WithdrawalService {
           await tx.failedCompanyLiquidityTransaction.create({
             data: {
               transactionId: transaction.id,
+              transactionType: 'WITHDRAWAL',
+              fromCurrency: preview.currency,
+              amountOriginal: preview.totalDeduction,
               currency: preview.currency,
               amountBase: totalDeductionBase.toString(),
               providerResponse: {
                 reason: 'Insufficient company liquidity at time of request',
+                requestedAmount: preview.requestedAmount,
+                networkFee: preview.networkFee,
+                platformFee: preview.platformFee,
+                totalDeduction: preview.totalDeduction,
+                recipientAddress: preview.toAddress,
+                network: preview.network,
               },
             },
+          });
+          await this.notifySuperAdminLiquidityInsufficient({
+            context: 'WITHDRAWAL',
+            transactionId: transaction.id,
+            userId,
+            currency: preview.currency,
+            amountBase: totalDeductionBase.toString(),
+            amountOriginal: preview.totalDeduction,
           });
         }
   
@@ -379,8 +420,9 @@ export class WithdrawalService {
     let providerWithdrawalId: string;
   
     try {
-      const response =
-        await this.quidaxWithdrawalService.createWithdrawerRequest({
+      const response = await axios.post(
+        `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`,
+        {
           user_id: QUIDAX_COMPANY_USERID,
           currency: preview.currency,
           amount: preview.requestedAmount,
@@ -390,7 +432,14 @@ export class WithdrawalService {
           reference: previewId,
           transaction_note: 'External crypto withdrawal',
           narration: `Send to ${preview.toAddress.slice(0, 8)}...`,
-        });
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          },
+        },
+      ).then((res) => res.data);
   
       if (response.status !== 'success' || !response.data?.id) {
         await this.compensateFailedWithdrawal(
@@ -527,12 +576,16 @@ export class WithdrawalService {
     }
 
     // PROCESSING: provider was called — we must tell Quidax to cancel first
-    const response = await this.quidaxWithdrawalService.cancelWithdrawerRequest(
+    const response = await axios.post(
+      `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
+      { user_id: 'me', withdrawal_id: withdrawal.providerWithdrawalId },
       {
-        user_id: 'me',
-        withdrawal_id: withdrawal.providerWithdrawalId,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
       },
-    );
+    ).then((res) => res.data);
 
     if (response.status !== 'success') {
       throw new BadRequestException(

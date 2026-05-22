@@ -78,6 +78,7 @@ export class FailedCompanyLiquidityService {
   }
 
   async autoProcessEligible(limit = 20) {
+    await this.expireStaleFailedRecords(3);
     const pendings = await this.getPending(limit);
     let processed = 0;
 
@@ -91,6 +92,53 @@ export class FailedCompanyLiquidityService {
     }
 
     return { scanned: pendings.length, processed };
+  }
+
+  private async expireStaleFailedRecords(maxAgeDays: number) {
+    const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+    const stale = await this.prisma.failedCompanyLiquidityTransaction.findMany({
+      where: {
+        createdAt: { lt: cutoff },
+      },
+      include: { Transaction: true },
+      take: 200,
+      orderBy: { createdAt: 'asc' },
+    });
+
+    for (const item of stale) {
+      if (!item.Transaction) continue;
+
+      await this.prisma.$transaction(async (tx) => {
+        const currency = item.currency || item.Transaction.currency;
+        const amount = toBigInt(item.amountBase);
+
+        await this.transactionService.releaseBalance(
+          tx,
+          item.Transaction.userId,
+          item.Transaction.currency,
+          amount,
+        );
+        await this.companyLiquidityService.releaseLiquidity(currency, amount, tx);
+
+        await tx.transaction.update({
+          where: { id: item.Transaction.id },
+          data: {
+            status: TransactionStatus.FAILED,
+            isProcessed: true,
+          },
+        });
+
+        await tx.failedCompanyLiquidityTransaction.delete({
+          where: { id: item.id },
+        });
+      });
+    }
+
+    if (stale.length > 0) {
+      this.logger.warn(
+        `Marked ${stale.length} stale failed-liquidity transactions as FAILED (older than ${maxAgeDays} days)`,
+      );
+    }
   }
 
   private async processFailedRecord(id: string) {

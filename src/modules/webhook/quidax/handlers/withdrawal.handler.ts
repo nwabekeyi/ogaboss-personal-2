@@ -315,27 +315,6 @@ export class WithdrawalWebhookHandler {
               );
             }
 
-            // Check if internal balance exceeds total balance
-            if (
-              await this.companyLiquidityService.isInternalBalanceExceeding(
-                currency.toLowerCase(),
-                tx,
-              )
-            ) {
-              await tx.failedCompanyLiquidityTransaction.create({
-                data: {
-                  transactionId: transaction.id,
-                  currency: currency.toLowerCase(),
-                  amountBase: amountSentToProvider.toString(),
-                  providerResponse: {
-                    reason:
-                      'Internal balance exceeds company wallet balance after withdrawal completion',
-                    reference,
-                    amountSent: confirmed.amount,
-                  },
-                },
-              });
-            }
           } else {
             // REJECTED: release the reserved balance back to available
             const reservedDec = toDecimal(totalAmountSentBase);
@@ -367,6 +346,7 @@ export class WithdrawalWebhookHandler {
                 networkFeeBase: toDecimal(feeBase),
                 networkFeeOriginal: confirmed.fee,
                 executedCryptoAmountBase: toDecimal(amountBase),
+                executionPrice: confirmed.amount,
                 executedAt: confirmed.done_at
                   ? new Date(confirmed.done_at)
                   : new Date(),
