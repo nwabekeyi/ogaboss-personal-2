@@ -14,9 +14,9 @@ import {
 import { PreviewSwapDto, ConfirmSwapDto } from '../dto';
 import { ConvertCurrency, CryptoNetwork } from '../../../shared';
 import Decimal from 'decimal.js';
+import axios from 'axios';
 import { TransactionService } from './transaction.service';
  import { TempStoreService } from '../../../infrastructure/databases/redis/temp-store.service';
- import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
  import { ISwapQuote } from './types';
 
 import { CompanyLiquidityService } from './company-liquidity.service';
@@ -29,7 +29,6 @@ export class SwapService {
 
  constructor(
    private readonly prisma: PrismaService,
-   private readonly quidaxSwapService: QuidaxSwapService,
    private readonly transactionService: TransactionService,
    private readonly tempStore: TempStoreService,
    private readonly companyLiquidityService: CompanyLiquidityService,
@@ -167,11 +166,20 @@ export class SwapService {
    // ============================================
    let refreshedQuotationId: string;
    try {
-     const refreshResponse = await this.quidaxSwapService.refreshInstantSwapQuote(QUIDAX_COMPANY_USERID, q.quotationId, {
-       from_currency: q.from.toLowerCase(),
-       to_currency: q.to.toLowerCase(),
-       from_amount: fromAmountHuman,
-     });
+     const refreshResponse = await axios.post(
+       `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/swap_quotation/${q.quotationId}/refresh`,
+       {
+         from_currency: q.from.toLowerCase(),
+         to_currency: q.to.toLowerCase(),
+         from_amount: fromAmountHuman,
+       },
+       {
+         headers: {
+           'Content-Type': 'application/json',
+           Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+         },
+       },
+     ).then((res) => res.data);
 
      const refreshedData = refreshResponse?.data;
      if (!refreshedData?.id) throw new BadRequestException('Cannot complete swap at the moment. Try again later.');
@@ -253,10 +261,16 @@ export class SwapService {
    // ============================================
    let confirmedSwap: any;
    try {
-     const confirmRes = await this.quidaxSwapService.confirmInstantSwap({
-       user_id: 'me',
-       quotation_id: refreshedQuotationId,
-     });
+     const confirmRes = await axios.post(
+       `${process.env.QUIDAX_API_URL}/users/me/swap_quotation/${refreshedQuotationId}/confirm`,
+       {},
+       {
+         headers: {
+           'Content-Type': 'application/json',
+           Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+         },
+       },
+     ).then((res) => res.data);
 
      confirmedSwap = confirmRes?.data;
      this.logger.debug(
