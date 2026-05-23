@@ -9,14 +9,10 @@ import {
   WithdrawalStatus,
   PaymentType,
 } from '../../../infrastructure/databases/prisma/generated/prisma/client';
-import {
-  QuidaxOrderService,
-  QuidaxSwapService,
-  QuidaxWithdrawalService,
-  TradingPair,
-} from '../../../infrastructure/providers/quidax';
+import { QuidaxWithdrawalService, TradingPair } from '../../../infrastructure/providers/quidax';
 
 import { PaystackService } from '../../../infrastructure/providers/paystack';
+import axios from 'axios';
 import {
   BASE_CURRENCY,
   LiquidityReservationStatus,
@@ -31,8 +27,6 @@ export class FailedCompanyLiquidityService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly companyLiquidityService: CompanyLiquidityService,
-    private readonly quidaxOrderService: QuidaxOrderService,
-    private readonly quidaxSwapService: QuidaxSwapService,
     private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
     private readonly paystackService: PaystackService,
     private readonly transactionService: TransactionService,
@@ -110,7 +104,6 @@ export class FailedCompanyLiquidityService {
       if (!item.Transaction) continue;
 
       await this.prisma.$transaction(async (tx) => {
-        const currency = item.currency || item.Transaction.currency;
         const amount = toBigInt(item.amountBase);
 
         await this.transactionService.releaseBalance(
@@ -119,7 +112,7 @@ export class FailedCompanyLiquidityService {
           item.Transaction.currency,
           amount,
         );
-        await this.companyLiquidityService.releaseLiquidity(currency, amount, tx);
+        // Do not release company liquidity here: failed-company records are created before company liquidity is reserved.
 
         await tx.transaction.update({
           where: { id: item.Transaction.id },
@@ -209,17 +202,23 @@ export class FailedCompanyLiquidityService {
     const market =
       `${transaction.currency.toLowerCase()}${BASE_CURRENCY}` as TradingPair;
 
-    const orderResponse = await this.quidaxOrderService.buyOrSellOrderRequest(
-      'me',
+    const orderResponse = await axios.post(
+      `${process.env.QUIDAX_API_URL}/users/me/orders`,
       {
         market,
         side: 'sell',
         ord_type: 'market',
         volume: Number(order.cryptoAmountOriginal),
       },
-    );
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
+      },
+    ).then((res) => res.data);
 
-    if (orderResponse.status !== 'success') {
+    if (orderResponse?.status !== 'success') {
       this.logger.warn(`Failed sell retry for ${transactionId}`);
       return false;
     }
@@ -259,14 +258,20 @@ export class FailedCompanyLiquidityService {
     });
     if (!tx || !swap || !failed.fromCurrency || !failed.toCurrency) return false;
 
-    const quotationRes = await this.quidaxSwapService.createInstantSwapRequest(
-      'me',
+    const quotationRes = await axios.post(
+      `${process.env.QUIDAX_API_URL}/users/me/swap_quotation`,
       {
         from_currency: failed.fromCurrency.toLowerCase(),
         to_currency: failed.toCurrency.toLowerCase(),
         from_amount: swap.amountOriginal,
       },
-    );
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
+      },
+    ).then((res) => res.data);
 
     if (!quotationRes?.data?.id) return false;
     if (swap.quotedPriceOriginal) {
@@ -285,10 +290,16 @@ export class FailedCompanyLiquidityService {
       }
     }
 
-    const confirmRes = await this.quidaxSwapService.confirmInstantSwap({
-      user_id: 'me',
-      quotation_id: quotationRes.data.id,
-    });
+    const confirmRes = await axios.post(
+      `${process.env.QUIDAX_API_URL}/users/me/swap`,
+      { quotation_id: quotationRes.data.id },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
+      },
+    ).then((res) => res.data);
 
     if (!confirmRes?.data?.id) return false;
 
