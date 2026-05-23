@@ -10,11 +10,7 @@ import {
 import { GetAdminTransactionsDto } from '../dto/get-admin-transactions.dto';
 import {
   TransactionFormatter,
-  toBigInt,
-  ConvertCurrency,
-  BASE_CURRENCY,
 } from '../../../shared';
-import { FailedCompanyLiquidityService } from '../../transaction/services';
 import { WebhookIdempotencyService } from '../../webhook/service/webhook-idempotency.service';
 import { QuidaxWebhookService } from '../../webhook/quidax/quidax-webhook-event.service';
 import { PaystackWebhookHandler } from '../../webhook/paystack';
@@ -26,7 +22,6 @@ import { transanctionHistoryTitle } from '../types';
 export class AdminTransactionService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly failedCompanyLiquidityService: FailedCompanyLiquidityService,
     private readonly webhookIdempotencyService: WebhookIdempotencyService,
     private readonly quidaxWebhookService: QuidaxWebhookService,
     private readonly paystackWebhookHandler: PaystackWebhookHandler,
@@ -136,6 +131,7 @@ export class AdminTransactionService {
       amountToken: `${transaction.cryptoAmountOriginal} ${transaction.currency.toUpperCase()}`,
       status: transaction.status,
       network: transaction.network || 'N/A',
+      transactionContext: transaction.transactionContext,
     };
 
     if (transaction.transactionContext === 'WITHDRAWAL') {
@@ -159,120 +155,9 @@ export class AdminTransactionService {
     };
   }
 
-  async getPendingFailedCompanyTransactions(limit = 100) {
-    const records = await this.failedCompanyLiquidityService.getPending(limit);
 
-    return {
-      success: true,
-      data: records.map((item) => ({
-        id: item.id,
-        transactionId: item.transactionId,
-        transactionUniqueId: item.Transaction?.transactionUniqueId,
-        context: item.Transaction?.transactionContext,
-        currency: item.currency,
-        amountBase: item.amountBase.toString(),
-        status: item.Transaction?.status,
-        userId: item.Transaction?.userId,
-        createdAt: item.createdAt,
-      })),
-      count: records.length,
-    };
-  }
 
-  async activateFailedCompanyTransaction(id: string) {
-    const result =
-      await this.failedCompanyLiquidityService.activateAndProcess(id);
 
-    return {
-      success: result.activated,
-      data: result,
-      message: result.activated
-        ? 'Failed company transaction activated for processing'
-        : `Could not activate transaction: ${result.reason}`,
-    };
-  }
-
-  async activateAllFailedCompanyTransactions() {
-    const pendingRecords =
-      await this.failedCompanyLiquidityService.getPending(1000);
-
-    if (pendingRecords.length === 0) {
-      return {
-        success: true,
-        data: { processed: 0, failed: 0, total: 0 },
-        message: 'No pending failed company transactions to process',
-      };
-    }
-
-    let processed = 0;
-    let failed = 0;
-    const errors: string[] = [];
-
-    for (const record of pendingRecords) {
-      const result =
-        await this.failedCompanyLiquidityService.activateAndProcess(record.id);
-
-      if (result.activated) {
-        processed += 1;
-      } else {
-        failed += 1;
-        errors.push(`${record.id}: ${result.reason}`);
-      }
-    }
-
-    return {
-      success: true,
-      data: {
-        total: pendingRecords.length,
-        processed,
-        failed,
-        errors: errors.slice(0, 10), // Limit errors to 10
-      },
-      message: `Processed ${processed} of ${pendingRecords.length} failed company transactions`,
-    };
-  }
-
-  async getCompanyLiquidityOverview() {
-    const liquidity = await this.prisma.companyLiquidity.findMany({
-      orderBy: { updatedAt: 'desc' },
-    });
-
-    return {
-      success: true,
-      data: {
-        liquidity: liquidity.map((item) => {
-          const totalBalanceBase = toBigInt(item.totalBalance);
-          const reservedBalanceBase = toBigInt(item.reservedBalance);
-          const internalBalanceBase = toBigInt(item.internalBalance);
-
-          const isFiat =
-            item.currency.toLowerCase() === BASE_CURRENCY.toLowerCase();
-
-          return {
-            currency: item.currency,
-            externalBalance: ConvertCurrency.fromBase(
-              totalBalanceBase.toString(),
-              item.currency,
-            ),
-            reservedBalance: ConvertCurrency.fromBase(
-              reservedBalanceBase.toString(),
-              item.currency,
-            ),
-            internalBalance: ConvertCurrency.fromBase(
-              internalBalanceBase.toString(),
-              item.currency,
-            ),
-            availableBalance: ConvertCurrency.fromBase(
-              (totalBalanceBase - reservedBalanceBase).toString(),
-              item.currency,
-            ),
-            isFiat,
-            updatedAt: item.updatedAt,
-          };
-        }),
-      },
-    };
-  }
 
   async getFailedWebhooks(dto: {
     provider?: string;

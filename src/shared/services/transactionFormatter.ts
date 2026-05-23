@@ -16,6 +16,7 @@ export interface FormattedTransaction {
   executedFiatAmountOriginal: string | null;
   executionPrice: string | null;
   executedAt: Date | null;
+  transactionContext: string;
 }
 
 export class TransactionFormatter {
@@ -68,6 +69,7 @@ export class TransactionFormatter {
       executedFiatAmountOriginal,
       executionPrice: transaction.executionPrice ?? null,
       executedAt: transaction.executedAt ?? null,
+      transactionContext: transaction.transactionContext,
     };
   }
 

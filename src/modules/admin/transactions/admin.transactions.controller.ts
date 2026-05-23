@@ -81,53 +81,6 @@ export class AdminTransactionController {
     return this.adminTransactionService.getAllTransactions(query);
   }
 
-  @Get('company-liquidity')
-  @ApiOperation({
-    summary:
-      '[ADMIN] Get company liquidity and pending failed company-liquidity transactions',
-  })
-  @RequirePermissions(Permission.ACCESS_TRANSACTION_HISTORY)
-  async getCompanyLiquidityOverview() {
-    return this.adminTransactionService.getCompanyLiquidityOverview();
-  }
-
-  @Get('failed-company/pending')
-  @ApiOperation({
-    summary: '[ADMIN] Get pending failed company-liquidity transactions',
-  })
-  @RequirePermissions(Permission.ACCESS_TRANSACTION_HISTORY)
-  async getPendingFailedCompanyTransactions() {
-    return this.adminTransactionService.getPendingFailedCompanyTransactions();
-  }
-
-  @Post('failed-company/:id/activate')
-  @AuditLog({
-    action: AuditAction.ADMIN_ACTIVATE_FAILED_COMPANY_TRANSACTION,
-    resource: AuditResource.ADMIN_TRANSACTIONS,
-    resourceIdPath: 'params.id',
-  })
-  @ApiOperation({
-    summary: '[ADMIN] Activate a failed company-liquidity transaction',
-  })
-  @RequirePermissions(Permission.ACCESS_TRANSACTION_HISTORY)
-  async activateFailedCompanyTransaction(@Param('id') id: string) {
-    return this.adminTransactionService.activateFailedCompanyTransaction(id);
-  }
-
-  @Post('failed-company/activate-all')
-  @AuditLog({
-    action: AuditAction.ADMIN_ACTIVATE_ALL_FAILED_COMPANY_TRANSACTIONS,
-    resource: AuditResource.ADMIN_TRANSACTIONS,
-  })
-  @ApiOperation({
-    summary:
-      '[ADMIN] Activate all pending failed company-liquidity transactions',
-  })
-  @RequirePermissions(Permission.ACCESS_TRANSACTION_HISTORY)
-  async activateAllFailedCompanyTransactions() {
-    return this.adminTransactionService.activateAllFailedCompanyTransactions();
-  }
-
   @Get(':id')
   @ApiOperation({ summary: '[ADMIN] Get single transaction details' })
   @RequirePermissions(Permission.ACCESS_TRANSACTION_HISTORY)

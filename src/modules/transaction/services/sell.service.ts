@@ -215,7 +215,7 @@ export class SellService {
 
     const userWallet = await this.prisma.wallet.findUnique({
       where: {
-        userId_currency: { userId, currency: quote.crypto.toLowerCase() },
+        userId_currency: { userId, currency: quote.crypto.toUpperCase() },
       },
       select: { quidaxWalletId: true },
     });
