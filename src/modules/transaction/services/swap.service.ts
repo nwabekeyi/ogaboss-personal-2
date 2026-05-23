@@ -232,7 +232,7 @@ export class SwapService {
          userId,
          transactionUniqueId: quoteId,
          network: fromNet || null,
-         currency: q.from,
+         currency: q.from.toUpperCase(),
          cryptoAmountBase: exactFromMinor,
          cryptoAmountOriginal: fromAmountHuman,
          platformFeeBase: platformFeeMinor,
@@ -252,10 +252,10 @@ export class SwapService {
            data: {
              transactionId: pendingTransaction.id,
              transactionType: 'SWAP',
-             fromCurrency: q.from,
-             toCurrency: q.to,
+             fromCurrency: q.from.toUpperCase(),
+             toCurrency: q.to.toUpperCase(),
              amountOriginal: fromAmountHuman,
-             currency: q.from,
+             currency: q.from.toUpperCase(),
              amountBase: exactFromMinor.toString(),
              providerResponse: { reason: 'Insufficient company liquidity' },
            },
@@ -264,10 +264,10 @@ export class SwapService {
            context: 'SWAP',
            transactionId: pendingTransaction.id,
            userId,
-           currency: q.from,
+           currency: q.from.toUpperCase(),
            amountBase: exactFromMinor.toString(),
-           fromCurrency: q.from,
-           toCurrency: q.to,
+           fromCurrency: q.from.toUpperCase(),
+           toCurrency: q.to.toUpperCase(),
          });
        }
      });
@@ -373,8 +373,8 @@ export class SwapService {
          data: {
            userId,
            quidaxAccountId,
-           fromCurrency: q.from,
-           toCurrency: q.to,
+           fromCurrency: q.from.toUpperCase(),
+           toCurrency: q.to.toUpperCase(),
            amountOriginal: confirmedSwap.from_amount,
            quotedPriceOriginal: ConvertCurrency.fromBase(q.protectedRateMinor, q.to, toNet),
            toAmountOriginal: confirmedSwap.received_amount,
