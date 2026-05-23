@@ -252,7 +252,7 @@ export class BuyService {
       where: {
         userId_currency: {
           userId,
-          currency: quote.crypto.toLowerCase(),
+          currency: quote.crypto.toUpperCase(),
         },
       },
       select: { quidaxWalletId: true },
