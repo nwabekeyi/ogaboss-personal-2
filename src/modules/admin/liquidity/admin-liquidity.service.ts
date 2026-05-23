@@ -1,7 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure';
 import { FailedCompanyLiquidityService } from '../../transaction/services';
-import { ConvertCurrency, CRYPTO_DECIMALS, FIAT_DECIMALS } from '../../../shared';
+import {
+  ConvertCurrency,
+  CRYPTO_DECIMALS,
+  FIAT_DECIMALS,
+  getCurrencyDecimals,
+} from '../../../shared';
 
 @Injectable()
 export class AdminLiquidityService {
@@ -63,7 +68,7 @@ export class AdminLiquidityService {
         fromCurrency: item.fromCurrency,
         toCurrency: item.toCurrency,
         context: item.Transaction?.transactionContext,
-        amount: this.fromBaseHuman(item.amountBase, item.currency),
+        amount: this.fromBaseHuman(item.amountBase, item.currency, item.Transaction?.network),
         status: item.Transaction?.status,
         userId: item.Transaction?.userId,
         createdAt: item.createdAt,
@@ -91,21 +96,34 @@ export class AdminLiquidityService {
     };
   }
 
-  private fromBaseHuman(amount: any, currency: string): string {
+  private fromBaseHuman(amount: any, currency: string, network?: string | null): string {
     const code = currency.toLowerCase();
-    const decimals = FIAT_DECIMALS[code] ?? CRYPTO_DECIMALS[code] ?? 8;
-    return ConvertCurrency.fromBase(amount, currency, decimals);
+
+    let decimals: number;
+    try {
+      decimals = getCurrencyDecimals(code, network ? (network.toLowerCase() as any) : undefined);
+    } catch {
+      decimals = FIAT_DECIMALS[code] ?? CRYPTO_DECIMALS[code] ?? 8;
+    }
+
+    return ConvertCurrency.fromBase(amount, code, decimals);
+  }
+
+  private getLiquidityNetwork(liquidityId: string): string | undefined {
+    const parts = String(liquidityId || '').split('-');
+    return parts.length >= 3 ? parts[parts.length - 1] : undefined;
   }
 
   private formatLiquidity(liquidity: any) {
+    const network = this.getLiquidityNetwork(liquidity.id);
     return {
       ...liquidity,
       currency: liquidity.currency,
-      totalBalance: this.fromBaseHuman(liquidity.totalBalance, liquidity.currency),
-      reservedBalance: this.fromBaseHuman(liquidity.reservedBalance, liquidity.currency),
-      internalBalance: this.fromBaseHuman(liquidity.internalBalance, liquidity.currency),
-      totalLockedPrincipal: this.fromBaseHuman(liquidity.totalLockedPrincipal, liquidity.currency),
-      totalAccruedLockedInterest: this.fromBaseHuman(liquidity.totalAccruedLockedInterest, liquidity.currency),
+      totalBalance: this.fromBaseHuman(liquidity.totalBalance, liquidity.currency, network),
+      reservedBalance: this.fromBaseHuman(liquidity.reservedBalance, liquidity.currency, network),
+      internalBalance: this.fromBaseHuman(liquidity.internalBalance, liquidity.currency, network),
+      totalLockedPrincipal: this.fromBaseHuman(liquidity.totalLockedPrincipal, liquidity.currency, network),
+      totalAccruedLockedInterest: this.fromBaseHuman(liquidity.totalAccruedLockedInterest, liquidity.currency, network),
     };
   }
 }
