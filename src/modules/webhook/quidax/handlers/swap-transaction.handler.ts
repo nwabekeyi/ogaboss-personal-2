@@ -427,6 +427,7 @@ export class SwapTransactionHandler {
      async (tx) => {
        const fromDec = toDecimal(confirmedFromBase);
        const reservedDec = toDecimal(reservedAmount);
+       const liquidityReservedDec = toDecimal(exactFromMinorBooked);
        const toDec = toDecimal(confirmedToBase);
 
        // FROM wallet: deduct full reserved amount
@@ -447,7 +448,7 @@ export class SwapTransactionHandler {
        // Company liquidity
        await this.companyLiquidityService.updateInternalBalance(
          fromCurrency.toLowerCase(),
-         reservedDec,
+         liquidityReservedDec,
          'subtract',
          tx,
        );
@@ -527,14 +528,19 @@ export class SwapTransactionHandler {
        // Company total/reserved liquidity adjustments
        await tx.$executeRaw`
          UPDATE "company_liquidity"
-         SET "totalBalance" = "totalBalance" + ${reservedDec}
+         SET "totalBalance" = "totalBalance" + ${liquidityReservedDec}
          WHERE "currency" = ${fromCurrency.toLowerCase()}
        `;
 
        await tx.$executeRaw`
          UPDATE "company_liquidity"
-         SET "reservedBalance" = "reservedBalance" - ${toDec},
-             "totalBalance" = "totalBalance" - ${toDec}
+         SET "reservedBalance" = GREATEST("reservedBalance" - ${liquidityReservedDec}, 0)
+         WHERE "currency" = ${fromCurrency.toLowerCase()}
+       `;
+
+       await tx.$executeRaw`
+         UPDATE "company_liquidity"
+         SET "totalBalance" = "totalBalance" - ${toDec}
          WHERE "currency" = ${toCurrency.toLowerCase()}
        `;
 
