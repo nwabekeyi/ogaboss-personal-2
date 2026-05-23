@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure';
 import { FailedCompanyLiquidityService } from '../../transaction/services';
-import { ConvertCurrency } from '../../../shared';
+import { ConvertCurrency, CRYPTO_DECIMALS, FIAT_DECIMALS } from '../../../shared';
 
 @Injectable()
 export class AdminLiquidityService {
@@ -43,12 +43,19 @@ export class AdminLiquidityService {
     };
   }
 
-  async getFailedCompanyLiquidity(limit = 100) {
-    const records = await this.failedCompanyLiquidityService.getPending(limit);
+  async getFailedCompanyLiquidity(page = 1, limit = 20) {
+    const safePage = page > 0 ? page : 1;
+    const safeLimit = limit > 0 ? Math.min(limit, 100) : 20;
+
+    const allRecords = await this.failedCompanyLiquidityService.getPending(1000);
+    const total = allRecords.length;
+    const totalPages = Math.max(1, Math.ceil(total / safeLimit));
+    const start = (safePage - 1) * safeLimit;
+    const data = allRecords.slice(start, start + safeLimit);
 
     return {
       success: true,
-      data: records.map((item) => ({
+      data: data.map((item) => ({
         id: item.id,
         transactionId: item.transactionId,
         transactionUniqueId: item.Transaction?.transactionUniqueId,
@@ -56,12 +63,19 @@ export class AdminLiquidityService {
         fromCurrency: item.fromCurrency,
         toCurrency: item.toCurrency,
         context: item.Transaction?.transactionContext,
-        amount: ConvertCurrency.fromBase(item.amountBase, item.currency),
+        amount: this.fromBaseHuman(item.amountBase, item.currency),
         status: item.Transaction?.status,
         userId: item.Transaction?.userId,
         createdAt: item.createdAt,
       })),
-      count: records.length,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages,
+        hasNext: safePage < totalPages,
+        hasPrev: safePage > 1,
+      },
     };
   }
 
@@ -77,21 +91,21 @@ export class AdminLiquidityService {
     };
   }
 
+  private fromBaseHuman(amount: any, currency: string): string {
+    const code = currency.toLowerCase();
+    const decimals = FIAT_DECIMALS[code] ?? CRYPTO_DECIMALS[code] ?? 8;
+    return ConvertCurrency.fromBase(amount, currency, decimals);
+  }
+
   private formatLiquidity(liquidity: any) {
     return {
       ...liquidity,
       currency: liquidity.currency,
-      totalBalance: ConvertCurrency.fromBase(liquidity.totalBalance, liquidity.currency),
-      reservedBalance: ConvertCurrency.fromBase(liquidity.reservedBalance, liquidity.currency),
-      internalBalance: ConvertCurrency.fromBase(liquidity.internalBalance, liquidity.currency),
-      totalLockedPrincipal: ConvertCurrency.fromBase(
-        liquidity.totalLockedPrincipal,
-        liquidity.currency,
-      ),
-      totalAccruedLockedInterest: ConvertCurrency.fromBase(
-        liquidity.totalAccruedLockedInterest,
-        liquidity.currency,
-      ),
+      totalBalance: this.fromBaseHuman(liquidity.totalBalance, liquidity.currency),
+      reservedBalance: this.fromBaseHuman(liquidity.reservedBalance, liquidity.currency),
+      internalBalance: this.fromBaseHuman(liquidity.internalBalance, liquidity.currency),
+      totalLockedPrincipal: this.fromBaseHuman(liquidity.totalLockedPrincipal, liquidity.currency),
+      totalAccruedLockedInterest: this.fromBaseHuman(liquidity.totalAccruedLockedInterest, liquidity.currency),
     };
   }
 }

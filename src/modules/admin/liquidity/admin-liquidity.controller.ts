@@ -25,9 +25,10 @@ export class AdminLiquidityController {
   @ApiOperation({ summary: '[ADMIN] Get failed company liquidity records' })
   @RequirePermissions(Permission.ACCESS_TRANSACTION_HISTORY)
   async getFailedCompanyLiquidity(
+    @Query('page', new ParseIntPipe({ optional: true })) page?: number,
     @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
   ) {
-    return this.adminLiquidityService.getFailedCompanyLiquidity(limit ?? 100);
+    return this.adminLiquidityService.getFailedCompanyLiquidity(page ?? 1, limit ?? 20);
   }
 
   @Post('failed/:id/restart')
