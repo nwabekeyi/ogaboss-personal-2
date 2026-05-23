@@ -51,6 +51,7 @@ export class FailedCompanyLiquidityService {
             currency: true,
             status: true,
             userId: true,
+            network: true,
           },
         },
       },
