@@ -20,6 +20,8 @@ import { AutoStackingSettingsController } from './currencies/controllers/auto-st
 import { AutoStackingSettingsService } from './currencies/services/auto-stacking-settings.service';
 import { TransactionModule } from '../transaction/transaction.module';
 import { WebhooksModule } from '../webhook/webhook.module';
+import { AdminLiquidityController } from './liquidity/admin-liquidity.controller';
+import { AdminLiquidityService } from './liquidity/admin-liquidity.service';
 
 @Module({
   imports: [TransactionModule, WebhooksModule],
@@ -33,6 +35,7 @@ import { WebhooksModule } from '../webhook/webhook.module';
     CryptoCurrencyRateController,
     UrgentLiquiditySettingsController,
     AutoStackingSettingsController,
+    AdminLiquidityController,
   ],
   providers: [
     AdminTransactionService,
@@ -45,6 +48,7 @@ import { WebhooksModule } from '../webhook/webhook.module';
     CryptoCurrencyRateService,
     UrgentLiquiditySettingsService,
     AutoStackingSettingsService,
+    AdminLiquidityService,
   ],
 })
 export class AdminModule {}

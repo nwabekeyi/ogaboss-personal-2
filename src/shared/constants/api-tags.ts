@@ -22,6 +22,7 @@ export const apiTags = {
   cryptoCurrencyRate: 'admin/currency/interest-rates',
   urgentLiquidity: 'admin/urgent-liquidity',
   autoStacking: 'admin/auto-stacking',
+  adminLiquidity: 'admin/liquidity',
   vault: 'vaults',
   settings: 'settings',
 };
