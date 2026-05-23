@@ -65,8 +65,10 @@ export class WithdrawalService {
 
    async previewSend(userId: string, dto: CreateSendPreviewDto) {
      const { currency, amount, toAddress, network, destinationTag } = dto;
-     const normalizedCurrency = currency.toLowerCase();
-     const normalizedNetwork = network?.toLowerCase();
+     const normalizedCurrency = currency.toUpperCase();
+     const normalizedNetwork = network?.toUpperCase();
+     const currencyKey = normalizedCurrency.toLowerCase();
+     const networkKey = normalizedNetwork?.toLowerCase();
     await this.transactionService.validateNetworkExists(
       userId,
       normalizedCurrency,
@@ -76,7 +78,7 @@ export class WithdrawalService {
     // ── EARLY CURRENCY & NETWORK VALIDATION (BEFORE QUIDAX CALL) ──────────────
     // Validate that the currency is supported for withdrawals
     if (
-      !CURRENCY_PRECISION[normalizedCurrency as keyof typeof CURRENCY_PRECISION]
+      !CURRENCY_PRECISION[currencyKey as keyof typeof CURRENCY_PRECISION]
     ) {
       this.logger.warn(`Withdrawal preview rejected: unsupported currency`, {
         userId,
@@ -90,9 +92,9 @@ export class WithdrawalService {
 
     // Validate that the network is valid for this currency
     const supportedNetworks = CURRENCY_PRECISION[
-      normalizedCurrency as keyof typeof CURRENCY_PRECISION
+      currencyKey as keyof typeof CURRENCY_PRECISION
     ].map((n) => n.id);
-    if (normalizedNetwork && !supportedNetworks.includes(normalizedNetwork)) {
+    if (networkKey && !supportedNetworks.includes(networkKey)) {
       this.logger.warn(
         `Withdrawal preview rejected: unsupported network for currency`,
         {
@@ -112,17 +114,17 @@ export class WithdrawalService {
 
     const decimals = getCurrencyDecimals(
       normalizedCurrency,
-      normalizedNetwork as CryptoNetwork,
+networkKey as CryptoNetwork,
     );
 
     const requestedAmountBase = ConvertCurrency.toBase(
       amount.toString(),
       normalizedCurrency,
-      normalizedNetwork as CryptoNetwork,
+networkKey as CryptoNetwork,
     );
 
     const feeRes = await axios.get(`${process.env.QUIDAX_API_URL}/fee`, {
-      params: { currency: normalizedCurrency, network: normalizedNetwork },
+      params: { currency: currencyKey, network: networkKey },
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
@@ -159,7 +161,7 @@ export class WithdrawalService {
     const networkFeeBase = ConvertCurrency.toBase(
       networkFeeHuman,
       normalizedCurrency,
-      normalizedNetwork as CryptoNetwork,
+networkKey as CryptoNetwork,
     );
 
     const platformFeeBase = BigInt(
@@ -178,7 +180,7 @@ export class WithdrawalService {
       previewId,
       userId,
       currency: normalizedCurrency,
-      network,
+      network: normalizedNetwork,
       toAddress,
       destinationTag,
       side: 'send',
@@ -189,13 +191,13 @@ export class WithdrawalService {
       platformFee: ConvertCurrency.fromBase(
         platformFeeBase.toString(),
         normalizedCurrency,
-        normalizedNetwork as CryptoNetwork,
+  networkKey as CryptoNetwork,
       ),
       platformFeeBase: platformFeeBase.toString(),
       totalDeduction: ConvertCurrency.fromBase(
         totalDeductionBase.toString(),
         normalizedCurrency,
-        normalizedNetwork as CryptoNetwork,
+  networkKey as CryptoNetwork,
       ),
       totalDeductionBase: totalDeductionBase.toString(),
       pinVerified: false,
@@ -260,7 +262,7 @@ export class WithdrawalService {
       }
     }
 
-    const isXRP = preview.currency.toLowerCase() === 'xrp';
+    const isXRP = preview.currency?.toUpperCase() === 'XRP';
   
     // SINGLE TRANSACTION BLOCK
     const { transaction, withdrawal, companyLiquidityReserved } =
