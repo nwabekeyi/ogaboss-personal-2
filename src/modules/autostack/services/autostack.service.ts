@@ -4,7 +4,7 @@ import { compareHash } from '../../../shared/services/hash';
 import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto } from '../dto/autostack.dto';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
-import { PaymentType, TransactionContext, TransactionStatus, TransactionType } from '../../../infrastructure/databases/prisma';
+import { PaymentType, Prisma, TransactionContext, TransactionStatus, TransactionType } from '../../../infrastructure/databases/prisma';
 import { TempStoreService } from '../../../infrastructure/databases/redis';
 
 const AUTOSTACK_QUOTE_TTL_SECONDS = 300;
@@ -16,13 +16,19 @@ export class AutoStackService {
   async quote(userId: string, dto: AutoStackQuoteDto) {
     void userId;
     const quoteId = crypto.randomUUID();
-    const rate = await this.prisma.cryptoCurrencyRate.findFirst({ where: { symbol: dto.asset.toUpperCase() } });
-    if (!rate) throw new NotFoundException('Asset rate not found');
-    const usdtRate = await this.prisma.cryptoCurrencyRate.findFirst({ where: { symbol: 'USDT' } });
-    if (!usdtRate) throw new NotFoundException('USDT rate not found');
-    const amountInUsdt = (dto.amount * (rate.sellRate?.toNumber() || 1)) / (usdtRate.buyRate?.toNumber() || 1);
+    const assetSymbol = dto.asset.toUpperCase();
+    const asset = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: assetSymbol }, include: { rate: true } });
+    if (!asset) throw new NotFoundException('Asset not found');
 
-    const payload = { quoteId, asset: dto.asset.toUpperCase(), amount: dto.amount, amountInUsdt, rate: rate.sellRate?.toNumber() || 0, expiresAt: Date.now() + AUTOSTACK_QUOTE_TTL_SECONDS * 1000, planName: dto.planName || 'AutoStack Plan', targetAsset: dto.asset.toUpperCase() };
+    const usdt = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: 'USDT' }, include: { rate: true } });
+    if (!usdt) throw new NotFoundException('USDT currency not found');
+
+    const assetDailyRatePercent = asset.rate?.dailyRatePercent?.toNumber() || 0;
+    const usdtDailyRatePercent = usdt.rate?.dailyRatePercent?.toNumber() || 0;
+    const conversionRate = assetSymbol === 'USDT' ? 1 : assetDailyRatePercent > 0 ? assetDailyRatePercent / 100 : usdtDailyRatePercent > 0 ? usdtDailyRatePercent / 100 : 1;
+    const amountInUsdt = dto.amount * conversionRate;
+
+    const payload = { quoteId, asset: assetSymbol, amount: dto.amount, amountInUsdt, rate: conversionRate, expiresAt: Date.now() + AUTOSTACK_QUOTE_TTL_SECONDS * 1000, planName: dto.planName || 'AutoStack Plan', targetAsset: assetSymbol };
     await this.tempStore.set(`autostack:${quoteId}`, JSON.stringify(payload), AUTOSTACK_QUOTE_TTL_SECONDS);
     return { success: true, data: { quoteId, rates: { assetToUsdt: payload.rate }, expiresIn: AUTOSTACK_QUOTE_TTL_SECONDS, amountInUsdt: amountInUsdt.toFixed(8) } };
   }
@@ -42,20 +48,21 @@ export class AutoStackService {
     if (!quoteJson) throw new NotFoundException('Quote not found or expired');
     const quote = JSON.parse(quoteJson);
 
-    const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({ where: { currency: 'USDT', fromAmount: { lte: quote.amountInUsdt }, toAmount: { gte: quote.amountInUsdt } } });
+    const amountInUsdt = Number(quote.amountInUsdt || 0);
+    const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({ where: { currency: 'USDT', fromAmount: { lte: new Prisma.Decimal(amountInUsdt) }, toAmount: { gte: new Prisma.Decimal(amountInUsdt) } } });
     const txFee = feeSetting?.feeAmount?.toNumber() || 0;
-    const txFeePct = quote.amountInUsdt > 0 ? (txFee / quote.amountInUsdt) * 100 : 0;
+    const txFeePct = amountInUsdt > 0 ? (txFee / amountInUsdt) * 100 : 0;
 
     const setting = await this.prisma.autoStackingSettings.findFirst();
-    const annual = setting?.dailyInterestRatePercent?.toNumber() || 0;
-    const periods = dto.frequency === 'DAILY' ? 365 : dto.frequency === 'WEEKLY' ? 52 : 12;
-    const interest = quote.amountInUsdt * (annual / 100) * (1 / periods);
-    const amountOut = quote.amountInUsdt - txFee + interest;
+    const dailyInterestRatePercent = setting?.dailyInterestRatePercent?.toNumber() || 0;
+    const periods = dto.frequency === 'DAILY' ? 1 : dto.frequency === 'WEEKLY' ? 7 : 30;
+    const interest = amountInUsdt * (dailyInterestRatePercent / 100) * periods;
+    const amountOut = amountInUsdt - txFee + interest;
 
-    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: annual, amountOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth };
+    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: dailyInterestRatePercent, amountOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth };
     await this.tempStore.set(quoteKey, JSON.stringify(preview), Math.ceil((quote.expiresAt - Date.now()) / 1000));
 
-    return { success: true, data: { amount: quote.amountInUsdt, frequency: dto.frequency, paymentType: dto.paymentType, planName: quote.planName, rate: quote.rate, transactionFee: txFee, interestRate: annual, amountOut, transactionFeePercentage: txFeePct } };
+    return { success: true, data: { amount: amountInUsdt, frequency: dto.frequency, paymentType: dto.paymentType, planName: quote.planName, rate: quote.rate, transactionFee: txFee, interestRate: dailyInterestRatePercent, amountOut, transactionFeePercentage: txFeePct } };
   }
 
   async confirm(userId: string, dto: AutoStackConfirmDto) {

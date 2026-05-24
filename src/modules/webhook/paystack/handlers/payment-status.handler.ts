@@ -39,7 +39,6 @@ import {
 } from '../../../../shared';
 import Decimal from 'decimal.js';
 import axios from 'axios';
-import { backoff_retries } from '../../constant';
 
 @Injectable()
 export class PaystackWebhookHandler {
@@ -262,10 +261,6 @@ export class PaystackWebhookHandler {
     );
 
     if (response.status !== 'success') {
-      const retryCount = (currentMetadata.quidaxOrderRetryCount || 0) + 1;
-      const MAX_RETRIES = backoff_retries;
-
-      // Record the retry attempt
       await this.prisma.transaction.update({
         where: { id: transaction.id },
         data: {
@@ -273,35 +268,6 @@ export class PaystackWebhookHandler {
             ...currentMetadata,
             ...data,
             currency: transaction.currency,
-            quidaxOrderRetryCount: retryCount,
-            quidaxOrderStatus: 'retrying',
-            lastQuidaxError: response?.message ?? 'order placement failed',
-          } as Prisma.InputJsonValue,
-        },
-      });
-
-      if (retryCount < MAX_RETRIES) {
-        this.logger.warn(
-          `Buy order attempt ${retryCount}/${MAX_RETRIES} failed for transaction ${transaction.id}: ${response?.message} — will retry`,
-        );
-        throw new InternalServerErrorException(
-          'Company buy order placement failed. Will retry.',
-        );
-      }
-
-      // Last retry exhausted — record failure for manual resolution
-      this.logger.error(
-        `Buy order failed after ${MAX_RETRIES} attempts for transaction ${transaction.id}: ${response?.message} — Paystack succeeded, Quidax failed. Recording for manual resolution.`,
-      );
-
-      await this.prisma.transaction.update({
-        where: { id: transaction.id },
-        data: {
-          paymentMetadata: {
-            ...currentMetadata,
-            ...data,
-            currency: transaction.currency,
-            quidaxOrderRetryCount: retryCount,
             quidaxOrderStatus: 'failed',
             lastQuidaxError: response?.message ?? 'order placement failed',
             buyOrderStatus: 'failed_pending_resolution',
@@ -309,8 +275,12 @@ export class PaystackWebhookHandler {
         },
       });
 
+      this.logger.error(
+        `Buy order failed for transaction ${transaction.id}: ${response?.message} — relying on queue-level retries.`,
+      );
+
       throw new InternalServerErrorException(
-        'Buy order placement failed after all retries. Recorded for manual resolution.',
+        'Buy order placement failed. Queued retry will re-attempt.',
       );
     }
 
@@ -390,7 +360,7 @@ export class PaystackWebhookHandler {
         await tx.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...(transaction.paymentMetadata || {}), ...data, autostackFlow: 'SWAP', autostackSwapQuotationId: quotationRes.data.id, autostackSwapId: confirmRes?.data?.id || null } as Prisma.InputJsonValue } });
       });
 
-      return true;
+      return;
     }
 
     // card/usdt path => buy order; final autostack completion will happen in order_done webhook
