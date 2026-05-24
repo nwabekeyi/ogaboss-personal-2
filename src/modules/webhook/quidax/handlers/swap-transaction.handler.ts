@@ -291,7 +291,12 @@ export class SwapTransactionHandler {
          });
        }
 
-       await tx.swapTransaction.update({
+
+
+         const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
+         if (linkedTx.transactionContext === TransactionContext.AUTOSTACK && String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' && meta.autoStackId) {
+           await tx.autoStack.update({ where: { id: String(meta.autoStackId) }, data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any } });
+         }       await tx.swapTransaction.update({
          where: { id: swapRecord.id },
          data: {
            status: TransactionStatus.COMPLETED,
@@ -352,8 +357,20 @@ export class SwapTransactionHandler {
        transactionType: TransactionType.DEBIT,
        userId,
      },
-     select: { id: true, cryptoAmountBase: true, platformFeeBase: true },
+     select: { id: true, cryptoAmountBase: true, platformFeeBase: true, paymentMetadata: true, transactionContext: true },
    });
+
+   if (!linkedTx) {
+     linkedTx = await this.prisma.transaction.findFirst({
+       where: {
+         transactionContext: TransactionContext.AUTOSTACK,
+         transactionType: TransactionType.DEBIT,
+         transactionUniqueId: swapRecord.quoteId || undefined,
+         userId,
+       },
+       select: { id: true, cryptoAmountBase: true, platformFeeBase: true, paymentMetadata: true, transactionContext: true },
+     });
+   }
 
    const exactFromMinorBooked = linkedTx
      ? toBigInt(linkedTx.cryptoAmountBase)
