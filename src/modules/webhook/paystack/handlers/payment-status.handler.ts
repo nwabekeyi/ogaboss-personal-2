@@ -178,6 +178,10 @@ export class PaystackWebhookHandler {
     },
   ): Promise<void> {
     const companyUserId = 'me';
+    const meta = (transaction.paymentMetadata || {}) as Record<string, any>;
+    if (meta?.mode === 'AUTOSTACK_PERIODIC') {
+      await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...meta, ...data, autostackWebhookProcessedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
+    }
     const cryptoAmountOriginal = transaction.cryptoAmountOriginal ?? '0';
     const executedCryptoVolume = parseFloat(cryptoAmountOriginal);
 
