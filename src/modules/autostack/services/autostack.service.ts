@@ -1,4 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { QuidaxTickerService } from '../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
+import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
+import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { compareHash } from '../../../shared/services/hash';
 import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto } from '../dto/autostack.dto';
@@ -7,11 +10,11 @@ import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { PaymentType, Prisma, TransactionContext, TransactionStatus, TransactionType } from '../../../infrastructure/databases/prisma';
 import { TempStoreService } from '../../../infrastructure/databases/redis';
 
-const AUTOSTACK_QUOTE_TTL_SECONDS = 300;
+import { AUTOSTACK_DEFAULT_PLAN_NAME, AUTOSTACK_FREQUENCY_PERIOD_DAYS, AUTOSTACK_QUOTE_TTL_SECONDS } from '../constants/autostack.constants';
 
 @Injectable()
 export class AutoStackService {
-  constructor(private readonly prisma: PrismaService, private readonly queueService: QueueService, private readonly tempStore: TempStoreService) {}
+  constructor(private readonly prisma: PrismaService, private readonly queueService: QueueService, private readonly tempStore: TempStoreService, private readonly tickerService: QuidaxTickerService, private readonly quidaxSwapService: QuidaxSwapService, private readonly paystackService: PaystackService) {}
 
   async quote(userId: string, dto: AutoStackQuoteDto) {
     void userId;
@@ -20,15 +23,15 @@ export class AutoStackService {
     const asset = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: assetSymbol }, include: { rate: true } });
     if (!asset) throw new NotFoundException('Asset not found');
 
-    const usdt = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: 'USDT' }, include: { rate: true } });
-    if (!usdt) throw new NotFoundException('USDT currency not found');
+    const pair = `${assetSymbol.toLowerCase()}usdt`;
+    const tickerRate = assetSymbol === 'USDT' ? '1' : await this.tickerService.getPrice(pair);
+    if (!tickerRate) throw new BadRequestException(`Unable to fetch conversion rate for ${assetSymbol}`);
 
-    const assetDailyRatePercent = asset.rate?.dailyRatePercent?.toNumber() || 0;
-    const usdtDailyRatePercent = usdt.rate?.dailyRatePercent?.toNumber() || 0;
-    const conversionRate = assetSymbol === 'USDT' ? 1 : assetDailyRatePercent > 0 ? assetDailyRatePercent / 100 : usdtDailyRatePercent > 0 ? usdtDailyRatePercent / 100 : 1;
+    const conversionRate = Number(tickerRate);
+    if (!Number.isFinite(conversionRate) || conversionRate <= 0) throw new BadRequestException(`Invalid conversion rate for ${assetSymbol}`);
     const amountInUsdt = dto.amount * conversionRate;
 
-    const payload = { quoteId, asset: assetSymbol, amount: dto.amount, amountInUsdt, rate: conversionRate, expiresAt: Date.now() + AUTOSTACK_QUOTE_TTL_SECONDS * 1000, planName: dto.planName || 'AutoStack Plan', targetAsset: assetSymbol };
+    const payload = { quoteId, asset: assetSymbol, amount: dto.amount, amountInUsdt, rate: conversionRate, expiresAt: Date.now() + AUTOSTACK_QUOTE_TTL_SECONDS * 1000, planName: dto.planName || AUTOSTACK_DEFAULT_PLAN_NAME, targetAsset: assetSymbol };
     await this.tempStore.set(`autostack:${quoteId}`, JSON.stringify(payload), AUTOSTACK_QUOTE_TTL_SECONDS);
     return { success: true, data: { quoteId, rates: { assetToUsdt: payload.rate }, expiresIn: AUTOSTACK_QUOTE_TTL_SECONDS, amountInUsdt: amountInUsdt.toFixed(8) } };
   }
@@ -55,14 +58,14 @@ export class AutoStackService {
 
     const setting = await this.prisma.autoStackingSettings.findFirst();
     const dailyInterestRatePercent = setting?.dailyInterestRatePercent?.toNumber() || 0;
-    const periods = dto.frequency === 'DAILY' ? 1 : dto.frequency === 'WEEKLY' ? 7 : 30;
+    const periods = AUTOSTACK_FREQUENCY_PERIOD_DAYS[dto.frequency];
     const interest = amountInUsdt * (dailyInterestRatePercent / 100) * periods;
-    const amountOut = amountInUsdt - txFee + interest;
+    const estimatedOut = amountInUsdt - txFee + interest;
 
-    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: dailyInterestRatePercent, amountOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth };
+    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: dailyInterestRatePercent, estimatedOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth };
     await this.tempStore.set(quoteKey, JSON.stringify(preview), Math.ceil((quote.expiresAt - Date.now()) / 1000));
 
-    return { success: true, data: { amount: amountInUsdt, frequency: dto.frequency, paymentType: dto.paymentType, planName: quote.planName, rate: quote.rate, transactionFee: txFee, interestRate: dailyInterestRatePercent, amountOut, transactionFeePercentage: txFeePct } };
+    return { success: true, data: { amount: amountInUsdt, frequency: dto.frequency, paymentType: dto.paymentType, planName: quote.planName, rate: quote.rate, transactionFee: txFee, interestRate: dailyInterestRatePercent, estimatedOut, transactionFeePercentage: txFeePct } };
   }
 
   async confirm(userId: string, dto: AutoStackConfirmDto) {
@@ -75,12 +78,25 @@ export class AutoStackService {
     const usdt = await this.prisma.cryptoCurrency.findFirst({ where: { symbol: 'USDT' } });
     if (!usdt) throw new NotFoundException('USDT currency not found');
     const nextExecutionAt = new Date(preview.startDate || new Date());
-    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
+    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: 'ACTIVE', transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
 
-    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: `autostack-config-${autoStack.id}`, currency: 'USDT', fiatAmountBase: '0', transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType: (preview.paymentType === 'CARD' ? PaymentType.CARD : PaymentType.PAYSTACK), paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT' } as any, description: `autostack_config:${autoStack.id}` } as any });
+    const reference = `autostack-confirm-${autoStack.id}-${Date.now()}`;
+    const paymentType = preview.paymentType === 'CRYPTO_WALLET' ? PaymentType.PAYSTACK : PaymentType.CARD;
+
+    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: reference, currency: 'USDT', fiatAmountBase: Math.floor(preview.amountInUsdt * 1_000_000).toString(), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT' } as any, description: `autostack_config:${autoStack.id}` } as any });
+
+    if (preview.paymentType === 'CRYPTO_WALLET') {
+      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(userId, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
+      const quotationId = swapQuote?.data?.swap_quotation?.id;
+      if (!quotationId) throw new BadRequestException('Unable to create swap quotation');
+      await this.quidaxSwapService.confirmInstantSwap({ user_id: userId, quotation_id: quotationId }, { skipCircuitBreaker: true });
+    } else {
+      if (!preview.paymentCardId) throw new BadRequestException('Payment card is required for card autostack');
+      await this.paystackService.chargeSavedCard({ paymentCardId: preview.paymentCardId, amount: Number(preview.amountInUsdt), reference, metadata: { autoStackId: autoStack.id, mode: 'AUTOSTACK_PERIODIC' } }, { skipCircuitBreaker: true });
+    }
 
     await this.queueService.add(QueueName.CLEANUP, 'autostack.execute', { autoStackId: autoStack.id }, { jobId: `autostack:${autoStack.id}`, delay: Math.max(nextExecutionAt.getTime() - Date.now(), 0) });
-    return { success: true, message: 'Autostack created', data: autoStack };
+    return { success: true, message: 'Autostack created and awaiting webhook completion', data: autoStack };
   }
 
   async getHistory(userId: string, page = 1, limit = 20) { const skip = (page - 1) * limit; const [items, total] = await Promise.all([this.prisma.autoStack.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, skip, take: limit, include: { cryptoCurrency: true } }), this.prisma.autoStack.count({ where: { userId } })]); return { success: true, data: { items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } } }; }
