@@ -38,6 +38,7 @@ import {
   toDecimal,
 } from '../../../../shared';
 import Decimal from 'decimal.js';
+import axios from 'axios';
 import { backoff_retries } from '../../constant';
 
 @Injectable()
@@ -82,7 +83,7 @@ export class PaystackWebhookHandler {
         transaction.status === TransactionStatus.FAILED
       ) {
         this.logger.warn(`Transaction ${reference} already processed`);
-        return;
+        return true;
       }
 
       const verification = await this.paystackService.verifyTransaction(
@@ -148,12 +149,12 @@ export class PaystackWebhookHandler {
           );
         }
       }
-      return;
+      return true;
     }
 
     if (payload.event === 'transfer.success') {
       await this.handleTransferSuccess(data?.reference, data);
-      return;
+      return true;
     }
 
     if (
@@ -161,7 +162,7 @@ export class PaystackWebhookHandler {
       payload.event === 'transfer.reversed'
     ) {
       await this.handleTransferFailure(data?.reference, data, payload.event);
-      return;
+      return true;
     }
 
     // Unknown / unhandled event
@@ -182,6 +183,11 @@ export class PaystackWebhookHandler {
     if (meta?.mode === 'AUTOSTACK_PERIODIC') {
       await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...meta, ...data, autostackWebhookProcessedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
     }
+    if (transaction.transactionContext === TransactionContext.AUTOSTACK) {
+      const handled = await this.handleAutoStackSuccess(transaction, data, meta);
+      if (handled) return;
+    }
+
     const cryptoAmountOriginal = transaction.cryptoAmountOriginal ?? '0';
     const executedCryptoVolume = parseFloat(cryptoAmountOriginal);
 
@@ -212,7 +218,7 @@ export class PaystackWebhookHandler {
         this.logger.warn(
           `Liquidity already released for failed payment: ${transaction.id}`,
         );
-        return;
+        return true;
       }
 
       if (
@@ -223,7 +229,7 @@ export class PaystackWebhookHandler {
         this.logger.warn(
           `Quidax order already submitted/processing for transaction ${transaction.id}`,
         );
-        return;
+        return true;
       }
 
       // Mark as processing to prevent concurrent webhooks from proceeding
@@ -364,6 +370,33 @@ export class PaystackWebhookHandler {
     );
   }
 
+  private async handleAutoStackSuccess(transaction: any, data: any, meta: Record<string, any>): Promise<boolean> {
+    const targetAsset = String(meta.targetAsset || 'USDT').toUpperCase();
+    const baseAsset = String(transaction.currency || 'USDT').toUpperCase();
+
+    if (meta.paymentType === PaymentType.CRYPTO_WALLET || targetAsset !== baseAsset) {
+      const quotationRes = await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_quotation`, {
+        from_currency: baseAsset.toLowerCase(),
+        to_currency: targetAsset.toLowerCase(),
+        from_amount: Number(transaction.cryptoAmountOriginal || 0),
+      }, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } }).then((r) => r.data);
+
+      if (!quotationRes?.data?.id) throw new BadRequestException('Failed to create autostack swap quotation');
+
+      const confirmRes = await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_quotation/${quotationRes.data.id}/confirm`, {}, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } }).then((r) => r.data);
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.swapTransaction.create({ data: { userId: transaction.userId, quidaxAccountId: 'me', fromCurrency: baseAsset, toCurrency: targetAsset, amountOriginal: String(transaction.cryptoAmountOriginal || 0), quoteId: transaction.transactionUniqueId, swapId: confirmRes?.data?.id || quotationRes?.data?.id, status: 'pending', description: `Autostack swap ${baseAsset} -> ${targetAsset}` } });
+        await tx.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...(transaction.paymentMetadata || {}), ...data, autostackFlow: 'SWAP', autostackSwapQuotationId: quotationRes.data.id, autostackSwapId: confirmRes?.data?.id || null } as Prisma.InputJsonValue } });
+      });
+
+      return true;
+    }
+
+    // card/usdt path => buy order; final autostack completion will happen in order_done webhook
+    return false;
+  }
+
   private async compensateFailedBuyOrder(
     transaction: any,
     data: {
@@ -457,7 +490,7 @@ export class PaystackWebhookHandler {
       this.logger.warn(
         `Refund already completed for transaction ${transaction.id}`,
       );
-      return;
+      return true;
     }
 
     try {
@@ -634,7 +667,7 @@ export class PaystackWebhookHandler {
       this.logger.warn(
         `Sell payout order not found for transfer reference ${reference}`,
       );
-      return;
+      return true;
     }
 
     const transaction = await this.prisma.transaction.findUnique({
@@ -666,7 +699,7 @@ export class PaystackWebhookHandler {
       this.logger.error(
         `Sell payout ${transaction.id}: no valid amount to deduct — cannot process`,
       );
-      return;
+      return true;
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -822,7 +855,7 @@ export class PaystackWebhookHandler {
       this.logger.warn(
         `Sell payout order not found for transfer reference ${reference}`,
       );
-      return;
+      return true;
     }
 
     const transaction = await this.prisma.transaction.findUnique({

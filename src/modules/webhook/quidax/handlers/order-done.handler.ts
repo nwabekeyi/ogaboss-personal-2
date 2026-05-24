@@ -94,6 +94,7 @@ export class OrderDoneHandler {
         fiatAmountBase: true,
         platformFeeBase: true,
         bufferAmountBase: true,
+        transactionContext: true,
       },
     });
 
@@ -703,6 +704,13 @@ export class OrderDoneHandler {
       this.logger.error(
         `Failed to send notification for order ${order.id}: ${error?.message}`,
       );
+    }
+
+    if (isBuy && transaction.transactionContext === TransactionContext.AUTOSTACK) {
+      const meta = (paymentMetadata || {}) as Record<string, any>;
+      if (String(meta.paymentType || '').toUpperCase() !== 'CRYPTO_WALLET' && meta.autoStackId) {
+        await this.prisma.autoStack.update({ where: { id: String(meta.autoStackId) }, data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any } }).catch(() => undefined);
+      }
     }
 
     // Only queue dashboard stats for buy (completed immediately).
