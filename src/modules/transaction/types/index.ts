@@ -28,6 +28,7 @@ export enum TransactionContext {
   TRANSFER = 'TRANSFER',
   BUY = 'BUY',
   SELL = 'SELL',
+  AUTOSTACK = 'AUTOSTACK',
 }
 
 // src/modules/transaction/types.ts

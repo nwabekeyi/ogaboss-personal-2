@@ -22,7 +22,7 @@ export class AutoStackService {
     if (!usdtRate) throw new NotFoundException('USDT rate not found');
     const amountInUsdt = (dto.amount * (rate.sellRate?.toNumber() || 1)) / (usdtRate.buyRate?.toNumber() || 1);
 
-    const payload = { quoteId, asset: dto.asset.toUpperCase(), amount: dto.amount, amountInUsdt, rate: rate.sellRate?.toNumber() || 0, expiresAt: Date.now() + AUTOSTACK_QUOTE_TTL_SECONDS * 1000, planName: dto.planName || 'AutoStack Plan' };
+    const payload = { quoteId, asset: dto.asset.toUpperCase(), amount: dto.amount, amountInUsdt, rate: rate.sellRate?.toNumber() || 0, expiresAt: Date.now() + AUTOSTACK_QUOTE_TTL_SECONDS * 1000, planName: dto.planName || 'AutoStack Plan', targetAsset: dto.asset.toUpperCase() };
     await this.tempStore.set(`autostack:${quoteId}`, JSON.stringify(payload), AUTOSTACK_QUOTE_TTL_SECONDS);
     return { success: true, data: { quoteId, rates: { assetToUsdt: payload.rate }, expiresIn: AUTOSTACK_QUOTE_TTL_SECONDS, amountInUsdt: amountInUsdt.toFixed(8) } };
   }
@@ -70,7 +70,7 @@ export class AutoStackService {
     const nextExecutionAt = new Date(preview.startDate || new Date());
     const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
 
-    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: `autostack-config-${autoStack.id}`, currency: 'USDT', fiatAmountBase: '0', transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.BUY, status: TransactionStatus.PENDING, paymentType: (preview.paymentType === 'CARD' ? PaymentType.CARD : PaymentType.PAYSTACK), paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null } as any, description: `autostack_config:${autoStack.id}` } as any });
+    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: `autostack-config-${autoStack.id}`, currency: 'USDT', fiatAmountBase: '0', transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType: (preview.paymentType === 'CARD' ? PaymentType.CARD : PaymentType.PAYSTACK), paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT' } as any, description: `autostack_config:${autoStack.id}` } as any });
 
     await this.queueService.add(QueueName.CLEANUP, 'autostack.execute', { autoStackId: autoStack.id }, { jobId: `autostack:${autoStack.id}`, delay: Math.max(nextExecutionAt.getTime() - Date.now(), 0) });
     return { success: true, message: 'Autostack created', data: autoStack };

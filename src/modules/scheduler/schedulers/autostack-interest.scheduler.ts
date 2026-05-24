@@ -47,7 +47,7 @@ export class AutoStackInterestScheduler {
     if (meta.paymentType !== 'CARD' || !meta.paymentCardId) return;
 
     const chargeReference = `autostack-charge-${stack.id}-${Date.now()}`;
-    await this.prisma.transaction.create({ data: { userId: stack.userId, transactionUniqueId: chargeReference, currency: 'USDT', fiatAmountBase: stack.amount.toFixed(0), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.BUY, status: TransactionStatus.PENDING, paymentType: PaymentType.CARD, paymentMetadata: { autoStackId: stack.id, mode: 'AUTOSTACK_PERIODIC' } as any, description: `autostack_charge:${stack.id}` } as any });
+    await this.prisma.transaction.create({ data: { userId: stack.userId, transactionUniqueId: chargeReference, currency: 'USDT', fiatAmountBase: stack.amount.toFixed(0), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType: PaymentType.CARD, paymentMetadata: { autoStackId: stack.id, mode: 'AUTOSTACK_PERIODIC', targetAsset: meta.targetAsset || 'USDT' } as any, description: `autostack_charge:${stack.id}` } as any });
 
     await this.paystackService.chargeSavedCard({ paymentCardId: meta.paymentCardId, amount: Number(stack.amount.toFixed(0)), reference: chargeReference, metadata: { autoStackId: stack.id, mode: 'AUTOSTACK_PERIODIC' } });
 
