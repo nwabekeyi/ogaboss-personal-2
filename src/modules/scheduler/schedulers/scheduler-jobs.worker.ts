@@ -32,6 +32,8 @@ export class SchedulerJobsWorker extends WorkerHost {
         return this.autoStackScheduler.execute();
       case 'scheduler.autostack-interest.shard':
         return this.autoStackScheduler.executeShard(job.data?.ids ?? [], job.data?.asOf);
+      case 'scheduler.autostack.charge':
+        return this.autoStackScheduler.executeCharge(job.data?.autoStackId);
       case 'scheduler.failed-company-liquidity':
         return this.failedCompanyLiquidityScheduler.execute();
       case 'scheduler.vault-interest':
