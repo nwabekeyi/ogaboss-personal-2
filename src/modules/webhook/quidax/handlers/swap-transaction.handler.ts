@@ -376,9 +376,10 @@ export class SwapTransactionHandler {
      ? toBigInt(linkedTx.cryptoAmountBase)
      : ConvertCurrency.toBase(data.from_amount, fromCurrency, fromNet);
 
+   const txFeeBase = linkedTx ? toBigInt(linkedTx.platformFeeBase ?? 0) : 0n;
+
    const reservedAmount = linkedTx
-     ? toBigInt(linkedTx.cryptoAmountBase) +
-       toBigInt(linkedTx.platformFeeBase ?? 0)
+     ? toBigInt(linkedTx.cryptoAmountBase) + txFeeBase
      : exactFromMinorBooked;
 
    if (
@@ -455,13 +456,6 @@ export class SwapTransactionHandler {
          WHERE "id" = ${fromWallet.id}
        `;
 
-       // TO wallet: credit received amount
-       await tx.$executeRaw`
-         UPDATE "wallets"
-         SET "baseBalance" = "baseBalance" + ${toDec}
-         WHERE "id" = ${toWallet.id}
-       `;
-
        // Company liquidity
        await this.companyLiquidityService.updateInternalBalance(
          fromCurrency.toLowerCase(),
@@ -469,9 +463,10 @@ export class SwapTransactionHandler {
          'subtract',
          tx,
        );
+       const toInternalAddDec = toDecimal(confirmedToBase + txFeeBase);
        await this.companyLiquidityService.updateInternalBalance(
          toCurrency.toLowerCase(),
-         toDec,
+         toInternalAddDec,
          'add',
          tx,
        );
@@ -541,25 +536,12 @@ export class SwapTransactionHandler {
            },
          });
        }
-
-       // Company total/reserved liquidity adjustments
-       await tx.$executeRaw`
-         UPDATE "company_liquidity"
-         SET "totalBalance" = "totalBalance" + ${liquidityReservedDec}
-         WHERE "currency" = ${fromCurrency.toLowerCase()}
-       `;
-
-       await tx.$executeRaw`
-         UPDATE "company_liquidity"
-         SET "reservedBalance" = GREATEST("reservedBalance" - ${liquidityReservedDec}, 0)
-         WHERE "currency" = ${fromCurrency.toLowerCase()}
-       `;
-
-       await tx.$executeRaw`
-         UPDATE "company_liquidity"
-         SET "totalBalance" = "totalBalance" - ${toDec}
-         WHERE "currency" = ${toCurrency.toLowerCase()}
-       `;
+       // Release from-currency reservation after successful provider swap
+       await this.companyLiquidityService.releaseLiquidity(
+         fromCurrency,
+         exactFromMinorBooked,
+         tx,
+       );
 
        // Update user's amountSent (NGN equivalent)
        const swapNgnPrice = await this.tickerService.getPrice(
