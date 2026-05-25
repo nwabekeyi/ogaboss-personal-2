@@ -65,7 +65,33 @@ export class AutoStackInterestScheduler {
 
     const isDueDate = stack.nextInterestAt <= now;
     if (isDueDate) {
-      await this.prisma.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: now } });
+      await this.prisma.$transaction(async (tx) => {
+        const wallet = await tx.wallet.findFirst({ where: { userId: stack.userId, currency: 'USDT' } });
+        if (!wallet) throw new Error(`USDT wallet not found for autostack ${stack.id}`);
+
+        const principal = BigInt(stack.amount.toFixed(0));
+        const interestAccrued = BigInt(stack.accruedInterest.toFixed(0));
+        const payout = principal + interestAccrued;
+
+        await tx.$executeRaw`
+          UPDATE "wallets"
+          SET "baseBalance" = "baseBalance" + ${payout.toString()}::decimal,
+              "stackedAmount" = GREATEST("stackedAmount" - ${principal.toString()}::decimal, 0),
+              "totalStackedInterest" = GREATEST("totalStackedInterest" - ${interestAccrued.toString()}::decimal, 0)
+          WHERE "id" = ${wallet.id}
+        `;
+
+        await tx.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: now, lastExecutedAt: now } });
+
+        await tx.$executeRaw`
+          UPDATE "company_liquidity"
+          SET "totalAmountStacked" = GREATEST("totalAmountStacked" - ${principal.toString()}::decimal, 0),
+              "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${interestAccrued.toString()}::decimal, 0),
+              "totalStackedInterestPaid" = "totalStackedInterestPaid" + ${interestAccrued.toString()}::decimal,
+              "totalInterestPaid" = "totalInterestPaid" + ${interestAccrued.toString()}::decimal
+          WHERE "currency" = 'USDT'
+        `;
+      });
       return;
     }
 
@@ -75,7 +101,18 @@ export class AutoStackInterestScheduler {
     const principal = Number(stack.amount.toFixed(0));
     const interest = Math.floor(principal * (dailyRate / 100) * days);
 
-    await this.prisma.autoStack.update({ where: { id: stack.id }, data: { accruedInterest: { increment: interest }, nextInterestAt: new Date(now.getTime() + 24 * 60 * 60 * 1000) } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.autoStack.update({ where: { id: stack.id }, data: { accruedInterest: { increment: interest }, nextInterestAt: new Date(now.getTime() + 24 * 60 * 60 * 1000) } });
+      const wallet = await tx.wallet.findFirst({ where: { userId: stack.userId, currency: 'USDT' } });
+      if (wallet) {
+        await tx.wallet.update({ where: { id: wallet.id }, data: { totalStackedInterest: { increment: interest } } });
+      }
+      await tx.$executeRaw`
+        UPDATE "company_liquidity"
+        SET "totalAccruedLockedInterest" = "totalAccruedLockedInterest" + ${interest}::decimal
+        WHERE "currency" = 'USDT'
+      `;
+    });
 
     await this.prisma.$transaction(async (tx) => {
       await this.transactionService.reserveBalance(tx as any, stack.userId, 'USDT', BigInt(principal));
@@ -86,6 +123,12 @@ export class AutoStackInterestScheduler {
     const chargeReference = `autostack-charge-${stack.id}-${Date.now()}`;
     const paymentType = meta.paymentType === 'CRYPTO_WALLET' ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
     await this.prisma.transaction.create({ data: { userId: stack.userId, transactionUniqueId: chargeReference, currency: 'USDT', fiatAmountBase: stack.amount.toFixed(0), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: stack.id, mode: 'AUTOSTACK_PERIODIC', targetAsset: meta.targetAsset || 'USDT', liquidityReservationStatus: 'RESERVED' } as any, description: `autostack_charge:${stack.id}` } as any });
+
+    await this.prisma.$executeRaw`
+      UPDATE "company_liquidity"
+      SET "totalAmountStacked" = "totalAmountStacked" + ${stack.amount.toFixed(0)}::decimal
+      WHERE "currency" = 'USDT'
+    `;
 
     if (meta.paymentType === 'CRYPTO_WALLET') {
       const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: String(meta.targetAsset || 'usdt').toLowerCase(), to_currency: 'usdt', from_amount: String(principal) }, { skipCircuitBreaker: true });

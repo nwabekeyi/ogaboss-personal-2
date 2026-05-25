@@ -6,6 +6,7 @@ model CompanyLiquidity {
   totalLockedPrincipal Decimal @default(0) @db.Decimal(78, 0)
   totalAccruedLockedInterest Decimal @default(0) @db.Decimal(78, 0)
   totalInterestPaid Decimal @default(0) @db.Decimal(78, 0)
+  totalLockedInterestPaid Decimal @default(0) @db.Decimal(78, 0)
   totalAmountStacked Decimal @default(0) @db.Decimal(78, 0)
   totalStackedInterestPaid Decimal @default(0) @db.Decimal(78, 0)
   currency        String   @unique

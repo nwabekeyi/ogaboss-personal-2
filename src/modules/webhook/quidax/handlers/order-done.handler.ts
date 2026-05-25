@@ -344,27 +344,36 @@ export class OrderDoneHandler {
 
           const cryptoDec = toDecimal(executedCryptoAmountBase);
 
-          // Atomic baseBalance credit
-          const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
-            { baseBalance: string }[]
-          >`
-            UPDATE "wallets"
-            SET "baseBalance" = "baseBalance" + ${cryptoDec}
-            WHERE "id" = ${wallet.id}
-            RETURNING "baseBalance"
-          `;
+          if (transaction.transactionContext === TransactionContext.AUTOSTACK) {
+            await tx.$executeRaw`
+              UPDATE "wallets"
+              SET "reservedBalance" = GREATEST("reservedBalance" - ${cryptoDec}, 0),
+                  "stackedAmount" = "stackedAmount" + ${cryptoDec}
+              WHERE "id" = ${wallet.id}
+            `;
+          } else {
+            // Atomic baseBalance credit
+            const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
+              { baseBalance: string }[]
+            >`
+              UPDATE "wallets"
+              SET "baseBalance" = "baseBalance" + ${cryptoDec}
+              WHERE "id" = ${wallet.id}
+              RETURNING "baseBalance"
+            `;
 
-          // Update originalBalance from the actual post-update baseBalance
-          const newOriginalBalance = ConvertCurrency.fromBase(
-            BigInt(String(newBaseStr)),
-            crypto,
-            toCryptoNetwork(network),
-          );
-          await tx.$executeRaw`
-            UPDATE "wallets"
-            SET "originalBalance" = ${newOriginalBalance}
-            WHERE "id" = ${wallet.id}
-          `;
+            // Update originalBalance from the actual post-update baseBalance
+            const newOriginalBalance = ConvertCurrency.fromBase(
+              BigInt(String(newBaseStr)),
+              crypto,
+              toCryptoNetwork(network),
+            );
+            await tx.$executeRaw`
+              UPDATE "wallets"
+              SET "originalBalance" = ${newOriginalBalance}
+              WHERE "id" = ${wallet.id}
+            `;
+          }
 
           // Update company internal balance (user wallet was credited)
           await this.companyLiquidityService.updateInternalBalance(
