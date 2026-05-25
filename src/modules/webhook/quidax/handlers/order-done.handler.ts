@@ -28,7 +28,6 @@ import {
 import { PaystackService } from '../../../../infrastructure/providers/paystack';
 import { CompensatedError } from '../../compensated-error';
 import { XpresspayService } from '../../../../infrastructure/providers/xpresspay/xpresspay.service';
-import { backoff_retries } from '../../constant';
 
 @Injectable()
 export class OrderDoneHandler {
@@ -43,6 +42,13 @@ export class OrderDoneHandler {
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly xpresspayService: XpresspayService,
   ) {}
+
+
+  private frequencyDays(frequency?: string): number {
+    if (frequency === 'WEEKLY') return 7;
+    if (frequency === 'MONTHLY') return 30;
+    return 1;
+  }
 
   /**
    * Handles order.done webhook from Quidax
@@ -94,6 +100,7 @@ export class OrderDoneHandler {
         fiatAmountBase: true,
         platformFeeBase: true,
         bufferAmountBase: true,
+        transactionContext: true,
       },
     });
 
@@ -543,33 +550,7 @@ export class OrderDoneHandler {
         });
       } catch (payoutError: any) {
         const retryCount = (paymentMetadata.payoutRetryCount || 0) + 1;
-        const MAX_RETRIES = backoff_retries;
-
-        await this.prisma.transaction
-          .update({
-            where: { id: transaction.id },
-            data: {
-              paymentMetadata: {
-                ...paymentMetadata,
-                payoutRetryCount: retryCount,
-                lastPayoutError: payoutError?.message ?? 'unknown',
-                sellOrderStatus: 'filled',
-                payoutStatus: 'retrying',
-              } as Prisma.InputJsonValue,
-            },
-          })
-          .catch(() => undefined);
-
-        if (retryCount < MAX_RETRIES) {
-          this.logger.warn(
-            `Payout attempt ${retryCount}/${MAX_RETRIES} failed for sell order ${order.id}: ${payoutError?.message} — will retry`,
-          );
-          throw payoutError;
-        }
-
-        this.logger.error(
-          `Payout failed after ${MAX_RETRIES} attempts for sell order ${order.id}: ${payoutError?.message} — Quidax succeeded, Paystack failed.`,
-        );
+        this.logger.error(`Payout failed for sell order ${order.id}: ${payoutError?.message}. Queue retry will handle retries.`);
 
         await this.prisma.$transaction(async (tx) => {
           // Release reserved balance (un-locks the crypto amount)
@@ -630,9 +611,7 @@ export class OrderDoneHandler {
           });
         });
 
-        throw new CompensatedError(
-          `Sell payout failed after ${MAX_RETRIES} attempts for order ${order.id}: ${payoutError?.message}`,
-        );
+        throw payoutError;
       }
     }
 
@@ -703,6 +682,13 @@ export class OrderDoneHandler {
       this.logger.error(
         `Failed to send notification for order ${order.id}: ${error?.message}`,
       );
+    }
+
+    if (isBuy && transaction.transactionContext === TransactionContext.AUTOSTACK) {
+      const meta = (paymentMetadata || {}) as Record<string, any>;
+      if (String(meta.paymentType || '').toUpperCase() !== 'CRYPTO_WALLET' && meta.autoStackId) {
+        await this.prisma.autoStack.update({ where: { id: String(meta.autoStackId) }, data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any } }).catch(() => undefined);
+      }
     }
 
     // Only queue dashboard stats for buy (completed immediately).

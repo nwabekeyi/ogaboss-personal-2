@@ -38,7 +38,8 @@ import {
   toDecimal,
 } from '../../../../shared';
 import Decimal from 'decimal.js';
-import { backoff_retries } from '../../constant';
+import axios from 'axios';
+import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 
 @Injectable()
 export class PaystackWebhookHandler {
@@ -99,6 +100,7 @@ export class PaystackWebhookHandler {
 
       if (verifiedData.status === 'success') {
         await this.handleSuccess(transaction, verifiedData);
+        await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...((transaction.paymentMetadata || {}) as Record<string, any>), paystackWebhookProcessedAt: new Date().toISOString(), paystackWebhookEvent: payload.event } as Prisma.InputJsonValue } }).catch(() => undefined);
 
         const updatedTransaction = await this.prisma.transaction.findUnique({
           where: { id: transaction.id },
@@ -128,6 +130,7 @@ export class PaystackWebhookHandler {
         }
       } else {
         await this.handleFailure(transaction.id, verifiedData);
+        await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...((transaction.paymentMetadata || {}) as Record<string, any>), paystackWebhookProcessedAt: new Date().toISOString(), paystackWebhookEvent: payload.event } as Prisma.InputJsonValue } }).catch(() => undefined);
 
         const failedTransaction = await this.prisma.transaction.findUnique({
           where: { id: transaction.id },
@@ -177,7 +180,16 @@ export class PaystackWebhookHandler {
       channel: string;
     },
   ): Promise<void> {
-    const companyUserId = 'me';
+    const companyUserId = QUIDAX_COMPANY_USERID;
+    const meta = (transaction.paymentMetadata || {}) as Record<string, any>;
+    if (meta?.mode === 'AUTOSTACK_PERIODIC') {
+      await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...meta, ...data, autostackWebhookProcessedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
+    }
+    if (transaction.transactionContext === TransactionContext.AUTOSTACK) {
+      const handled = await this.handleAutoStackSuccess(transaction, data, meta);
+      if (handled) return;
+    }
+
     const cryptoAmountOriginal = transaction.cryptoAmountOriginal ?? '0';
     const executedCryptoVolume = parseFloat(cryptoAmountOriginal);
 
@@ -252,10 +264,6 @@ export class PaystackWebhookHandler {
     );
 
     if (response.status !== 'success') {
-      const retryCount = (currentMetadata.quidaxOrderRetryCount || 0) + 1;
-      const MAX_RETRIES = backoff_retries;
-
-      // Record the retry attempt
       await this.prisma.transaction.update({
         where: { id: transaction.id },
         data: {
@@ -263,35 +271,6 @@ export class PaystackWebhookHandler {
             ...currentMetadata,
             ...data,
             currency: transaction.currency,
-            quidaxOrderRetryCount: retryCount,
-            quidaxOrderStatus: 'retrying',
-            lastQuidaxError: response?.message ?? 'order placement failed',
-          } as Prisma.InputJsonValue,
-        },
-      });
-
-      if (retryCount < MAX_RETRIES) {
-        this.logger.warn(
-          `Buy order attempt ${retryCount}/${MAX_RETRIES} failed for transaction ${transaction.id}: ${response?.message} — will retry`,
-        );
-        throw new InternalServerErrorException(
-          'Company buy order placement failed. Will retry.',
-        );
-      }
-
-      // Last retry exhausted — record failure for manual resolution
-      this.logger.error(
-        `Buy order failed after ${MAX_RETRIES} attempts for transaction ${transaction.id}: ${response?.message} — Paystack succeeded, Quidax failed. Recording for manual resolution.`,
-      );
-
-      await this.prisma.transaction.update({
-        where: { id: transaction.id },
-        data: {
-          paymentMetadata: {
-            ...currentMetadata,
-            ...data,
-            currency: transaction.currency,
-            quidaxOrderRetryCount: retryCount,
             quidaxOrderStatus: 'failed',
             lastQuidaxError: response?.message ?? 'order placement failed',
             buyOrderStatus: 'failed_pending_resolution',
@@ -299,8 +278,12 @@ export class PaystackWebhookHandler {
         },
       });
 
+      this.logger.error(
+        `Buy order failed for transaction ${transaction.id}: ${response?.message} — relying on queue-level retries.`,
+      );
+
       throw new InternalServerErrorException(
-        'Buy order placement failed after all retries. Recorded for manual resolution.',
+        'Buy order placement failed. Queued retry will re-attempt.',
       );
     }
 
@@ -358,6 +341,33 @@ export class PaystackWebhookHandler {
     this.logger.log(
       `Paystack payment confirmed & buy order submitted: ${providerReference}`,
     );
+  }
+
+  private async handleAutoStackSuccess(transaction: any, data: any, meta: Record<string, any>): Promise<boolean> {
+    const targetAsset = String(meta.targetAsset || 'USDT').toUpperCase();
+    const baseAsset = String(transaction.currency || 'USDT').toUpperCase();
+
+    if (meta.paymentType === PaymentType.CRYPTO_WALLET || targetAsset !== baseAsset) {
+      const quotationRes = await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_quotation`, {
+        from_currency: baseAsset.toLowerCase(),
+        to_currency: targetAsset.toLowerCase(),
+        from_amount: Number(transaction.cryptoAmountOriginal || 0),
+      }, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } }).then((r) => r.data);
+
+      if (!quotationRes?.data?.id) throw new BadRequestException('Failed to create autostack swap quotation');
+
+      const confirmRes = await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_quotation/${quotationRes.data.id}/confirm`, {}, { headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } }).then((r) => r.data);
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.swapTransaction.create({ data: { userId: transaction.userId, quidaxAccountId: 'me', fromCurrency: baseAsset, toCurrency: targetAsset, amountOriginal: String(transaction.cryptoAmountOriginal || 0), quoteId: transaction.transactionUniqueId, swapId: confirmRes?.data?.id || quotationRes?.data?.id, status: 'pending', description: `Autostack swap ${baseAsset} -> ${targetAsset}` } });
+        await tx.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...(transaction.paymentMetadata || {}), ...data, autostackFlow: 'SWAP', autostackSwapQuotationId: quotationRes.data.id, autostackSwapId: confirmRes?.data?.id || null } as Prisma.InputJsonValue } });
+      });
+
+      return;
+    }
+
+    // card/usdt path => buy order; final autostack completion will happen in order_done webhook
+    return false;
   }
 
   private async compensateFailedBuyOrder(
