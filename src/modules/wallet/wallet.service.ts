@@ -150,7 +150,18 @@ export class WalletService {
         ),
       );
 
+      const stackedNum = Number(
+        ConvertCurrency.fromBase(
+          toBigInt(w.stackedAmount || 0),
+          w.currency,
+          w.isCrypto
+            ? (w.defaultNetwork as CryptoNetwork) || undefined
+            : undefined,
+        ),
+      );
+
       const availableBalance = balanceNum - reservedNum - lockedNum;
+      const totalBalance = balanceNum + lockedNum + stackedNum;
       const currencyLower = w.currency.toLowerCase();
 
       let ngnPrice: number;
@@ -191,6 +202,9 @@ export class WalletService {
         reservedBalance: w.isCrypto
           ? reservedNum.toFixed(8).replace(/\.?0+$/, '')
           : reservedNum.toFixed(2),
+        totalBalance: w.isCrypto
+          ? totalBalance.toFixed(8).replace(/\.?0+$/, '')
+          : totalBalance.toFixed(2),
         ngnPrice: Math.round(ngnPrice * 100) / 100,
         ngnBalance: Math.round(ngnBalance * 100) / 100,
         isCrypto: w.isCrypto,
