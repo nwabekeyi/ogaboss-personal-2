@@ -107,15 +107,11 @@ export class SwapTransactionHandler {
      swapRecord.description?.startsWith('vault_swap:') &&
      event === 'swap_transaction.completed'
    ) {
-     return this.withRetry(() =>
-       this.processVaultSwapCompletion(swapRecord!, data, event),
-     );
+     return this.processVaultSwapCompletion(swapRecord!, data, event);
    }
 
    // === REGULAR SWAP PATH ===
-   return this.withRetry(() =>
-     this.processRegularSwap(swapRecord!, data, event),
-   );
+   return this.processRegularSwap(swapRecord!, data, event);
  }
 
   /** Vault-specific completion (BTC → USDT for vault activation) */
@@ -504,11 +500,8 @@ export class SwapTransactionHandler {
            const usdtWallet = await tx.wallet.findFirst({ where: { userId, currency: 'USDT' } });
            if (autoStack && usdtWallet) {
              const principal = toDecimal(confirmedToBase);
-             const dailyRate = (await tx.autoStackingSettings.findFirst())?.dailyInterestRatePercent || new Prisma.Decimal(0);
-             const days = this.frequencyDays(String(autoStack.frequency));
-             const interest = principal.mul(dailyRate).mul(days).div(100);
-             await tx.wallet.update({ where: { id: usdtWallet.id }, data: { baseBalance: { increment: principal }, stackedAmount: { increment: principal }, totalStackedInterest: { increment: interest } } });
-             await tx.autoStack.update({ where: { id: autoStack.id }, data: { amount: { increment: principal }, accruedInterest: { increment: interest }, lastExecutedAt: new Date(), nextInterestAt: new Date() } });
+             await tx.wallet.update({ where: { id: usdtWallet.id }, data: { reservedBalance: { decrement: principal }, stackedAmount: { increment: principal } } });
+             await tx.autoStack.update({ where: { id: autoStack.id }, data: { amount: { increment: principal }, lastExecutedAt: new Date() } });
              await tx.transaction.update({ where: { id: linkedTx.id }, data: { paymentMetadata: { ...meta, autostackWebhookProcessedAt: new Date().toISOString(), autostackSettlement: 'swap_completed' } as Prisma.InputJsonValue } });
            }
          }

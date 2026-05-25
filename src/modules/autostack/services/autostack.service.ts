@@ -42,7 +42,7 @@ export class AutoStackService {
     if (!quote) throw new NotFoundException('Quote not found or expired');
     const cards = await this.prisma.card.findMany({ where: { userId, isActive: true }, select: { id: true, cardType: true, last4: true, expMonth: true, expYear: true } as any });
     const wallets = await this.prisma.wallet.findMany({ where: { userId }, include: { cryptoCurrency: true } });
-    return { success: true, data: { wallets: wallets.map((w) => ({ walletId: w.id, asset: w.cryptoCurrency.symbol })), cards } };
+    return { success: true, data: { wallets: wallets.map((w) => { const totalAmount = Number(w.baseBalance || 0); const lockedAmount = Number(w.lockedAmount || 0); const stackedAmount = Number(w.stackedAmount || 0); const reservedAmount = Number(w.reservedBalance || 0); const availableAmount = totalAmount - lockedAmount - stackedAmount - reservedAmount; return ({ walletId: w.id, asset: w.cryptoCurrency.symbol, totalAmount, lockedAmount, stackedAmount, reservedAmount, availableAmount }); }), cards } };
   }
 
   async preview(userId: string, dto: AutoStackPreviewDto) {

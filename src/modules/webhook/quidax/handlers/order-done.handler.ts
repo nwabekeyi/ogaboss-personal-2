@@ -28,7 +28,6 @@ import {
 import { PaystackService } from '../../../../infrastructure/providers/paystack';
 import { CompensatedError } from '../../compensated-error';
 import { XpresspayService } from '../../../../infrastructure/providers/xpresspay/xpresspay.service';
-import { backoff_retries } from '../../constant';
 
 @Injectable()
 export class OrderDoneHandler {
@@ -551,33 +550,7 @@ export class OrderDoneHandler {
         });
       } catch (payoutError: any) {
         const retryCount = (paymentMetadata.payoutRetryCount || 0) + 1;
-        const MAX_RETRIES = backoff_retries;
-
-        await this.prisma.transaction
-          .update({
-            where: { id: transaction.id },
-            data: {
-              paymentMetadata: {
-                ...paymentMetadata,
-                payoutRetryCount: retryCount,
-                lastPayoutError: payoutError?.message ?? 'unknown',
-                sellOrderStatus: 'filled',
-                payoutStatus: 'retrying',
-              } as Prisma.InputJsonValue,
-            },
-          })
-          .catch(() => undefined);
-
-        if (retryCount < MAX_RETRIES) {
-          this.logger.warn(
-            `Payout attempt ${retryCount}/${MAX_RETRIES} failed for sell order ${order.id}: ${payoutError?.message} — will retry`,
-          );
-          throw payoutError;
-        }
-
-        this.logger.error(
-          `Payout failed after ${MAX_RETRIES} attempts for sell order ${order.id}: ${payoutError?.message} — Quidax succeeded, Paystack failed.`,
-        );
+        this.logger.error(`Payout failed for sell order ${order.id}: ${payoutError?.message}. Queue retry will handle retries.`);
 
         await this.prisma.$transaction(async (tx) => {
           // Release reserved balance (un-locks the crypto amount)
@@ -638,9 +611,7 @@ export class OrderDoneHandler {
           });
         });
 
-        throw new CompensatedError(
-          `Sell payout failed after ${MAX_RETRIES} attempts for order ${order.id}: ${payoutError?.message}`,
-        );
+        throw payoutError;
       }
     }
 
