@@ -100,6 +100,7 @@ export class PaystackWebhookHandler {
 
       if (verifiedData.status === 'success') {
         await this.handleSuccess(transaction, verifiedData);
+        await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...((transaction.paymentMetadata || {}) as Record<string, any>), paystackWebhookProcessedAt: new Date().toISOString(), paystackWebhookEvent: payload.event } as Prisma.InputJsonValue } }).catch(() => undefined);
 
         const updatedTransaction = await this.prisma.transaction.findUnique({
           where: { id: transaction.id },
@@ -129,6 +130,7 @@ export class PaystackWebhookHandler {
         }
       } else {
         await this.handleFailure(transaction.id, verifiedData);
+        await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...((transaction.paymentMetadata || {}) as Record<string, any>), paystackWebhookProcessedAt: new Date().toISOString(), paystackWebhookEvent: payload.event } as Prisma.InputJsonValue } }).catch(() => undefined);
 
         const failedTransaction = await this.prisma.transaction.findUnique({
           where: { id: transaction.id },

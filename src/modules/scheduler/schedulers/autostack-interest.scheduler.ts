@@ -26,7 +26,15 @@ export class AutoStackInterestScheduler {
   ) {}
 
   @Cron('*/10 * * * *')
-  async accrueDailyInterest() { try { await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack-interest.dispatch', {}, { jobId: `scheduler.autostack-interest.dispatch:${new Date().toISOString().slice(0, 16)}` }); return; } catch { return this.execute(); } }
+  async accrueDailyInterest() {
+    try {
+      await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack-interest.dispatch', {}, { jobId: `scheduler.autostack-interest.dispatch:${new Date().toISOString().slice(0, 16)}` });
+      return;
+    } catch (error) {
+      this.logger.error('Failed to enqueue autostack dispatch job', error as any);
+      throw error;
+    }
+  }
 
   async execute() { return this.dispatchDueInterestShards(); }
 
