@@ -22,6 +22,7 @@ import Decimal from 'decimal.js';
 import { SwapWebhookDataDto } from '../dtos/swap-webhook.dto';
 import { TransactionNotificationService } from '../../../../modules/transaction/services/transaction-notification.service';
 import { Prisma } from '../../../../infrastructure/databases/prisma/generated/prisma/browser';
+import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 
 @Injectable()
 export class SwapTransactionHandler {
@@ -321,6 +322,13 @@ export class SwapTransactionHandler {
  }
 
  /** Regular user-initiated swap (any → any) */
+
+ private frequencyDays(frequency?: string): number {
+   if (frequency === 'WEEKLY') return 7;
+   if (frequency === 'MONTHLY') return 30;
+   return 1;
+ }
+
  private async processRegularSwap(
    swapRecord: any,
    data: SwapWebhookDataDto,
@@ -411,7 +419,7 @@ export class SwapTransactionHandler {
 
    try {
      const quidaxRes = await this.quidaxSwapService.getSwapTransaction(
-       { user_id: 'me', swap_transaction_id: swapId },
+       { user_id: QUIDAX_COMPANY_USERID, swap_transaction_id: swapId },
        { skipCircuitBreaker: true },
      );
 
@@ -489,6 +497,21 @@ export class SwapTransactionHandler {
              description: `Swap completed: ${confirmedFromAmount} ${fromCurrency} → ${confirmedToAmount} ${toCurrency}`,
            },
          });
+
+         const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
+         if (linkedTx.transactionContext === TransactionContext.AUTOSTACK && String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' && meta.autoStackId) {
+           const autoStack = await tx.autoStack.findUnique({ where: { id: String(meta.autoStackId) } });
+           const usdtWallet = await tx.wallet.findFirst({ where: { userId, currency: 'USDT' } });
+           if (autoStack && usdtWallet) {
+             const principal = toDecimal(confirmedToBase);
+             const dailyRate = (await tx.autoStackingSettings.findFirst())?.dailyInterestRatePercent || new Prisma.Decimal(0);
+             const days = this.frequencyDays(String(autoStack.frequency));
+             const interest = principal.mul(dailyRate).mul(days).div(100);
+             await tx.wallet.update({ where: { id: usdtWallet.id }, data: { baseBalance: { increment: principal }, stackedAmount: { increment: principal }, totalStackedInterest: { increment: interest } } });
+             await tx.autoStack.update({ where: { id: autoStack.id }, data: { amount: { increment: principal }, accruedInterest: { increment: interest }, lastExecutedAt: new Date(), nextInterestAt: new Date() } });
+             await tx.transaction.update({ where: { id: linkedTx.id }, data: { paymentMetadata: { ...meta, autostackWebhookProcessedAt: new Date().toISOString(), autostackSettlement: 'swap_completed' } as Prisma.InputJsonValue } });
+           }
+         }
        }
 
        await tx.swapTransaction.update({

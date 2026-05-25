@@ -7,6 +7,7 @@ import { compareHash } from '../../../shared/services/hash';
 import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto } from '../dto/autostack.dto';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
+import { QUIDAX_COMPANY_USERID } from '../../transaction/constants';
 import { PaymentType, Prisma, TransactionContext, TransactionStatus, TransactionType } from '../../../infrastructure/databases/prisma';
 import { TempStoreService } from '../../../infrastructure/databases/redis';
 
@@ -81,15 +82,15 @@ export class AutoStackService {
     const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: 'ACTIVE', transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
 
     const reference = `autostack-confirm-${autoStack.id}-${Date.now()}`;
-    const paymentType = preview.paymentType === 'CRYPTO_WALLET' ? PaymentType.PAYSTACK : PaymentType.CARD;
+    const paymentType = preview.paymentType === 'CRYPTO_WALLET' ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
 
     await this.prisma.transaction.create({ data: { userId, transactionUniqueId: reference, currency: 'USDT', fiatAmountBase: Math.floor(preview.amountInUsdt * 1_000_000).toString(), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT' } as any, description: `autostack_config:${autoStack.id}` } as any });
 
     if (preview.paymentType === 'CRYPTO_WALLET') {
-      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(userId, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
+      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
       const quotationId = swapQuote?.data?.swap_quotation?.id;
       if (!quotationId) throw new BadRequestException('Unable to create swap quotation');
-      await this.quidaxSwapService.confirmInstantSwap({ user_id: userId, quotation_id: quotationId }, { skipCircuitBreaker: true });
+      await this.quidaxSwapService.confirmInstantSwap({ user_id: QUIDAX_COMPANY_USERID, quotation_id: quotationId }, { skipCircuitBreaker: true });
     } else {
       if (!preview.paymentCardId) throw new BadRequestException('Payment card is required for card autostack');
       await this.paystackService.chargeSavedCard({ paymentCardId: preview.paymentCardId, amount: Number(preview.amountInUsdt), reference, metadata: { autoStackId: autoStack.id, mode: 'AUTOSTACK_PERIODIC' } }, { skipCircuitBreaker: true });

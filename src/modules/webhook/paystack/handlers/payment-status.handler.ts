@@ -39,6 +39,7 @@ import {
 } from '../../../../shared';
 import Decimal from 'decimal.js';
 import axios from 'axios';
+import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 
 @Injectable()
 export class PaystackWebhookHandler {
@@ -177,7 +178,7 @@ export class PaystackWebhookHandler {
       channel: string;
     },
   ): Promise<void> {
-    const companyUserId = 'me';
+    const companyUserId = QUIDAX_COMPANY_USERID;
     const meta = (transaction.paymentMetadata || {}) as Record<string, any>;
     if (meta?.mode === 'AUTOSTACK_PERIODIC') {
       await this.prisma.transaction.update({ where: { id: transaction.id }, data: { paymentMetadata: { ...meta, ...data, autostackWebhookProcessedAt: new Date().toISOString() } as Prisma.InputJsonValue } });

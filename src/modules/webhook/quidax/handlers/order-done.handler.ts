@@ -44,6 +44,13 @@ export class OrderDoneHandler {
     private readonly xpresspayService: XpresspayService,
   ) {}
 
+
+  private frequencyDays(frequency?: string): number {
+    if (frequency === 'WEEKLY') return 7;
+    if (frequency === 'MONTHLY') return 30;
+    return 1;
+  }
+
   /**
    * Handles order.done webhook from Quidax
    */
