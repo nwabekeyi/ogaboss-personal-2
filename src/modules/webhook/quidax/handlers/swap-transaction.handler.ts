@@ -22,6 +22,7 @@ import Decimal from 'decimal.js';
 import { SwapWebhookDataDto } from '../dtos/swap-webhook.dto';
 import { TransactionNotificationService } from '../../../../modules/transaction/services/transaction-notification.service';
 import { Prisma } from '../../../../infrastructure/databases/prisma/generated/prisma/browser';
+import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 
 @Injectable()
 export class SwapTransactionHandler {
@@ -106,15 +107,11 @@ export class SwapTransactionHandler {
      swapRecord.description?.startsWith('vault_swap:') &&
      event === 'swap_transaction.completed'
    ) {
-     return this.withRetry(() =>
-       this.processVaultSwapCompletion(swapRecord!, data, event),
-     );
+     return this.processVaultSwapCompletion(swapRecord!, data, event);
    }
 
    // === REGULAR SWAP PATH ===
-   return this.withRetry(() =>
-     this.processRegularSwap(swapRecord!, data, event),
-   );
+   return this.processRegularSwap(swapRecord!, data, event);
  }
 
   /** Vault-specific completion (BTC → USDT for vault activation) */
@@ -291,7 +288,12 @@ export class SwapTransactionHandler {
          });
        }
 
-       await tx.swapTransaction.update({
+
+
+         const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
+         if (linkedTx.transactionContext === TransactionContext.AUTOSTACK && String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' && meta.autoStackId) {
+           await tx.autoStack.update({ where: { id: String(meta.autoStackId) }, data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any } });
+         }       await tx.swapTransaction.update({
          where: { id: swapRecord.id },
          data: {
            status: TransactionStatus.COMPLETED,
@@ -316,6 +318,13 @@ export class SwapTransactionHandler {
  }
 
  /** Regular user-initiated swap (any → any) */
+
+ private frequencyDays(frequency?: string): number {
+   if (frequency === 'WEEKLY') return 7;
+   if (frequency === 'MONTHLY') return 30;
+   return 1;
+ }
+
  private async processRegularSwap(
    swapRecord: any,
    data: SwapWebhookDataDto,
@@ -352,8 +361,20 @@ export class SwapTransactionHandler {
        transactionType: TransactionType.DEBIT,
        userId,
      },
-     select: { id: true, cryptoAmountBase: true, platformFeeBase: true },
+     select: { id: true, cryptoAmountBase: true, platformFeeBase: true, paymentMetadata: true, transactionContext: true },
    });
+
+   if (!linkedTx) {
+     linkedTx = await this.prisma.transaction.findFirst({
+       where: {
+         transactionContext: TransactionContext.AUTOSTACK,
+         transactionType: TransactionType.DEBIT,
+         transactionUniqueId: swapRecord.quoteId || undefined,
+         userId,
+       },
+       select: { id: true, cryptoAmountBase: true, platformFeeBase: true, paymentMetadata: true, transactionContext: true },
+     });
+   }
 
    const exactFromMinorBooked = linkedTx
      ? toBigInt(linkedTx.cryptoAmountBase)
@@ -393,7 +414,7 @@ export class SwapTransactionHandler {
 
    try {
      const quidaxRes = await this.quidaxSwapService.getSwapTransaction(
-       { user_id: 'me', swap_transaction_id: swapId },
+       { user_id: QUIDAX_COMPANY_USERID, swap_transaction_id: swapId },
        { skipCircuitBreaker: true },
      );
 
@@ -477,6 +498,18 @@ export class SwapTransactionHandler {
              description: `Swap completed: ${confirmedFromAmount} ${fromCurrency} → ${confirmedToAmount} ${toCurrency}`,
            },
          });
+
+         const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
+         if (linkedTx.transactionContext === TransactionContext.AUTOSTACK && String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' && meta.autoStackId) {
+           const autoStack = await tx.autoStack.findUnique({ where: { id: String(meta.autoStackId) } });
+           const usdtWallet = await tx.wallet.findFirst({ where: { userId, currency: 'USDT' } });
+           if (autoStack && usdtWallet) {
+             const principal = toDecimal(confirmedToBase);
+             await tx.wallet.update({ where: { id: usdtWallet.id }, data: { reservedBalance: { decrement: principal }, stackedAmount: { increment: principal } } });
+             await tx.autoStack.update({ where: { id: autoStack.id }, data: { amount: { increment: principal }, lastExecutedAt: new Date() } });
+             await tx.transaction.update({ where: { id: linkedTx.id }, data: { paymentMetadata: { ...meta, autostackWebhookProcessedAt: new Date().toISOString(), autostackSettlement: 'swap_completed' } as Prisma.InputJsonValue } });
+           }
+         }
        }
 
        await tx.swapTransaction.update({

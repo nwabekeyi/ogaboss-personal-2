@@ -4,6 +4,11 @@ import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { TempStoreService } from '../../../infrastructure/databases/redis/temp-store.service';
+import { PaymentType, TransactionContext, TransactionStatus, TransactionType } from '../../../infrastructure/databases/prisma';
+import { PaystackService } from '../../../infrastructure/providers/paystack';
+import { TransactionService, CompanyLiquidityService } from '../../transaction/services';
+import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
+import { QUIDAX_COMPANY_USERID } from '../../transaction/constants';
 
 @Injectable()
 export class AutoStackInterestScheduler {
@@ -14,21 +19,16 @@ export class AutoStackInterestScheduler {
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
     private readonly tempStore: TempStoreService,
+    private readonly paystackService: PaystackService,
+    private readonly transactionService: TransactionService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
+    private readonly quidaxSwapService: QuidaxSwapService,
   ) {}
 
-  @Cron('5 0 * * *')
-  async accrueDailyInterest() {
-    try {
-      await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack-interest.dispatch', {}, { jobId: `scheduler.autostack-interest.dispatch:${new Date().toISOString().slice(0, 16)}` });
-      return;
-    } catch {
-      return this.execute();
-    }
-  }
+  @Cron('*/10 * * * *')
+  async accrueDailyInterest() { try { await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack-interest.dispatch', {}, { jobId: `scheduler.autostack-interest.dispatch:${new Date().toISOString().slice(0, 16)}` }); return; } catch { return this.execute(); } }
 
-  async execute() {
-    return this.dispatchDueInterestShards();
-  }
+  async execute() { return this.dispatchDueInterestShards(); }
 
   async dispatchDueInterestShards() {
     const runKey = `lock:scheduler:autostack-interest:dispatch:${new Date().toISOString().slice(0, 10)}`;
@@ -36,60 +36,64 @@ export class AutoStackInterestScheduler {
     if (!lockAcquired) return;
 
     const now = new Date();
-    let cursor: string | undefined;
-    let shardIndex = 0;
-
-    while (true) {
-      const page = await this.prisma.autoStack.findMany({
-        where: { status: 'ACTIVE' as any, nextInterestAt: { lte: now } },
-        select: { id: true },
-        orderBy: { id: 'asc' },
-        take: this.BATCH_SIZE,
-        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-      });
-
-      if (page.length === 0) break;
-      const ids = page.map((p) => p.id);
-      cursor = ids[ids.length - 1];
-
-      await this.queueService.add(
-        QueueName.CLEANUP,
-        'scheduler.autostack-interest.shard',
-        { ids, asOf: now.toISOString() },
-        { jobId: `scheduler.autostack-interest.shard:${now.toISOString().slice(0, 10)}:${shardIndex++}` },
-      );
+    const dueStacks = await this.prisma.autoStack.findMany({ where: { status: 'ACTIVE' as any, nextExecutionAt: { lte: now } }, take: this.BATCH_SIZE });
+    for (const stack of dueStacks) {
+      await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack.charge', { autoStackId: stack.id }, { jobId: `scheduler.autostack.charge:${stack.id}:${now.toISOString()}` });
     }
   }
 
-  async executeShard(ids: string[], asOfIso: string) {
-    const asOf = new Date(asOfIso);
-    const active = await this.prisma.autoStack.findMany({
-      where: { id: { in: ids }, status: 'ACTIVE' as any, nextInterestAt: { lte: asOf } },
-      include: { cryptoCurrency: { include: { rate: true } } },
+  async executeShard(ids: string[], asOfIso: string) { void ids; void asOfIso; return; }
+
+  async executeCharge(autoStackId: string) {
+    const stack = await this.prisma.autoStack.findUnique({ where: { id: autoStackId } });
+    if (!stack || stack.status !== 'ACTIVE') return;
+
+    const now = new Date();
+    if (stack.nextExecutionAt > now) return;
+
+    const configTx = await this.prisma.transaction.findFirst({ where: { userId: stack.userId, description: `autostack_config:${stack.id}` }, orderBy: { createdAt: 'desc' } });
+    if (!configTx) return;
+    const meta = (configTx.paymentMetadata || {}) as any;
+
+    const isDueDate = stack.nextInterestAt <= now;
+    if (isDueDate) {
+      await this.prisma.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: now } });
+      return;
+    }
+
+    const setting = await this.prisma.autoStackingSettings.findFirst();
+    const dailyRate = setting?.dailyInterestRatePercent?.toNumber() || 0;
+    const days = stack.frequency === 'DAILY' ? 1 : stack.frequency === 'WEEKLY' ? 7 : 30;
+    const principal = Number(stack.amount.toFixed(0));
+    const interest = Math.floor(principal * (dailyRate / 100) * days);
+
+    await this.prisma.autoStack.update({ where: { id: stack.id }, data: { accruedInterest: { increment: interest }, nextInterestAt: new Date(now.getTime() + 24 * 60 * 60 * 1000) } });
+
+    await this.prisma.$transaction(async (tx) => {
+      await this.transactionService.reserveBalance(tx as any, stack.userId, 'USDT', BigInt(principal));
+      const reservedLiquidity = await this.companyLiquidityService.reserveLiquidity('NGN', BigInt(principal), tx as any);
+      if (!reservedLiquidity) throw new Error('Insufficient company NGN liquidity for autostack charge');
     });
 
-    for (const stack of active) {
-      const rate = stack.cryptoCurrency.rate?.dailyRatePercent?.toNumber() || 0;
-      if (rate <= 0) continue;
+    const chargeReference = `autostack-charge-${stack.id}-${Date.now()}`;
+    const paymentType = meta.paymentType === 'CRYPTO_WALLET' ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
+    await this.prisma.transaction.create({ data: { userId: stack.userId, transactionUniqueId: chargeReference, currency: 'USDT', fiatAmountBase: stack.amount.toFixed(0), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: stack.id, mode: 'AUTOSTACK_PERIODIC', targetAsset: meta.targetAsset || 'USDT', liquidityReservationStatus: 'RESERVED' } as any, description: `autostack_charge:${stack.id}` } as any });
 
-      const principal = BigInt(stack.amount.toFixed(0));
-      const interest = (principal * BigInt(Math.floor(rate))) / 36500n;
-
-      await this.prisma.$transaction(async (tx) => {
-        const wallet = await tx.wallet.findFirst({ where: { userId: stack.userId, currencyId: stack.currencyId } });
-        if (!wallet) return;
-
-        await tx.wallet.update({ where: { id: wallet.id }, data: { totalStackedInterest: (BigInt(wallet.totalStackedInterest.toFixed(0)) + interest).toString() } });
-        await tx.autoStack.update({
-          where: { id: stack.id },
-          data: {
-            accruedInterest: (BigInt(stack.accruedInterest.toFixed(0)) + interest).toString(),
-            nextInterestAt: new Date(asOf.getTime() + 24 * 60 * 60 * 1000),
-          },
-        });
-      });
+    if (meta.paymentType === 'CRYPTO_WALLET') {
+      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: String(meta.targetAsset || 'usdt').toLowerCase(), to_currency: 'usdt', from_amount: String(principal) }, { skipCircuitBreaker: true });
+      const quotationId = swapQuote?.data?.swap_quotation?.id;
+      if (!quotationId) throw new Error('Unable to create periodic autostack swap quotation');
+      await this.quidaxSwapService.confirmInstantSwap({ user_id: QUIDAX_COMPANY_USERID, quotation_id: quotationId }, { skipCircuitBreaker: true });
+    } else {
+      if (!meta.paymentCardId) return;
+      await this.paystackService.chargeSavedCard({ paymentCardId: meta.paymentCardId, amount: Number(stack.amount.toFixed(0)), reference: chargeReference, metadata: { autoStackId: stack.id, mode: 'AUTOSTACK_PERIODIC' } });
     }
 
-    this.logger.log(`Accrued autostack interest shard for ${active.length} plans`);
+    const next = new Date(stack.nextExecutionAt);
+    if (stack.frequency === 'DAILY') next.setUTCDate(next.getUTCDate() + 1);
+    if (stack.frequency === 'WEEKLY') next.setUTCDate(next.getUTCDate() + 7);
+    if (stack.frequency === 'MONTHLY') next.setUTCMonth(next.getUTCMonth() + 1);
+    await this.prisma.autoStack.update({ where: { id: stack.id }, data: { lastExecutedAt: now, nextExecutionAt: next } });
   }
+
 }
