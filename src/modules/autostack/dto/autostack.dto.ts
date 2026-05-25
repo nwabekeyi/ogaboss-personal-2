@@ -7,18 +7,29 @@ export enum AutoStackFrequencyDto {
   MONTHLY = 'MONTHLY',
 }
 
-export class AutoStackPreviewDto {
-  @ApiProperty() @IsString() @IsNotEmpty() currencyId: string;
-  @ApiProperty() @IsString() @IsNotEmpty() planName: string;
-  @ApiProperty({ enum: AutoStackFrequencyDto }) @IsEnum(AutoStackFrequencyDto) frequency: AutoStackFrequencyDto;
+export class AutoStackQuoteDto {
+  @ApiProperty() @IsString() @IsNotEmpty() asset: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() planName?: string;
   @ApiProperty() @IsNumber() @Min(0.000001) amount: number;
-  @ApiProperty() @IsDateString() startDate: string;
-  @ApiProperty({ example: '14:30' }) @IsString() timeOfDay: string;
-  @ApiPropertyOptional({ example: 'MONDAY,TUESDAY' }) @IsOptional() @IsString() dayOfWeek?: string;
+}
+
+export class AutoStackPaymentTypesDto {
+  @ApiProperty() @IsString() @IsNotEmpty() quoteId: string;
+}
+
+export class AutoStackPreviewDto {
+  @ApiProperty() @IsString() @IsNotEmpty() quoteId: string;
+  @ApiProperty() @IsString() @IsNotEmpty() paymentType: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() paymentCardId?: string;
+  @ApiProperty({ enum: AutoStackFrequencyDto }) @IsEnum(AutoStackFrequencyDto) frequency: AutoStackFrequencyDto;
+  @ApiPropertyOptional() @IsOptional() @IsDateString() startDate?: string;
+  @ApiPropertyOptional({ example: '14:30' }) @IsOptional() @IsString() timeOfDay?: string;
+  @ApiPropertyOptional({ example: 'MONDAY' }) @IsOptional() @IsString() dayOfWeek?: string;
   @ApiPropertyOptional({ example: 15 }) @IsOptional() @IsNumber() dayOfMonth?: number;
 }
 
-export class AutoStackConfirmDto extends AutoStackPreviewDto {
+export class AutoStackConfirmDto {
+  @ApiProperty() @IsString() @IsNotEmpty() quoteId: string;
   @ApiProperty() @IsString() @IsNotEmpty() pin: string;
 }
 

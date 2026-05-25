@@ -7,6 +7,7 @@ export interface TransformedWallet {
   currency: string;
   balance: string;
   reservedBalance: string;
+  totalBalance: string;
   ngnPrice: number;
   ngnBalance: number;
   isCrypto: boolean;

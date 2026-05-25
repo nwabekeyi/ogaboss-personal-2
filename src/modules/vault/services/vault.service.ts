@@ -346,6 +346,7 @@ export class VaultService {
 
         // Update company liquidity for stablecoins
         if (!isBTC) {
+          await tx.wallet.update({ where: { id: wallet.id }, data: { totalLockedInterest: { increment: expectedInterestMinor.toString() } } });
           const symbol = preview.currencySymbol.toUpperCase();
           await tx.$executeRaw`
             UPDATE "company_liquidity"
@@ -565,6 +566,7 @@ export class VaultService {
           data: {
             baseBalance: newBaseBalance.toString(),
             lockedAmount: newLockedAmount.toString(),
+            totalLockedInterest: { decrement: totalGain.toString() },
             originalBalance: newBaseBalance.toString(),
           },
         });
@@ -580,7 +582,8 @@ export class VaultService {
             UPDATE "company_liquidity"
             SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
                 "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
-                "totalInterestPaid" = "totalInterestPaid" + ${interestReceived.toString()}::decimal
+                "totalInterestPaid" = "totalInterestPaid" + ${interestReceived.toString()}::decimal,
+                "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestReceived.toString()}::decimal
             WHERE "currency" = ${normalizedCurrency}
           `;
         }

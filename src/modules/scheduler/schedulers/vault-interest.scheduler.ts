@@ -164,6 +164,7 @@ export class VaultInterestScheduler {
               data: {
                 baseBalance: newBaseBalance.toString(),
                 lockedAmount: newLockedAmount.toString(),
+                totalLockedInterest: { decrement: totalGain.toString() },
               },
             });
 
@@ -183,7 +184,8 @@ export class VaultInterestScheduler {
                 UPDATE "company_liquidity"
                 SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
                     "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
-                    "totalInterestPaid" = "totalInterestPaid" + ${totalGain.toString()}::decimal
+                    "totalInterestPaid" = "totalInterestPaid" + ${totalGain.toString()}::decimal,
+                    "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${totalGain.toString()}::decimal
                 WHERE "currency" = ${companyCurrency}
               `;
             }

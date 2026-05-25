@@ -10,6 +10,7 @@ model Wallet {
   lockedAmount      Decimal          @default(0) @db.Decimal(78, 0)
   stackedAmount     Decimal          @default(0) @db.Decimal(78, 0)
   totalStackedInterest Decimal       @default(0) @db.Decimal(78, 0)
+  totalLockedInterest Decimal        @default(0) @db.Decimal(78, 0)
   originalBalance   String           @default("0")
   isCrypto          Boolean
   blockchainEnabled Boolean          @default(false)

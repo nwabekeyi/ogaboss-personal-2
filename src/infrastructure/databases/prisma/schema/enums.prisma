@@ -119,6 +119,7 @@ enum TransactionContext {
   SWAP
   VAULT_SWAP
   BILL_PAYMENT
+  AUTOSTACK
 }
 
 enum TransactionProcess {
