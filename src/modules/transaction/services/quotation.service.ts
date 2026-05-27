@@ -200,9 +200,9 @@ export class QuotationService {
       const typeMatch =
         !tier.orderType || tier.orderType.toLowerCase() === orderType;
       if (!typeMatch) return false;
-      if (tier.minAmount !== null && amountMinor < tier.minAmount) return false;
-      if (tier.maxAmount !== null && amountMinor >= tier.maxAmount)
-        return false;
+      if (tier.minAmount === null || tier.maxAmount === null) return false;
+      if (amountMinor < tier.minAmount) return false;
+      if (amountMinor > tier.maxAmount) return false;
       return true;
     });
 
