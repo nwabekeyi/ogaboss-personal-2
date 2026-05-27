@@ -70,6 +70,13 @@ export class UnlockVaultDto {
   pin: string;
 }
 
+export class CancelVaultDto {
+  @ApiProperty({ description: 'Vault ID', example: 'cuid123' })
+  @IsString()
+  @IsNotEmpty()
+  vaultId: string;
+}
+
 export class VaultResponseDto {
   @ApiProperty({ description: 'Vault ID' })
   id: string;
