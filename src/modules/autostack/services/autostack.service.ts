@@ -63,7 +63,13 @@ export class AutoStackService {
     const interest = amountInUsdt * (dailyInterestRatePercent / 100) * periods;
     const estimatedOut = amountInUsdt - txFee + interest;
 
-    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: dailyInterestRatePercent, estimatedOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth };
+    const quoteAsset = String(quote.asset || 'USDT').toUpperCase();
+    const quoteAssetCurrency = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: quoteAsset } });
+    const bufferPercent = dto.paymentType === 'CRYPTO_WALLET' && quoteAsset === 'BTC' ? Number(quoteAssetCurrency?.defaultBufferPercent || 0) : 0;
+    const bufferAmount = bufferPercent > 0 ? quote.amount * (bufferPercent / 100) : 0;
+    const totalChargeAmount = quote.amount + bufferAmount;
+
+    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: dailyInterestRatePercent, estimatedOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth, bufferPercent, bufferAmount, totalChargeAmount };
     await this.tempStore.set(quoteKey, JSON.stringify(preview), Math.ceil((quote.expiresAt - Date.now()) / 1000));
 
     return { success: true, data: { amount: amountInUsdt, frequency: dto.frequency, paymentType: dto.paymentType, planName: quote.planName, rate: quote.rate, transactionFee: txFee, interestRate: dailyInterestRatePercent, estimatedOut, transactionFeePercentage: txFeePct } };
@@ -84,10 +90,10 @@ export class AutoStackService {
     const reference = `autostack-confirm-${autoStack.id}-${Date.now()}`;
     const paymentType = preview.paymentType === 'CRYPTO_WALLET' ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
 
-    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: reference, currency: 'USDT', fiatAmountBase: Math.floor(preview.amountInUsdt * 1_000_000).toString(), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT' } as any, description: `autostack_config:${autoStack.id}` } as any });
+    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: reference, currency: 'USDT', fiatAmountBase: Math.floor(preview.amountInUsdt * 1_000_000).toString(), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT', bufferPercent: preview.bufferPercent || 0, bufferAmount: preview.bufferAmount || 0, totalChargeAmount: preview.totalChargeAmount || preview.amount } as any, description: `autostack_config:${autoStack.id}` } as any });
 
     if (preview.paymentType === 'CRYPTO_WALLET') {
-      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
+      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.totalChargeAmount || preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
       const quotationId = swapQuote?.data?.swap_quotation?.id;
       if (!quotationId) throw new BadRequestException('Unable to create swap quotation');
       await this.quidaxSwapService.confirmInstantSwap({ user_id: QUIDAX_COMPANY_USERID, quotation_id: quotationId }, { skipCircuitBreaker: true });

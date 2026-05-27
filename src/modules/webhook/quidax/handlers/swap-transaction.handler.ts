@@ -11,7 +11,6 @@ import {
  CryptoNetwork,
  toBigInt,
  toDecimal,
- isTransientPrismaError,
 } from '../../../../shared';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import { CompanyLiquidityService } from '../../../../modules/transaction/services/company-liquidity.service';
@@ -37,30 +36,6 @@ export class SwapTransactionHandler {
    private readonly tickerService: QuidaxTickerService,
    private readonly transactionService: TransactionService,
  ) {}
-
- private async withRetry<T>(
-   operation: () => Promise<T>,
-   maxRetries = 3,
- ): Promise<T> {
-   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-     try {
-       return await operation();
-     } catch (err: any) {
-       if (
-         isTransientPrismaError(err) ||
-         err.code === 'P2034' || // Serialization failure
-         (err.message && err.message.includes('serialization'))
-       ) {
-         if (attempt === maxRetries) throw err;
-         const delay = 50 * attempt * (Math.random() + 0.5);
-         await new Promise((r) => setTimeout(r, delay));
-         continue;
-       }
-       throw err;
-     }
-   }
-   throw new Error('Max retries exceeded');
- }
 
  async process(data: SwapWebhookDataDto, event: string): Promise<void> {
    const swapId = data.id;
@@ -180,6 +155,8 @@ export class SwapTransactionHandler {
            data: { status: 'TERMINATED' as any },
          });
 
+         await this.companyLiquidityService.releaseLiquidity('USDT', expectedUsdtMinor, tx);
+
          if (linkedTx) {
            await tx.transaction.update({
              where: { id: linkedTx.id },
@@ -247,6 +224,8 @@ export class SwapTransactionHandler {
             originalBalance: newUsdtBase.toString(),
           },
         });
+
+        await this.companyLiquidityService.releaseLiquidity('USDT', expectedUsdtMinor, tx);
 
         // Update company liquidity: USDT vault principal + interest are now locked
         const totalGainMinor = BigInt(vault.totalGain.toFixed(0));
