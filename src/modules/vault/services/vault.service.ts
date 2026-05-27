@@ -723,11 +723,7 @@ export class VaultService {
             vault.cryptoCurrency.symbol,
             wallet.defaultNetwork as CryptoNetwork,
           ),
-          rate: ConvertCurrency.fromBase(
-            vault.rate.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
-          ),
+          rate: vault.rate.toString(),
           amountToReceive: ConvertCurrency.fromBase(
             vault.amountToReceive.toFixed(0),
             vault.cryptoCurrency.symbol,
@@ -809,11 +805,7 @@ export class VaultService {
           vault.cryptoCurrency.symbol,
           decimals,
         ),
-        rate: ConvertCurrency.fromBase(
-          vault.rate.toFixed(0),
-          vault.cryptoCurrency.symbol,
-          decimals,
-        ),
+        rate: vault.rate.toString(),
         amountToReceive: ConvertCurrency.fromBase(
           vault.amountToReceive.toFixed(0),
           vault.cryptoCurrency.symbol,
