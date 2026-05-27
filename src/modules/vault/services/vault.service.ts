@@ -29,7 +29,7 @@ import {
   IVaultPreview,
 } from '../../../modules/transaction/services/types';
 import { QuidaxTickerService } from '../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
-import { CryptoNetwork, toDecimal } from '../../../shared';
+import { COMPANY_NGN_WALLET_ID, CryptoNetwork, toDecimal } from '../../../shared';
 import { compareHash } from '../../../shared/services/hash';
 import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import Decimal from 'decimal.js';
@@ -409,7 +409,7 @@ export class VaultService {
           if (!swapReq?.data?.id) throw new Error('Quote refresh Failed');
 
           const confirmRes = await this.quidaxSwapService.confirmInstantSwap({
-            user_id: 'me',
+            user_id: COMPANY_NGN_WALLET_ID,
             quotation_id: swapReq.data.id,
           });
 
