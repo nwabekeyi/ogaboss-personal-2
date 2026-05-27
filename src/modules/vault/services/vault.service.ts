@@ -676,12 +676,18 @@ export class VaultService {
     }
   }
 
-  async getUserVaults(userId: string) {
+  async getUserVaults(userId: string, page = 1, limit = 10) {
+    const safeLimit = Math.min(Math.max(limit || 10, 1), 20);
+    const safePage = Math.max(page || 1, 1);
+    const skip = (safePage - 1) * safeLimit;
     const vaults = await this.prisma.vault.findMany({
       where: { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } },
       include: { cryptoCurrency: true },
       orderBy: { createdAt: 'desc' },
+      skip,
+      take: safeLimit,
     });
+    const totalCount = await this.prisma.vault.count({ where: { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } } });
 
     if (vaults.length === 0) {
       return {
@@ -689,30 +695,48 @@ export class VaultService {
         message: 'Vaults retrieved successfully',
         data: {
           vaults: [],
-          totalLocked: '0',
-          totalGain: '0',
+          totalLocked: '0.00',
+          totalGain: '0.00',
         },
       };
     }
 
-    const firstVault = vaults[0];
-    const firstWallet = await this.prisma.wallet.findFirst({
-      where: { userId, currencyId: firstVault.currencyId },
-    });
-    const totalDecimals = getCurrencyDecimals(
-      firstVault.cryptoCurrency.symbol,
-      firstWallet?.defaultNetwork as CryptoNetwork,
-    );
-
-    let totalLocked = 0n;
-    let totalGain = 0n;
+    let totalLockedNgn = new Decimal(0);
+    let totalGainNgn = new Decimal(0);
+    const ngnRateCache = new Map<string, Decimal>();
 
     const vaultResponses = await Promise.all(
       vaults.map(async (vault) => {
         const amountLocked = BigInt(vault.amountLocked.toFixed(0));
         const totalGainVal = BigInt(vault.totalGain.toFixed(0));
-        totalLocked += amountLocked;
-        totalGain += totalGainVal;
+        // Totals should be NGN and only include ACTIVE vaults
+        if (vault.status === VaultStatus.ACTIVE) {
+          let ngnRate = ngnRateCache.get(vault.cryptoCurrency.symbol.toUpperCase());
+          if (!ngnRate) {
+            const symbol = vault.cryptoCurrency.symbol.toUpperCase();
+            const pair = symbol === 'NGN' ? '1' : await this.tickerService.getPrice(`${symbol.toLowerCase()}ngn`);
+            ngnRate = new Decimal(pair || '0');
+            ngnRateCache.set(symbol, ngnRate);
+          }
+
+          const amountLockedMajor = new Decimal(
+            ConvertCurrency.fromBase(
+              amountLocked.toString(),
+              vault.cryptoCurrency.symbol,
+              wallet.defaultNetwork as CryptoNetwork,
+            ),
+          );
+          const totalGainMajor = new Decimal(
+            ConvertCurrency.fromBase(
+              totalGainVal.toString(),
+              vault.cryptoCurrency.symbol,
+              wallet.defaultNetwork as CryptoNetwork,
+            ),
+          );
+
+          totalLockedNgn = totalLockedNgn.plus(amountLockedMajor.mul(ngnRate));
+          totalGainNgn = totalGainNgn.plus(totalGainMajor.mul(ngnRate));
+        }
 
         const wallet = await this.prisma.wallet.findFirst({
           where: { userId, currencyId: vault.currencyId },
@@ -778,16 +802,14 @@ export class VaultService {
       message: 'Vaults retrieved successfully',
       data: {
         vaults: vaultResponses,
-        totalLocked: ConvertCurrency.fromBase(
-          totalLocked.toString(),
-          firstVault.cryptoCurrency.symbol,
-          totalDecimals,
-        ),
-        totalGain: ConvertCurrency.fromBase(
-          totalGain.toString(),
-          firstVault.cryptoCurrency.symbol,
-          totalDecimals,
-        ),
+        totalLocked: totalLockedNgn.toFixed(2),
+        totalGain: totalGainNgn.toFixed(2),
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total: totalCount,
+          totalPages: Math.ceil(totalCount / safeLimit),
+        },
       },
     };
   }

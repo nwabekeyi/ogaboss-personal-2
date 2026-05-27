@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Body,
+  Query,
   UseGuards,
   Request,
 } from '@nestjs/common';
@@ -63,8 +64,8 @@ export class VaultController {
 
   @Get()
   @ApiOperation({ summary: 'Get all user vaults' })
-  getVaults(@Request() req: any) {
-    return this.vaultService.getUserVaults(req.user.id);
+  getVaults(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '10') {
+    return this.vaultService.getUserVaults(req.user.id, Number(page), Number(limit));
   }
 
   @Get(':id')

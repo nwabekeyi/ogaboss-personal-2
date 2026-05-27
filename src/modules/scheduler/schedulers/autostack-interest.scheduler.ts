@@ -28,7 +28,7 @@ export class AutoStackInterestScheduler {
   @Cron('*/10 * * * *')
   async accrueDailyInterest() {
     try {
-      await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack-interest.dispatch', {}, { jobId: `scheduler.autostack-interest.dispatch:${new Date().toISOString().slice(0, 16)}` });
+      await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack-interest.dispatch', {}, { jobId: `scheduler.autostack-interest.dispatch-${new Date().toISOString().slice(0, 16).replace(':', '-')}` });
       return;
     } catch (error) {
       this.logger.error('Failed to enqueue autostack dispatch job', error as any);
@@ -46,7 +46,7 @@ export class AutoStackInterestScheduler {
     const now = new Date();
     const dueStacks = await this.prisma.autoStack.findMany({ where: { status: 'ACTIVE' as any, nextExecutionAt: { lte: now } }, take: this.BATCH_SIZE });
     for (const stack of dueStacks) {
-      await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack.charge', { autoStackId: stack.id }, { jobId: `scheduler.autostack.charge:${stack.id}:${now.toISOString()}` });
+      await this.queueService.add(QueueName.CLEANUP, 'scheduler.autostack.charge', { autoStackId: stack.id }, { jobId: `scheduler.autostack.charge-${stack.id}-${now.toISOString().replace(/:/g, '-')}` });
     }
   }
 

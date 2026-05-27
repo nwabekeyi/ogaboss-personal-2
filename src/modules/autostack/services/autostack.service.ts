@@ -17,6 +17,18 @@ import { AUTOSTACK_DEFAULT_PLAN_NAME, AUTOSTACK_FREQUENCY_PERIOD_DAYS, AUTOSTACK
 
 @Injectable()
 export class AutoStackService {
+  private getBufferPercentFromTiers(asset: any, amountMinor: bigint): number {
+    const tiers = asset?.buffer_tiers || [];
+    const matchingTier = tiers.find((tier: any) => {
+      if (!tier?.minAmount || !tier?.maxAmount || tier?.bufferPercent === null || tier?.bufferPercent === undefined) return false;
+      const min = BigInt(tier.minAmount.toString());
+      const max = BigInt(tier.maxAmount.toString());
+      return amountMinor >= min && amountMinor <= max;
+    });
+    if (matchingTier) return Number(matchingTier.bufferPercent || 0);
+    return Number(asset?.defaultBufferPercent || 0);
+  }
+
   constructor(private readonly prisma: PrismaService, private readonly queueService: QueueService, private readonly tempStore: TempStoreService, private readonly tickerService: QuidaxTickerService, private readonly quidaxSwapService: QuidaxSwapService, private readonly paystackService: PaystackService, private readonly quidaxOrderService: QuidaxOrderService) {}
 
   async quote(userId: string, dto: AutoStackQuoteDto) {
@@ -97,7 +109,7 @@ export class AutoStackService {
 
     if (preview.paymentType === 'CRYPTO_WALLET') {
       const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.totalChargeAmount || preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
-      const quotationId = swapQuote?.data?.swap_quotation?.id;
+      const quotationId = swapQuote?.data?.id;
       if (!quotationId) throw new BadRequestException('Unable to create swap quotation');
       await this.quidaxSwapService.confirmInstantSwap({ user_id: QUIDAX_COMPANY_USERID, quotation_id: quotationId }, { skipCircuitBreaker: true });
     } else {
@@ -105,11 +117,36 @@ export class AutoStackService {
       await this.paystackService.chargeSavedCard({ paymentCardId: preview.paymentCardId, amount: Number(preview.amountInUsdt), reference, metadata: { autoStackId: autoStack.id, mode: 'AUTOSTACK_PERIODIC' } }, { skipCircuitBreaker: true });
     }
 
-    await this.queueService.add(QueueName.CLEANUP, 'autostack.execute', { autoStackId: autoStack.id }, { jobId: `autostack:${autoStack.id}`, delay: Math.max(nextExecutionAt.getTime() - Date.now(), 0) });
+    await this.queueService.add(QueueName.CLEANUP, 'autostack.execute', { autoStackId: autoStack.id }, { jobId: `autostack-${autoStack.id}`, delay: Math.max(nextExecutionAt.getTime() - Date.now(), 0) });
     return { success: true, message: 'Autostack created and awaiting webhook completion', data: autoStack };
   }
 
-  async getHistory(userId: string, page = 1, limit = 20) { const skip = (page - 1) * limit; const [items, total] = await Promise.all([this.prisma.autoStack.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, skip, take: limit, include: { cryptoCurrency: true } }), this.prisma.autoStack.count({ where: { userId } })]); return { success: true, data: { items, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } } }; }
+  async getHistory(userId: string, page = 1, limit = 10) {
+    const safeLimit = Math.min(Math.max(limit || 10, 1), 20);
+    const safePage = Math.max(page || 1, 1);
+    const skip = (safePage - 1) * safeLimit;
+    const [items, total] = await Promise.all([
+      this.prisma.autoStack.findMany({ where: { userId }, orderBy: { createdAt: 'desc' }, skip, take: safeLimit, include: { cryptoCurrency: true } }),
+      this.prisma.autoStack.count({ where: { userId } }),
+    ]);
+
+    let totalAmountNgn = 0;
+    let totalInterestNgn = 0;
+    const mapped = await Promise.all(items.map(async (item) => {
+      const symbol = item.cryptoCurrency.symbol.toUpperCase();
+      const ngnRate = symbol === 'NGN' ? '1' : (await this.tickerService.getPrice(`${symbol.toLowerCase()}ngn`)) || '0';
+      const rate = Number(ngnRate) || 0;
+      const amountMajor = Number(item.amount.toString()) / 1_000_000;
+      const interestMajor = Number(item.accruedInterest.toString()) / 1_000_000;
+      const amountNgn = amountMajor * rate;
+      const interestNgn = interestMajor * rate;
+      totalAmountNgn += amountNgn;
+      totalInterestNgn += interestNgn;
+      return { ...item, amountNgn: amountNgn.toFixed(20), accruedInterestNgn: interestNgn.toFixed(20) };
+    }));
+
+    return { success: true, data: { items: mapped, totals: { totalAmountNgn: totalAmountNgn.toFixed(20), totalInterestNgn: totalInterestNgn.toFixed(20) }, pagination: { page: safePage, limit: safeLimit, total, totalPages: Math.ceil(total / safeLimit) } } };
+  }
 
   async overview(userId: string) {
     const rows = await this.prisma.autoStack.findMany({ where: { userId } });
@@ -131,7 +168,7 @@ export class AutoStackService {
     }
     if (meta.quidaxOrderId) {
       const order = await this.quidaxOrderService.getOrderRecord({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
-      const state = String(order?.data?.state || '').toLowerCase();
+      const state = String((order as any)?.data?.state || (order as any)?.data?.status || '').toLowerCase();
       if (['done', 'completed'].includes(state)) throw new BadRequestException('Autostack order already processed and cannot be cancelled');
       await this.quidaxOrderService.cancelBuyOrSellOrderRequest({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
     }
