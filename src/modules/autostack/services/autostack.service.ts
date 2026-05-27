@@ -4,18 +4,20 @@ import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { compareHash } from '../../../shared/services/hash';
-import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto } from '../dto/autostack.dto';
+import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto, EndAutoStackDto } from '../dto/autostack.dto';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { QUIDAX_COMPANY_USERID } from '../../transaction/constants';
 import { PaymentType, Prisma, TransactionContext, TransactionStatus, TransactionType } from '../../../infrastructure/databases/prisma';
 import { TempStoreService } from '../../../infrastructure/databases/redis';
+import axios from 'axios';
+import { QuidaxOrderService } from '../../../infrastructure/providers/quidax/order.service';
 
 import { AUTOSTACK_DEFAULT_PLAN_NAME, AUTOSTACK_FREQUENCY_PERIOD_DAYS, AUTOSTACK_QUOTE_TTL_SECONDS } from '../constants/autostack.constants';
 
 @Injectable()
 export class AutoStackService {
-  constructor(private readonly prisma: PrismaService, private readonly queueService: QueueService, private readonly tempStore: TempStoreService, private readonly tickerService: QuidaxTickerService, private readonly quidaxSwapService: QuidaxSwapService, private readonly paystackService: PaystackService) {}
+  constructor(private readonly prisma: PrismaService, private readonly queueService: QueueService, private readonly tempStore: TempStoreService, private readonly tickerService: QuidaxTickerService, private readonly quidaxSwapService: QuidaxSwapService, private readonly paystackService: PaystackService, private readonly quidaxOrderService: QuidaxOrderService) {}
 
   async quote(userId: string, dto: AutoStackQuoteDto) {
     void userId;
@@ -63,7 +65,14 @@ export class AutoStackService {
     const interest = amountInUsdt * (dailyInterestRatePercent / 100) * periods;
     const estimatedOut = amountInUsdt - txFee + interest;
 
-    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: dailyInterestRatePercent, estimatedOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth };
+    const quoteAsset = String(quote.asset || 'USDT').toUpperCase();
+    const quoteAssetCurrency = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: quoteAsset }, include: { buffer_tiers: true } });
+    const amountMinor = BigInt(Math.floor((quote.amount || 0) * 100000000).toString());
+    const bufferPercent = dto.paymentType === 'CRYPTO_WALLET' && quoteAsset === 'BTC' ? this.getBufferPercentFromTiers(quoteAssetCurrency, amountMinor) : 0;
+    const bufferAmount = bufferPercent > 0 ? quote.amount * (bufferPercent / 100) : 0;
+    const totalChargeAmount = quote.amount + bufferAmount;
+
+    const preview = { ...quote, frequency: dto.frequency, paymentType: dto.paymentType, paymentCardId: (dto as any).paymentCardId, transactionFee: txFee, transactionFeePercentage: txFeePct, interestRate: dailyInterestRatePercent, estimatedOut, startDate: dto.startDate, timeOfDay: dto.timeOfDay, dayOfWeek: dto.dayOfWeek, dayOfMonth: dto.dayOfMonth, bufferPercent, bufferAmount, totalChargeAmount };
     await this.tempStore.set(quoteKey, JSON.stringify(preview), Math.ceil((quote.expiresAt - Date.now()) / 1000));
 
     return { success: true, data: { amount: amountInUsdt, frequency: dto.frequency, paymentType: dto.paymentType, planName: quote.planName, rate: quote.rate, transactionFee: txFee, interestRate: dailyInterestRatePercent, estimatedOut, transactionFeePercentage: txFeePct } };
@@ -79,15 +88,15 @@ export class AutoStackService {
     const usdt = await this.prisma.cryptoCurrency.findFirst({ where: { symbol: 'USDT' } });
     if (!usdt) throw new NotFoundException('USDT currency not found');
     const nextExecutionAt = new Date(preview.startDate || new Date());
-    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: 'ACTIVE', transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
+    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: 'PENDING' as any, transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
 
     const reference = `autostack-confirm-${autoStack.id}-${Date.now()}`;
     const paymentType = preview.paymentType === 'CRYPTO_WALLET' ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
 
-    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: reference, currency: 'USDT', fiatAmountBase: Math.floor(preview.amountInUsdt * 1_000_000).toString(), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT' } as any, description: `autostack_config:${autoStack.id}` } as any });
+    await this.prisma.transaction.create({ data: { userId, transactionUniqueId: reference, currency: 'USDT', fiatAmountBase: Math.floor(preview.amountInUsdt * 1_000_000).toString(), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT', bufferPercent: preview.bufferPercent || 0, bufferAmount: preview.bufferAmount || 0, totalChargeAmount: preview.totalChargeAmount || preview.amount } as any, description: `autostack_config:${autoStack.id}` } as any });
 
     if (preview.paymentType === 'CRYPTO_WALLET') {
-      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
+      const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.totalChargeAmount || preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
       const quotationId = swapQuote?.data?.swap_quotation?.id;
       if (!quotationId) throw new BadRequestException('Unable to create swap quotation');
       await this.quidaxSwapService.confirmInstantSwap({ user_id: QUIDAX_COMPANY_USERID, quotation_id: quotationId }, { skipCircuitBreaker: true });
@@ -108,4 +117,73 @@ export class AutoStackService {
     const totalInterestGained = rows.reduce((a, r) => a + BigInt(r.accruedInterest.toFixed(0)), 0n);
     return { success: true, data: { totalAmountLocked: totalAmountLocked.toString(), totalInterestGained: totalInterestGained.toString() } };
   }
+
+  async cancelPending(userId: string, autoStackId: string) {
+    const stack = await this.prisma.autoStack.findFirst({ where: { id: autoStackId, userId, status: 'PENDING' as any } });
+    if (!stack) throw new NotFoundException('Pending autostack not found');
+    const configTx = await this.prisma.transaction.findFirst({ where: { userId, description: `autostack_config:${stack.id}` }, orderBy: { createdAt: 'desc' } });
+    const meta = (configTx?.paymentMetadata || {}) as any;
+    if (meta.autostackSwapId) {
+      const swap = await this.quidaxSwapService.getSwapTransaction({ user_id: 'me', swap_transaction_id: String(meta.autostackSwapId) }, { skipCircuitBreaker: true });
+      const status = String(swap?.data?.status || '').toLowerCase();
+      if (['completed', 'done'].includes(status)) throw new BadRequestException('Autostack swap already processed and cannot be cancelled');
+      await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_transactions/${meta.autostackSwapId}/cancel`, {}, { headers: { Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } });
+    }
+    if (meta.quidaxOrderId) {
+      const order = await this.quidaxOrderService.getOrderRecord({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
+      const state = String(order?.data?.state || '').toLowerCase();
+      if (['done', 'completed'].includes(state)) throw new BadRequestException('Autostack order already processed and cannot be cancelled');
+      await this.quidaxOrderService.cancelBuyOrSellOrderRequest({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
+    }
+    await this.prisma.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: new Date() } });
+    return { success: true, message: 'Pending autostack cancelled successfully' };
+  }
+
+  async unlock(userId: string, dto: EndAutoStackDto) {
+    const stack = await this.prisma.autoStack.findFirst({ where: { id: dto.autoStackId, userId, status: 'ACTIVE' as any } });
+    if (!stack) throw new NotFoundException('Active autostack not found');
+    if (!dto.pin) throw new BadRequestException('PIN is required');
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { pin: true } });
+    if (!user?.pin || !(await compareHash(dto.pin, user.pin))) throw new BadRequestException('Invalid pin');
+
+    const isEarly = new Date() < stack.nextInterestAt;
+    const principal = BigInt(stack.amount.toFixed(0));
+    const accrued = BigInt(stack.accruedInterest.toFixed(0));
+    const penalty = isEarly ? (principal * 5n) / 100n : 0n;
+    const payout = isEarly ? principal - penalty : principal + accrued;
+    const interestPaid = isEarly ? 0n : accrued;
+
+    await this.prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.findFirst({ where: { userId, currency: 'USDT' } });
+      if (!wallet) throw new NotFoundException('USDT wallet not found');
+      await tx.$executeRaw`
+        UPDATE "wallets"
+        SET "baseBalance" = "baseBalance" + ${payout.toString()}::decimal,
+            "stackedAmount" = GREATEST("stackedAmount" - ${principal.toString()}::decimal, 0),
+            "totalStackedInterest" = GREATEST("totalStackedInterest" - ${accrued.toString()}::decimal, 0)
+        WHERE "id" = ${wallet.id}
+      `;
+      await tx.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: new Date() } });
+      await tx.$executeRaw`
+        UPDATE "company_liquidity"
+        SET "totalAmountStacked" = GREATEST("totalAmountStacked" - ${principal.toString()}::decimal, 0),
+            "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${accrued.toString()}::decimal, 0),
+            "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestPaid.toString()}::decimal
+        WHERE "currency" = 'USDT'
+      `;
+    });
+
+    return { success: true, message: isEarly ? 'Autostack unlocked early with penalty and no interest' : 'Autostack unlocked successfully' };
+  }
 }
+  private getBufferPercentFromTiers(asset: any, amountMinor: bigint): number {
+    const tiers = asset?.buffer_tiers || [];
+    const matchingTier = tiers.find((tier: any) => {
+      if (!tier?.minAmount || !tier?.maxAmount || tier?.bufferPercent === null || tier?.bufferPercent === undefined) return false;
+      const min = BigInt(tier.minAmount.toString());
+      const max = BigInt(tier.maxAmount.toString());
+      return amountMinor >= min && amountMinor <= max;
+    });
+    if (matchingTier) return Number(matchingTier.bufferPercent || 0);
+    return Number(asset?.defaultBufferPercent || 0);
+  }

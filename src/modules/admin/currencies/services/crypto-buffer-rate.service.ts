@@ -134,24 +134,20 @@ export class CryptoBufferService {
 
     const network = this.getFirstNetwork(crypto.symbol);
 
-    const minAmount = dto.minAmount
-      ? ConvertCurrency.toBase(
-          dto.minAmount,
-          crypto.symbol,
-          network as CryptoNetwork,
-        )
-      : null;
-    const maxAmount = dto.maxAmount
-      ? ConvertCurrency.toBase(
-          dto.maxAmount,
-          crypto.symbol,
-          network as CryptoNetwork,
-        )
-      : null;
+    const minAmount = ConvertCurrency.toBase(
+      dto.minAmount,
+      crypto.symbol,
+      network as CryptoNetwork,
+    );
+    const maxAmount = ConvertCurrency.toBase(
+      dto.maxAmount,
+      crypto.symbol,
+      network as CryptoNetwork,
+    );
 
     this.assertValidRange(
-      minAmount ? new Decimal(minAmount.toString()) : null,
-      maxAmount ? new Decimal(maxAmount.toString()) : null,
+      new Decimal(minAmount.toString()),
+      new Decimal(maxAmount.toString()),
       'create buffer tier',
     );
 
@@ -182,8 +178,8 @@ export class CryptoBufferService {
       data: {
         cryptoId,
         orderType: dto.orderType ?? null,
-        minAmount: minAmount?.toString() ?? null,
-        maxAmount: maxAmount?.toString() ?? null,
+        minAmount: minAmount.toString(),
+        maxAmount: maxAmount.toString(),
         bufferPercent: new Decimal(dto.bufferPercent).toDecimalPlaces(
           2,
           Decimal.ROUND_UP,
