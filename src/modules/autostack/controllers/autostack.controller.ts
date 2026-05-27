@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AuthGuard, VersionedController } from '../../../core';
 import { apiTags } from '../../../shared';
 import { AutoStackService } from '../services/autostack.service';
-import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto } from '../dto/autostack.dto';
+import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto, EndAutoStackDto } from '../dto/autostack.dto';
 
 @ApiTags('autostack')
 @ApiBearerAuth('Bearer')
@@ -33,4 +33,12 @@ export class AutoStackController {
 
   @Get('overview')
   overview(@Request() req: any) { return this.service.overview(req.user.id); }
+
+  @Post('cancel')
+  @ApiOperation({ summary: 'Cancel pending autostack (before first execution)' })
+  cancel(@Request() req: any, @Body() dto: EndAutoStackDto) { return this.service.cancelPending(req.user.id, dto.autoStackId); }
+
+  @Post('unlock')
+  @ApiOperation({ summary: 'Unlock/end autostack with penalty if before due date' })
+  unlock(@Request() req: any, @Body() dto: EndAutoStackDto) { return this.service.unlock(req.user.id, dto); }
 }

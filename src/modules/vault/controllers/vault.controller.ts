@@ -14,6 +14,7 @@ import {
   VaultPreviewDto,
   VaultConfirmDto,
   UnlockVaultDto,
+  CancelVaultDto,
 } from '../dto/vault.dto';
 import { AuthGuard, VersionedController } from '../../../core';
 import { apiTags } from '../../../shared';
@@ -52,6 +53,12 @@ export class VaultController {
   @ApiOperation({ summary: 'Unlock funds from vault' })
   unlock(@Request() req: any, @Body() dto: UnlockVaultDto) {
     return this.vaultService.unlock(req.user.id, dto);
+  }
+
+  @Post('cancel')
+  @ApiOperation({ summary: 'Cancel a pending vault' })
+  cancel(@Request() req: any, @Body() dto: CancelVaultDto) {
+    return this.vaultService.cancelPendingVault(req.user.id, dto.vaultId);
   }
 
   @Get()

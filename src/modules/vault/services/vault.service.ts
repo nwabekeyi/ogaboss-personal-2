@@ -33,7 +33,8 @@ import { COMPANY_NGN_WALLET_ID, CryptoNetwork, toDecimal } from '../../../shared
 import { compareHash } from '../../../shared/services/hash';
 import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import Decimal from 'decimal.js';
-import { CompanyLiquidityService, TransactionService } from '../../transaction/services';
+import { TransactionService } from '../../transaction/services';
+import { CompanyLiquidityService } from '../../transaction/services/company-liquidity.service';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 
 @Injectable()
@@ -48,6 +49,7 @@ export class VaultService {
     private readonly tickerService: QuidaxTickerService,
     private readonly quidaxSwapService: QuidaxSwapService,
     private readonly transactionService: TransactionService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly queueService: QueueService,
     private readonly companyLiquidityService: CompanyLiquidityService,
 
@@ -675,7 +677,7 @@ export class VaultService {
 
   async getUserVaults(userId: string) {
     const vaults = await this.prisma.vault.findMany({
-      where: { userId, status: VaultStatus.ACTIVE },
+      where: { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } },
       include: { cryptoCurrency: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -859,5 +861,23 @@ export class VaultService {
         requestedAt: vault.requestedAt,
       },
     };
+  }
+
+  async cancelPendingVault(userId: string, vaultId: string) {
+    const vault = await this.prisma.vault.findFirst({
+      where: { id: vaultId, userId, status: VaultStatus.PENDING },
+      include: { cryptoCurrency: true },
+    });
+    if (!vault) throw new NotFoundException('Pending vault not found');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.vault.update({ where: { id: vault.id }, data: { status: VaultStatus.TERMINATED } });
+      if (vault.cryptoCurrency.symbol.toUpperCase() === 'BTC') {
+        const principalMinor = BigInt(vault.amountLocked.toFixed(0));
+        await this.companyLiquidityService.releaseLiquidity('USDT', principalMinor, tx as any);
+      }
+    });
+
+    return { success: true, message: 'Pending vault cancelled successfully' };
   }
 }

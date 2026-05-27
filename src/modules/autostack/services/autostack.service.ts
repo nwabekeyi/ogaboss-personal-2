@@ -4,7 +4,7 @@ import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { compareHash } from '../../../shared/services/hash';
-import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto } from '../dto/autostack.dto';
+import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto, EndAutoStackDto } from '../dto/autostack.dto';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { QUIDAX_COMPANY_USERID } from '../../transaction/constants';
@@ -114,6 +114,53 @@ export class AutoStackService {
     const totalAmountLocked = rows.reduce((a, r) => a + BigInt(r.amount.toFixed(0)), 0n);
     const totalInterestGained = rows.reduce((a, r) => a + BigInt(r.accruedInterest.toFixed(0)), 0n);
     return { success: true, data: { totalAmountLocked: totalAmountLocked.toString(), totalInterestGained: totalInterestGained.toString() } };
+  }
+
+  async cancelPending(userId: string, autoStackId: string) {
+    const stack = await this.prisma.autoStack.findFirst({ where: { id: autoStackId, userId, status: 'ACTIVE' as any } });
+    if (!stack) throw new NotFoundException('Autostack not found');
+    if (stack.lastExecutedAt || stack.nextExecutionAt <= new Date()) {
+      throw new BadRequestException('Only pending autostack can be cancelled');
+    }
+    await this.prisma.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: new Date() } });
+    return { success: true, message: 'Pending autostack cancelled successfully' };
+  }
+
+  async unlock(userId: string, dto: EndAutoStackDto) {
+    const stack = await this.prisma.autoStack.findFirst({ where: { id: dto.autoStackId, userId, status: 'ACTIVE' as any } });
+    if (!stack) throw new NotFoundException('Active autostack not found');
+    if (!dto.pin) throw new BadRequestException('PIN is required');
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { pin: true } });
+    if (!user?.pin || !(await compareHash(dto.pin, user.pin))) throw new BadRequestException('Invalid pin');
+
+    const isEarly = new Date() < stack.nextInterestAt;
+    const principal = BigInt(stack.amount.toFixed(0));
+    const accrued = BigInt(stack.accruedInterest.toFixed(0));
+    const penalty = isEarly ? (principal * 5n) / 100n : 0n;
+    const payout = isEarly ? principal - penalty : principal + accrued;
+    const interestPaid = isEarly ? 0n : accrued;
+
+    await this.prisma.$transaction(async (tx) => {
+      const wallet = await tx.wallet.findFirst({ where: { userId, currency: 'USDT' } });
+      if (!wallet) throw new NotFoundException('USDT wallet not found');
+      await tx.$executeRaw`
+        UPDATE "wallets"
+        SET "baseBalance" = "baseBalance" + ${payout.toString()}::decimal,
+            "stackedAmount" = GREATEST("stackedAmount" - ${principal.toString()}::decimal, 0),
+            "totalStackedInterest" = GREATEST("totalStackedInterest" - ${accrued.toString()}::decimal, 0)
+        WHERE "id" = ${wallet.id}
+      `;
+      await tx.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: new Date() } });
+      await tx.$executeRaw`
+        UPDATE "company_liquidity"
+        SET "totalAmountStacked" = GREATEST("totalAmountStacked" - ${principal.toString()}::decimal, 0),
+            "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${accrued.toString()}::decimal, 0),
+            "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestPaid.toString()}::decimal
+        WHERE "currency" = 'USDT'
+      `;
+    });
+
+    return { success: true, message: isEarly ? 'Autostack unlocked early with penalty and no interest' : 'Autostack unlocked successfully' };
   }
 }
   private getBufferPercentFromTiers(asset: any, amountMinor: bigint): number {
