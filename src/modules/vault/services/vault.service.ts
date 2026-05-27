@@ -297,6 +297,8 @@ export class VaultService {
         // Balance management
         if (isBTC) {
           await this.transactionService.reserveBalance(tx, userId, 'BTC', totalChargeMinor);
+          const reservedCompanyLiquidity = await this.companyLiquidityService.reserveLiquidity('USDT', principalMinor, tx);
+          if (!reservedCompanyLiquidity) throw new BadRequestException('Something went wrong, try again later');
         } else {
           const newBaseBalance = walletBaseMinor - totalChargeMinor;
           const newLockedAmount = walletLockedMinor + principalMinor;
@@ -582,7 +584,6 @@ export class VaultService {
             UPDATE "company_liquidity"
             SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
                 "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
-                "totalInterestPaid" = "totalInterestPaid" + ${interestReceived.toString()}::decimal,
                 "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestReceived.toString()}::decimal
             WHERE "currency" = ${normalizedCurrency}
           `;
@@ -720,11 +721,7 @@ export class VaultService {
             vault.cryptoCurrency.symbol,
             wallet.defaultNetwork as CryptoNetwork,
           ),
-          rate: ConvertCurrency.fromBase(
-            vault.rate.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
-          ),
+          rate: vault.rate.toString(),
           amountToReceive: ConvertCurrency.fromBase(
             vault.amountToReceive.toFixed(0),
             vault.cryptoCurrency.symbol,
@@ -806,11 +803,7 @@ export class VaultService {
           vault.cryptoCurrency.symbol,
           decimals,
         ),
-        rate: ConvertCurrency.fromBase(
-          vault.rate.toFixed(0),
-          vault.cryptoCurrency.symbol,
-          decimals,
-        ),
+        rate: vault.rate.toString(),
         amountToReceive: ConvertCurrency.fromBase(
           vault.amountToReceive.toFixed(0),
           vault.cryptoCurrency.symbol,
