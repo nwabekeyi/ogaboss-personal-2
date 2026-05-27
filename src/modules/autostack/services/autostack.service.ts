@@ -213,3 +213,14 @@ export class AutoStackService {
     return { success: true, message: isEarly ? 'Autostack unlocked early with penalty and no interest' : 'Autostack unlocked successfully' };
   }
 }
+  private getBufferPercentFromTiers(asset: any, amountMinor: bigint): number {
+    const tiers = asset?.buffer_tiers || [];
+    const matchingTier = tiers.find((tier: any) => {
+      if (!tier?.minAmount || !tier?.maxAmount || tier?.bufferPercent === null || tier?.bufferPercent === undefined) return false;
+      const min = BigInt(tier.minAmount.toString());
+      const max = BigInt(tier.maxAmount.toString());
+      return amountMinor >= min && amountMinor <= max;
+    });
+    if (matchingTier) return Number(matchingTier.bufferPercent || 0);
+    return Number(asset?.defaultBufferPercent || 0);
+  }
