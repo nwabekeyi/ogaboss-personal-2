@@ -33,7 +33,7 @@ import { COMPANY_NGN_WALLET_ID, CryptoNetwork, toDecimal } from '../../../shared
 import { compareHash } from '../../../shared/services/hash';
 import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import Decimal from 'decimal.js';
-import { TransactionService } from '../../transaction/services';
+import { CompanyLiquidityService, TransactionService } from '../../transaction/services';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 
 @Injectable()
@@ -49,6 +49,8 @@ export class VaultService {
     private readonly quidaxSwapService: QuidaxSwapService,
     private readonly transactionService: TransactionService,
     private readonly queueService: QueueService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
+
   ) {}
 
   private async getCurrencyBufferPercent(symbol: string): Promise<Decimal> {
