@@ -51,6 +51,8 @@ export class VaultService {
     private readonly transactionService: TransactionService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly queueService: QueueService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
+
   ) {}
 
   private async getCurrencyBufferPercent(symbol: string, amountMinor: bigint): Promise<Decimal> {
