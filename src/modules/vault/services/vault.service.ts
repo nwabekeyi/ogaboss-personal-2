@@ -60,12 +60,17 @@ export class VaultService {
       currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
     }
 
-    const bufferPercent = currency?.defaultBufferPercent;
-    if (!bufferPercent || bufferPercent.toNumber() <= 0) {
+    const rawBufferPercent = currency?.defaultBufferPercent;
+    if (rawBufferPercent === null || rawBufferPercent === undefined) {
       throw new BadRequestException(`Buffer not configured for ${symbol}. Cannot create vault quote.`);
     }
 
-    return new Decimal(bufferPercent);
+    const bufferPercent = new Decimal(rawBufferPercent as any);
+    if (!bufferPercent.isFinite() || bufferPercent.lte(0)) {
+      throw new BadRequestException(`Buffer not configured for ${symbol}. Cannot create vault quote.`);
+    }
+
+    return bufferPercent;
   }
 
   async getVaultQuote(userId: string, dto: VaultQuoteDto) {
@@ -116,9 +121,17 @@ export class VaultService {
       throw new BadRequestException(`Insufficient balance for principal and buffer`);
     }
 
-     // Get rate: For BTC, rate will be set after swap execution in webhook (default 0)
-     // For stablecoins, rate is 1:1
-     const rateMajor = symbol === 'BTC' ? '0' : '1';
+    const usdtWallet = await this.prisma.wallet.findFirst({
+      where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+      select: { defaultNetwork: true },
+    });
+    const usdtNetwork = (usdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
+
+    // Store rate in base units (USDT as quote currency)
+    // For BTC, rate will be set after swap execution in webhook (default 0)
+    // For stablecoins, rate is 1:1
+    const rateMinor =
+      symbol === 'BTC' ? '0' : ConvertCurrency.toBase('1', 'USDT', usdtNetwork).toString();
 
     const maturityDate = new Date();
     maturityDate.setDate(maturityDate.getDate() + dto.durationDays);
@@ -132,7 +145,7 @@ export class VaultService {
       currencySymbol: symbol,
       network: wallet.defaultNetwork as CryptoNetwork,
       baseBalanceMinor: wallet.baseBalance.toFixed(0),
-      rateMinor: rateMajor,
+      rateMinor,
       expiresAt: Date.now() + VAULT_QUOTE_TTL_SECONDS * 1000,
       pinVerified: false,
       amountMinor: principalMinor,
@@ -145,15 +158,9 @@ export class VaultService {
 
     await this.tempStore.set(`vault:${quoteId}`, JSON.stringify(internalQuote), VAULT_QUOTE_TTL_SECONDS);
 
-    // Get USDT network for rate display (used when symbol is BTC)
-    const usdtWallet = await this.prisma.wallet.findFirst({
-      where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
-      select: { defaultNetwork: true },
-    });
-    const usdtNetwork = (usdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
     const rateDisplay = symbol === 'BTC'
-      ? ConvertCurrency.fromBase(rateMajor, 'USDT', usdtNetwork)
-      : '1';
+      ? ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork)
+      : ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork);
 
     const decimals = getCurrencyDecimals(symbol, wallet.defaultNetwork as CryptoNetwork);
     return {
@@ -699,6 +706,11 @@ export class VaultService {
         if (!wallet?.defaultNetwork) {
           throw new BadRequestException(`Wallet default network not configured for ${vault.cryptoCurrency.symbol}`);
         }
+        const userUsdtWallet = await this.prisma.wallet.findFirst({
+          where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+          select: { defaultNetwork: true },
+        });
+        const usdtNetwork = (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
 
         const decimals = getCurrencyDecimals(vault.cryptoCurrency.symbol, wallet.defaultNetwork as CryptoNetwork);
 
@@ -723,7 +735,11 @@ export class VaultService {
             vault.cryptoCurrency.symbol,
             wallet.defaultNetwork as CryptoNetwork,
           ),
-          rate: vault.rate.toString(),
+          rate: ConvertCurrency.fromBase(
+            vault.rate.toFixed(0),
+            'USDT',
+            usdtNetwork,
+          ),
           amountToReceive: ConvertCurrency.fromBase(
             vault.amountToReceive.toFixed(0),
             vault.cryptoCurrency.symbol,
@@ -774,12 +790,17 @@ export class VaultService {
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, currencyId: vault.currencyId },
     });
+    const userUsdtWallet = await this.prisma.wallet.findFirst({
+      where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+      select: { defaultNetwork: true },
+    });
 
     if (!wallet?.defaultNetwork) {
       throw new BadRequestException('Wallet default network not configured');
     }
 
     const decimals = getCurrencyDecimals(vault.cryptoCurrency.symbol, wallet.defaultNetwork as CryptoNetwork);
+    const usdtNetwork = (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
 
     return {
       success: true,
@@ -805,7 +826,11 @@ export class VaultService {
           vault.cryptoCurrency.symbol,
           decimals,
         ),
-        rate: vault.rate.toString(),
+        rate: ConvertCurrency.fromBase(
+          vault.rate.toFixed(0),
+          'USDT',
+          usdtNetwork,
+        ),
         amountToReceive: ConvertCurrency.fromBase(
           vault.amountToReceive.toFixed(0),
           vault.cryptoCurrency.symbol,
