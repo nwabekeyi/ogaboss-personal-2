@@ -36,6 +36,7 @@ import Decimal from 'decimal.js';
 import { TransactionService } from '../../transaction/services';
 import { CompanyLiquidityService } from '../../transaction/services/company-liquidity.service';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+import axios from 'axios';
 
 @Injectable()
 export class VaultService {
@@ -869,6 +870,14 @@ export class VaultService {
       include: { cryptoCurrency: true },
     });
     if (!vault) throw new NotFoundException('Pending vault not found');
+
+    const swapTx = await this.prisma.swapTransaction.findFirst({ where: { userId, description: `vault_swap:${vault.id}` } });
+    if (swapTx?.swapId) {
+      const swap = await this.quidaxSwapService.getSwapTransaction({ user_id: 'me', swap_transaction_id: swapTx.swapId }, { skipCircuitBreaker: true });
+      const status = String(swap?.data?.status || '').toLowerCase();
+      if (['completed', 'done'].includes(status)) throw new BadRequestException('Vault swap already processed and cannot be cancelled');
+      await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_transactions/${swapTx.swapId}/cancel`, {}, { headers: { Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } });
+    }
 
     await this.prisma.$transaction(async (tx) => {
       await tx.vault.update({ where: { id: vault.id }, data: { status: VaultStatus.TERMINATED } });

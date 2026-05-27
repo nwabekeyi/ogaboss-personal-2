@@ -10,12 +10,14 @@ import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { QUIDAX_COMPANY_USERID } from '../../transaction/constants';
 import { PaymentType, Prisma, TransactionContext, TransactionStatus, TransactionType } from '../../../infrastructure/databases/prisma';
 import { TempStoreService } from '../../../infrastructure/databases/redis';
+import axios from 'axios';
+import { QuidaxOrderService } from '../../../infrastructure/providers/quidax/order.service';
 
 import { AUTOSTACK_DEFAULT_PLAN_NAME, AUTOSTACK_FREQUENCY_PERIOD_DAYS, AUTOSTACK_QUOTE_TTL_SECONDS } from '../constants/autostack.constants';
 
 @Injectable()
 export class AutoStackService {
-  constructor(private readonly prisma: PrismaService, private readonly queueService: QueueService, private readonly tempStore: TempStoreService, private readonly tickerService: QuidaxTickerService, private readonly quidaxSwapService: QuidaxSwapService, private readonly paystackService: PaystackService) {}
+  constructor(private readonly prisma: PrismaService, private readonly queueService: QueueService, private readonly tempStore: TempStoreService, private readonly tickerService: QuidaxTickerService, private readonly quidaxSwapService: QuidaxSwapService, private readonly paystackService: PaystackService, private readonly quidaxOrderService: QuidaxOrderService) {}
 
   async quote(userId: string, dto: AutoStackQuoteDto) {
     void userId;
@@ -86,7 +88,7 @@ export class AutoStackService {
     const usdt = await this.prisma.cryptoCurrency.findFirst({ where: { symbol: 'USDT' } });
     if (!usdt) throw new NotFoundException('USDT currency not found');
     const nextExecutionAt = new Date(preview.startDate || new Date());
-    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: 'ACTIVE', transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
+    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: 'PENDING' as any, transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
 
     const reference = `autostack-confirm-${autoStack.id}-${Date.now()}`;
     const paymentType = preview.paymentType === 'CRYPTO_WALLET' ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
@@ -117,10 +119,21 @@ export class AutoStackService {
   }
 
   async cancelPending(userId: string, autoStackId: string) {
-    const stack = await this.prisma.autoStack.findFirst({ where: { id: autoStackId, userId, status: 'ACTIVE' as any } });
-    if (!stack) throw new NotFoundException('Autostack not found');
-    if (stack.lastExecutedAt || stack.nextExecutionAt <= new Date()) {
-      throw new BadRequestException('Only pending autostack can be cancelled');
+    const stack = await this.prisma.autoStack.findFirst({ where: { id: autoStackId, userId, status: 'PENDING' as any } });
+    if (!stack) throw new NotFoundException('Pending autostack not found');
+    const configTx = await this.prisma.transaction.findFirst({ where: { userId, description: `autostack_config:${stack.id}` }, orderBy: { createdAt: 'desc' } });
+    const meta = (configTx?.paymentMetadata || {}) as any;
+    if (meta.autostackSwapId) {
+      const swap = await this.quidaxSwapService.getSwapTransaction({ user_id: 'me', swap_transaction_id: String(meta.autostackSwapId) }, { skipCircuitBreaker: true });
+      const status = String(swap?.data?.status || '').toLowerCase();
+      if (['completed', 'done'].includes(status)) throw new BadRequestException('Autostack swap already processed and cannot be cancelled');
+      await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_transactions/${meta.autostackSwapId}/cancel`, {}, { headers: { Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } });
+    }
+    if (meta.quidaxOrderId) {
+      const order = await this.quidaxOrderService.getOrderRecord({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
+      const state = String(order?.data?.state || '').toLowerCase();
+      if (['done', 'completed'].includes(state)) throw new BadRequestException('Autostack order already processed and cannot be cancelled');
+      await this.quidaxOrderService.cancelBuyOrSellOrderRequest({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
     }
     await this.prisma.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: new Date() } });
     return { success: true, message: 'Pending autostack cancelled successfully' };
