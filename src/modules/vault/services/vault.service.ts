@@ -406,7 +406,7 @@ export class VaultService {
             from_amount: ConvertCurrency.fromBase(preview.totalChargeMinor, 'BTC', result.wallet.defaultNetwork as CryptoNetwork),
           });
 
-          if (!swapReq?.data?.id) throw new Error('Quidax Quote Failed');
+          if (!swapReq?.data?.id) throw new Error('Quote refresh Failed');
 
           const confirmRes = await this.quidaxSwapService.confirmInstantSwap({
             user_id: 'me',
@@ -425,7 +425,7 @@ export class VaultService {
               });
             });
           } else {
-            throw new Error('Quidax Confirmation Failed');
+            throw new Error('Quote Confirmation Failed');
           }
         } catch (error) {
           this.logger.error(`BTC Vault Swap Failed: ${error.message}`);
