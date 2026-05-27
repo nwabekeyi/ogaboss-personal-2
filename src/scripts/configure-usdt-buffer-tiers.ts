@@ -1,8 +1,7 @@
 import 'dotenv/config';
 import Decimal from 'decimal.js';
 import { PrismaService } from '../infrastructure/databases/prisma/prisma.service';
-import { ConvertCurrency } from '../shared/utils/currency-precision.util';
-import { CryptoNetwork } from '../shared';
+import { ConvertCurrency, CURRENCY_PRECISION, CryptoNetwork, CryptoCurrency as CryptoCurrencyType } from '../shared';
 
 const prisma = new PrismaService();
 
@@ -63,6 +62,14 @@ function assertValidTier(t: BufferTierInput, idx: number, symbol: string): void 
   }
 }
 
+function getFirstNetwork(symbol: string): CryptoNetwork {
+  const networks = CURRENCY_PRECISION[symbol.toLowerCase() as CryptoCurrencyType];
+  if (!networks || networks.length === 0) {
+    throw new Error(`No network defined for currency: ${symbol}`);
+  }
+  return networks[0].id as CryptoNetwork;
+}
+
 async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
   const crypto = await prisma.cryptoCurrency.findUnique({
     where: { symbol: config.symbol },
@@ -73,7 +80,7 @@ async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
     throw new Error(`${config.symbol} cryptocurrency not found. Run seed first.`);
   }
 
-  const network = (crypto.networks?.[0] as CryptoNetwork) || 'erc20';
+  const network = getFirstNetwork(config.symbol);
 
   console.log(`\n=== Configuring ${config.symbol} buffer tiers ===`);
   console.log(`cryptoId: ${crypto.id} | existing tiers: ${crypto.buffer_tiers.length}`);
