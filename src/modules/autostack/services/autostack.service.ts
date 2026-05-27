@@ -64,8 +64,9 @@ export class AutoStackService {
     const estimatedOut = amountInUsdt - txFee + interest;
 
     const quoteAsset = String(quote.asset || 'USDT').toUpperCase();
-    const quoteAssetCurrency = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: quoteAsset } });
-    const bufferPercent = dto.paymentType === 'CRYPTO_WALLET' && quoteAsset === 'BTC' ? Number(quoteAssetCurrency?.defaultBufferPercent || 0) : 0;
+    const quoteAssetCurrency = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: quoteAsset }, include: { buffer_tiers: true } });
+    const amountMinor = BigInt(Math.floor((quote.amount || 0) * 100000000).toString());
+    const bufferPercent = dto.paymentType === 'CRYPTO_WALLET' && quoteAsset === 'BTC' ? this.getBufferPercentFromTiers(quoteAssetCurrency, amountMinor) : 0;
     const bufferAmount = bufferPercent > 0 ? quote.amount * (bufferPercent / 100) : 0;
     const totalChargeAmount = quote.amount + bufferAmount;
 
@@ -115,3 +116,14 @@ export class AutoStackService {
     return { success: true, data: { totalAmountLocked: totalAmountLocked.toString(), totalInterestGained: totalInterestGained.toString() } };
   }
 }
+  private getBufferPercentFromTiers(asset: any, amountMinor: bigint): number {
+    const tiers = asset?.buffer_tiers || [];
+    const matchingTier = tiers.find((tier: any) => {
+      if (!tier?.minAmount || !tier?.maxAmount || tier?.bufferPercent === null || tier?.bufferPercent === undefined) return false;
+      const min = BigInt(tier.minAmount.toString());
+      const max = BigInt(tier.maxAmount.toString());
+      return amountMinor >= min && amountMinor <= max;
+    });
+    if (matchingTier) return Number(matchingTier.bufferPercent || 0);
+    return Number(asset?.defaultBufferPercent || 0);
+  }

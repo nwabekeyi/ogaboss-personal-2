@@ -53,11 +53,23 @@ export class VaultService {
 
   ) {}
 
-  private async getCurrencyBufferPercent(symbol: string): Promise<Decimal> {
+  private async getCurrencyBufferPercent(symbol: string, amountMinor: bigint): Promise<Decimal> {
     let currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
     if (!currency) {
       await this.cryptoCurrencyCache.refreshCryptoCurrencyCache(symbol);
       currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
+    }
+
+    const matchingTier = (currency?.buffer_tiers || []).find((tier: any) => {
+      if (!tier?.minAmount || !tier?.maxAmount || !tier?.bufferPercent) return false;
+      const min = BigInt(tier.minAmount);
+      const max = BigInt(tier.maxAmount);
+      return amountMinor >= min && amountMinor <= max;
+    });
+
+    if (matchingTier?.bufferPercent !== null && matchingTier?.bufferPercent !== undefined) {
+      const tierPercent = new Decimal(matchingTier.bufferPercent as any);
+      if (tierPercent.isFinite() && tierPercent.gte(0)) return tierPercent;
     }
 
     const rawBufferPercent = currency?.defaultBufferPercent;
@@ -108,7 +120,7 @@ export class VaultService {
     let bufferPercent = new Decimal(0);
 
     if (symbol === 'BTC') {
-      bufferPercent = await this.getCurrencyBufferPercent(symbol);
+      bufferPercent = await this.getCurrencyBufferPercent(symbol, BigInt(principalMinor));
       const bufferBps = BigInt(bufferPercent.mul(100).toFixed(0));
       bufferAmountMinor = (BigInt(principalMinor) * bufferBps) / 10000n;
     }
