@@ -52,6 +52,8 @@ export class VaultService {
     private readonly transactionService: TransactionService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly queueService: QueueService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
+
   ) {}
 
   private async getCurrencyBufferPercent(symbol: string, amountMinor: bigint): Promise<Decimal> {
@@ -714,6 +716,11 @@ export class VaultService {
         if (!wallet?.defaultNetwork) {
           throw new BadRequestException(`Wallet default network not configured for ${vault.cryptoCurrency.symbol}`);
         }
+        const userUsdtWallet = await this.prisma.wallet.findFirst({
+          where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+          select: { defaultNetwork: true },
+        });
+        const usdtNetwork = (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
 
         // Totals should be NGN and only include ACTIVE vaults
         if (vault.status === VaultStatus.ACTIVE) {
