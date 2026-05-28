@@ -4,6 +4,7 @@ import {
   Get,
   Param,
   Body,
+  Query,
   UseGuards,
   Request,
 } from '@nestjs/common';
@@ -14,6 +15,7 @@ import {
   VaultPreviewDto,
   VaultConfirmDto,
   UnlockVaultDto,
+  CancelVaultDto,
 } from '../dto/vault.dto';
 import { AuthGuard, VersionedController } from '../../../core';
 import { apiTags } from '../../../shared';
@@ -54,10 +56,16 @@ export class VaultController {
     return this.vaultService.unlock(req.user.id, dto);
   }
 
+  @Post('cancel')
+  @ApiOperation({ summary: 'Cancel a pending vault' })
+  cancel(@Request() req: any, @Body() dto: CancelVaultDto) {
+    return this.vaultService.cancelPendingVault(req.user.id, dto.vaultId);
+  }
+
   @Get()
   @ApiOperation({ summary: 'Get all user vaults' })
-  getVaults(@Request() req: any) {
-    return this.vaultService.getUserVaults(req.user.id);
+  getVaults(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '10') {
+    return this.vaultService.getUserVaults(req.user.id, Number(page), Number(limit));
   }
 
   @Get(':id')

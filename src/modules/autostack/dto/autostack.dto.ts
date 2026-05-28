@@ -35,4 +35,5 @@ export class AutoStackConfirmDto {
 
 export class EndAutoStackDto {
   @ApiProperty() @IsString() @IsNotEmpty() autoStackId: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() pin?: string;
 }

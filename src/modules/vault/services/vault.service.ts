@@ -34,7 +34,9 @@ import { compareHash } from '../../../shared/services/hash';
 import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import Decimal from 'decimal.js';
 import { TransactionService } from '../../transaction/services';
+import { CompanyLiquidityService } from '../../transaction/services/company-liquidity.service';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+import axios from 'axios';
 
 @Injectable()
 export class VaultService {
@@ -48,22 +50,40 @@ export class VaultService {
     private readonly tickerService: QuidaxTickerService,
     private readonly quidaxSwapService: QuidaxSwapService,
     private readonly transactionService: TransactionService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly queueService: QueueService,
   ) {}
 
-  private async getCurrencyBufferPercent(symbol: string): Promise<Decimal> {
+  private async getCurrencyBufferPercent(symbol: string, amountMinor: bigint): Promise<Decimal> {
     let currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
     if (!currency) {
       await this.cryptoCurrencyCache.refreshCryptoCurrencyCache(symbol);
       currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
     }
 
-    const bufferPercent = currency?.defaultBufferPercent;
-    if (!bufferPercent || bufferPercent.toNumber() <= 0) {
+    const matchingTier = (currency?.buffer_tiers || []).find((tier: any) => {
+      if (!tier?.minAmount || !tier?.maxAmount || !tier?.bufferPercent) return false;
+      const min = BigInt(tier.minAmount);
+      const max = BigInt(tier.maxAmount);
+      return amountMinor >= min && amountMinor <= max;
+    });
+
+    if (matchingTier?.bufferPercent !== null && matchingTier?.bufferPercent !== undefined) {
+      const tierPercent = new Decimal(matchingTier.bufferPercent as any);
+      if (tierPercent.isFinite() && tierPercent.gte(0)) return tierPercent;
+    }
+
+    const rawBufferPercent = currency?.defaultBufferPercent;
+    if (rawBufferPercent === null || rawBufferPercent === undefined) {
       throw new BadRequestException(`Buffer not configured for ${symbol}. Cannot create vault quote.`);
     }
 
-    return new Decimal(bufferPercent);
+    const bufferPercent = new Decimal(rawBufferPercent as any);
+    if (!bufferPercent.isFinite() || bufferPercent.lte(0)) {
+      throw new BadRequestException(`Buffer not configured for ${symbol}. Cannot create vault quote.`);
+    }
+
+    return bufferPercent;
   }
 
   async getVaultQuote(userId: string, dto: VaultQuoteDto) {
@@ -101,7 +121,7 @@ export class VaultService {
     let bufferPercent = new Decimal(0);
 
     if (symbol === 'BTC') {
-      bufferPercent = await this.getCurrencyBufferPercent(symbol);
+      bufferPercent = await this.getCurrencyBufferPercent(symbol, BigInt(principalMinor));
       const bufferBps = BigInt(bufferPercent.mul(100).toFixed(0));
       bufferAmountMinor = (BigInt(principalMinor) * bufferBps) / 10000n;
     }
@@ -114,9 +134,17 @@ export class VaultService {
       throw new BadRequestException(`Insufficient balance for principal and buffer`);
     }
 
-     // Get rate: For BTC, rate will be set after swap execution in webhook (default 0)
-     // For stablecoins, rate is 1:1
-     const rateMajor = symbol === 'BTC' ? '0' : '1';
+    const usdtWallet = await this.prisma.wallet.findFirst({
+      where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+      select: { defaultNetwork: true },
+    });
+    const usdtNetwork = (usdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
+
+    // Store rate in base units (USDT as quote currency)
+    // For BTC, rate will be set after swap execution in webhook (default 0)
+    // For stablecoins, rate is 1:1
+    const rateMinor =
+      symbol === 'BTC' ? '0' : ConvertCurrency.toBase('1', 'USDT', usdtNetwork).toString();
 
     const maturityDate = new Date();
     maturityDate.setDate(maturityDate.getDate() + dto.durationDays);
@@ -130,7 +158,7 @@ export class VaultService {
       currencySymbol: symbol,
       network: wallet.defaultNetwork as CryptoNetwork,
       baseBalanceMinor: wallet.baseBalance.toFixed(0),
-      rateMinor: rateMajor,
+      rateMinor,
       expiresAt: Date.now() + VAULT_QUOTE_TTL_SECONDS * 1000,
       pinVerified: false,
       amountMinor: principalMinor,
@@ -143,15 +171,9 @@ export class VaultService {
 
     await this.tempStore.set(`vault:${quoteId}`, JSON.stringify(internalQuote), VAULT_QUOTE_TTL_SECONDS);
 
-    // Get USDT network for rate display (used when symbol is BTC)
-    const usdtWallet = await this.prisma.wallet.findFirst({
-      where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
-      select: { defaultNetwork: true },
-    });
-    const usdtNetwork = (usdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
     const rateDisplay = symbol === 'BTC'
-      ? ConvertCurrency.fromBase(rateMajor, 'USDT', usdtNetwork)
-      : '1';
+      ? ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork)
+      : ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork);
 
     const decimals = getCurrencyDecimals(symbol, wallet.defaultNetwork as CryptoNetwork);
     return {
@@ -297,6 +319,8 @@ export class VaultService {
         // Balance management
         if (isBTC) {
           await this.transactionService.reserveBalance(tx, userId, 'BTC', totalChargeMinor);
+          const reservedCompanyLiquidity = await this.companyLiquidityService.reserveLiquidity('USDT', principalMinor, tx);
+          if (!reservedCompanyLiquidity) throw new BadRequestException('Something went wrong, try again later');
         } else {
           const newBaseBalance = walletBaseMinor - totalChargeMinor;
           const newLockedAmount = walletLockedMinor + principalMinor;
@@ -582,7 +606,6 @@ export class VaultService {
             UPDATE "company_liquidity"
             SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
                 "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
-                "totalInterestPaid" = "totalInterestPaid" + ${interestReceived.toString()}::decimal,
                 "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestReceived.toString()}::decimal
             WHERE "currency" = ${normalizedCurrency}
           `;
@@ -651,12 +674,18 @@ export class VaultService {
     }
   }
 
-  async getUserVaults(userId: string) {
+  async getUserVaults(userId: string, page = 1, limit = 10) {
+    const safeLimit = Math.min(Math.max(limit || 10, 1), 20);
+    const safePage = Math.max(page || 1, 1);
+    const skip = (safePage - 1) * safeLimit;
     const vaults = await this.prisma.vault.findMany({
-      where: { userId, status: VaultStatus.ACTIVE },
+      where: { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } },
       include: { cryptoCurrency: true },
       orderBy: { createdAt: 'desc' },
+      skip,
+      take: safeLimit,
     });
+    const totalCount = await this.prisma.vault.count({ where: { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } } });
 
     if (vaults.length === 0) {
       return {
@@ -664,31 +693,20 @@ export class VaultService {
         message: 'Vaults retrieved successfully',
         data: {
           vaults: [],
-          totalLocked: '0',
-          totalGain: '0',
+          totalLocked: '0.00',
+          totalGain: '0.00',
         },
       };
     }
 
-    const firstVault = vaults[0];
-    const firstWallet = await this.prisma.wallet.findFirst({
-      where: { userId, currencyId: firstVault.currencyId },
-    });
-    const totalDecimals = getCurrencyDecimals(
-      firstVault.cryptoCurrency.symbol,
-      firstWallet?.defaultNetwork as CryptoNetwork,
-    );
-
-    let totalLocked = 0n;
-    let totalGain = 0n;
+    let totalLockedNgn = new Decimal(0);
+    let totalGainNgn = new Decimal(0);
+    const ngnRateCache = new Map<string, Decimal>();
 
     const vaultResponses = await Promise.all(
       vaults.map(async (vault) => {
         const amountLocked = BigInt(vault.amountLocked.toFixed(0));
         const totalGainVal = BigInt(vault.totalGain.toFixed(0));
-        totalLocked += amountLocked;
-        totalGain += totalGainVal;
-
         const wallet = await this.prisma.wallet.findFirst({
           where: { userId, currencyId: vault.currencyId },
         });
@@ -696,6 +714,41 @@ export class VaultService {
         if (!wallet?.defaultNetwork) {
           throw new BadRequestException(`Wallet default network not configured for ${vault.cryptoCurrency.symbol}`);
         }
+
+        // Totals should be NGN and only include ACTIVE vaults
+        if (vault.status === VaultStatus.ACTIVE) {
+          let ngnRate = ngnRateCache.get(vault.cryptoCurrency.symbol.toUpperCase());
+          if (!ngnRate) {
+            const symbol = vault.cryptoCurrency.symbol.toUpperCase();
+            const pair = symbol === 'NGN' ? '1' : await this.tickerService.getPrice(`${symbol.toLowerCase()}ngn`);
+            ngnRate = new Decimal(pair || '0');
+            ngnRateCache.set(symbol, ngnRate);
+          }
+
+          const amountLockedMajor = new Decimal(
+            ConvertCurrency.fromBase(
+              amountLocked.toString(),
+              vault.cryptoCurrency.symbol,
+              wallet.defaultNetwork as CryptoNetwork,
+            ),
+          );
+          const totalGainMajor = new Decimal(
+            ConvertCurrency.fromBase(
+              totalGainVal.toString(),
+              vault.cryptoCurrency.symbol,
+              wallet.defaultNetwork as CryptoNetwork,
+            ),
+          );
+
+          totalLockedNgn = totalLockedNgn.plus(amountLockedMajor.mul(ngnRate));
+          totalGainNgn = totalGainNgn.plus(totalGainMajor.mul(ngnRate));
+        }
+
+        const userUsdtWallet = await this.prisma.wallet.findFirst({
+          where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+          select: { defaultNetwork: true },
+        });
+        const usdtNetwork = (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
 
         const decimals = getCurrencyDecimals(vault.cryptoCurrency.symbol, wallet.defaultNetwork as CryptoNetwork);
 
@@ -722,8 +775,8 @@ export class VaultService {
           ),
           rate: ConvertCurrency.fromBase(
             vault.rate.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
+            'USDT',
+            usdtNetwork,
           ),
           amountToReceive: ConvertCurrency.fromBase(
             vault.amountToReceive.toFixed(0),
@@ -748,16 +801,14 @@ export class VaultService {
       message: 'Vaults retrieved successfully',
       data: {
         vaults: vaultResponses,
-        totalLocked: ConvertCurrency.fromBase(
-          totalLocked.toString(),
-          firstVault.cryptoCurrency.symbol,
-          totalDecimals,
-        ),
-        totalGain: ConvertCurrency.fromBase(
-          totalGain.toString(),
-          firstVault.cryptoCurrency.symbol,
-          totalDecimals,
-        ),
+        totalLocked: totalLockedNgn.toFixed(2),
+        totalGain: totalGainNgn.toFixed(2),
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total: totalCount,
+          totalPages: Math.ceil(totalCount / safeLimit),
+        },
       },
     };
   }
@@ -775,12 +826,17 @@ export class VaultService {
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, currencyId: vault.currencyId },
     });
+    const userUsdtWallet = await this.prisma.wallet.findFirst({
+      where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+      select: { defaultNetwork: true },
+    });
 
     if (!wallet?.defaultNetwork) {
       throw new BadRequestException('Wallet default network not configured');
     }
 
     const decimals = getCurrencyDecimals(vault.cryptoCurrency.symbol, wallet.defaultNetwork as CryptoNetwork);
+    const usdtNetwork = (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
 
     return {
       success: true,
@@ -808,8 +864,8 @@ export class VaultService {
         ),
         rate: ConvertCurrency.fromBase(
           vault.rate.toFixed(0),
-          vault.cryptoCurrency.symbol,
-          decimals,
+          'USDT',
+          usdtNetwork,
         ),
         amountToReceive: ConvertCurrency.fromBase(
           vault.amountToReceive.toFixed(0),
@@ -827,5 +883,31 @@ export class VaultService {
         requestedAt: vault.requestedAt,
       },
     };
+  }
+
+  async cancelPendingVault(userId: string, vaultId: string) {
+    const vault = await this.prisma.vault.findFirst({
+      where: { id: vaultId, userId, status: VaultStatus.PENDING },
+      include: { cryptoCurrency: true },
+    });
+    if (!vault) throw new NotFoundException('Pending vault not found');
+
+    const swapTx = await this.prisma.swapTransaction.findFirst({ where: { userId, description: `vault_swap:${vault.id}` } });
+    if (swapTx?.swapId) {
+      const swap = await this.quidaxSwapService.getSwapTransaction({ user_id: 'me', swap_transaction_id: swapTx.swapId }, { skipCircuitBreaker: true });
+      const status = String(swap?.data?.status || '').toLowerCase();
+      if (['completed', 'done'].includes(status)) throw new BadRequestException('Vault swap already processed and cannot be cancelled');
+      await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_transactions/${swapTx.swapId}/cancel`, {}, { headers: { Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } });
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.vault.update({ where: { id: vault.id }, data: { status: VaultStatus.TERMINATED } });
+      if (vault.cryptoCurrency.symbol.toUpperCase() === 'BTC') {
+        const principalMinor = BigInt(vault.amountLocked.toFixed(0));
+        await this.companyLiquidityService.releaseLiquidity('USDT', principalMinor, tx as any);
+      }
+    });
+
+    return { success: true, message: 'Pending vault cancelled successfully' };
   }
 }

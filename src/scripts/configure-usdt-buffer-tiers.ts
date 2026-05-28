@@ -1,136 +1,132 @@
 import 'dotenv/config';
+import Decimal from 'decimal.js';
 import { PrismaService } from '../infrastructure/databases/prisma/prisma.service';
+import { ConvertCurrency } from '../shared/utils/currency-precision.util';
+import { CryptoNetwork } from '../shared';
 
 const prisma = new PrismaService();
 
+type OrderType = 'BUY' | 'SELL';
+
 interface BufferTierInput {
-  orderType?: 'BUY' | 'SELL' | null;
-  minAmount?: string | null;
-  maxAmount?: string | null;
+  orderType: OrderType;
+  minAmount: string; // major units
+  maxAmount: string; // major units
   bufferPercent: number;
 }
 
-async function configureUsdtBufferTiers(tiers: BufferTierInput[]) {
+interface CurrencyBufferConfig {
+  symbol: 'BTC' | 'USDT';
+  defaultBufferPercent: number;
+  tiers: BufferTierInput[];
+}
+
+const CONFIGS: CurrencyBufferConfig[] = [
+  {
+    symbol: 'BTC',
+    defaultBufferPercent: 1.5,
+    tiers: [
+      { orderType: 'BUY', minAmount: '0', maxAmount: '0.01', bufferPercent: 2.0 },
+      { orderType: 'BUY', minAmount: '0.01000001', maxAmount: '0.1', bufferPercent: 1.5 },
+      { orderType: 'BUY', minAmount: '0.10000001', maxAmount: '10', bufferPercent: 1.0 },
+      { orderType: 'SELL', minAmount: '0', maxAmount: '0.01', bufferPercent: 2.0 },
+      { orderType: 'SELL', minAmount: '0.01000001', maxAmount: '0.1', bufferPercent: 1.5 },
+      { orderType: 'SELL', minAmount: '0.10000001', maxAmount: '10', bufferPercent: 1.0 },
+    ],
+  },
+  {
+    symbol: 'USDT',
+    defaultBufferPercent: 1.0,
+    tiers: [
+      { orderType: 'BUY', minAmount: '0', maxAmount: '100', bufferPercent: 2.0 },
+      { orderType: 'BUY', minAmount: '100.000001', maxAmount: '500', bufferPercent: 1.5 },
+      { orderType: 'BUY', minAmount: '500.000001', maxAmount: '1000000', bufferPercent: 1.0 },
+      { orderType: 'SELL', minAmount: '0', maxAmount: '100', bufferPercent: 2.0 },
+      { orderType: 'SELL', minAmount: '100.000001', maxAmount: '500', bufferPercent: 1.5 },
+      { orderType: 'SELL', minAmount: '500.000001', maxAmount: '1000000', bufferPercent: 1.0 },
+    ],
+  },
+];
+
+function assertValidTier(t: BufferTierInput, idx: number, symbol: string): void {
+  if (!t.minAmount || !t.maxAmount) {
+    throw new Error(`[${symbol}] tier #${idx + 1}: minAmount and maxAmount are required`);
+  }
+
+  const min = new Decimal(t.minAmount);
+  const max = new Decimal(t.maxAmount);
+  if (!min.isFinite() || !max.isFinite() || min.lt(0) || max.lt(min)) {
+    throw new Error(`[${symbol}] tier #${idx + 1}: invalid range min=${t.minAmount}, max=${t.maxAmount}`);
+  }
+  if (!Number.isFinite(t.bufferPercent) || t.bufferPercent < 0 || t.bufferPercent > 100) {
+    throw new Error(`[${symbol}] tier #${idx + 1}: bufferPercent must be between 0 and 100`);
+  }
+}
+
+async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
   const crypto = await prisma.cryptoCurrency.findUnique({
-    where: { symbol: 'BTC' },
+    where: { symbol: config.symbol },
     include: { buffer_tiers: true },
   });
 
   if (!crypto) {
-    console.error('USDT cryptocurrency not found in database');
-    console.log('Run the crypto currency seed first: npm run seed');
-    process.exit(1);
+    throw new Error(`${config.symbol} cryptocurrency not found. Run seed first.`);
   }
 
-  console.log(`Found USDT crypto: ${crypto.id}`);
-  console.log(`Existing buffer tiers: ${crypto.buffer_tiers.length}`);
+  const network = (crypto.networks?.[0] as CryptoNetwork) || 'erc20';
 
-  // Delete existing tiers for USDT
-  if (crypto.buffer_tiers.length > 0) {
-    console.log('Deleting existing buffer tiers...');
-    await prisma.bufferTier.deleteMany({
-      where: { cryptoId: crypto.id },
-    });
-  }
+  console.log(`\n=== Configuring ${config.symbol} buffer tiers ===`);
+  console.log(`cryptoId: ${crypto.id} | existing tiers: ${crypto.buffer_tiers.length}`);
 
-  for (const tier of tiers) {
-    let minAmountString: string | null = null;
-    let maxAmountString: string | null = null;
+  config.tiers.forEach((tier, i) => assertValidTier(tier, i, config.symbol));
 
-    if (tier.minAmount !== null && tier.minAmount !== undefined) {
-      minAmountString = String(Math.floor(parseFloat(tier.minAmount) * 100));
-    }
-    if (tier.maxAmount !== null && tier.maxAmount !== undefined) {
-      maxAmountString = String(Math.floor(parseFloat(tier.maxAmount) * 100));
-    }
-
-    const existingTier = await prisma.bufferTier.findFirst({
-      where: {
-        cryptoId: crypto.id,
-        orderType: tier.orderType ?? null,
-        minAmount: minAmountString,
-        maxAmount: maxAmountString,
-      },
+  await prisma.$transaction(async (tx) => {
+    await tx.cryptoCurrency.update({
+      where: { id: crypto.id },
+      data: { defaultBufferPercent: new Decimal(config.defaultBufferPercent).toDecimalPlaces(2, Decimal.ROUND_HALF_UP) },
     });
 
-    if (existingTier) {
-      console.log(
-        `Updating existing tier: orderType=${tier.orderType}, minAmount=${tier.minAmount}, maxAmount=${tier.maxAmount}`,
-      );
-      await prisma.bufferTier.update({
-        where: { id: existingTier.id },
-        data: { bufferPercent: tier.bufferPercent },
-      });
-    } else {
-      console.log(
-        `Creating new tier: orderType=${tier.orderType}, minAmount=${tier.minAmount}, maxAmount=${tier.maxAmount}, bufferPercent=${tier.bufferPercent}`,
-      );
-      await prisma.bufferTier.create({
+    await tx.bufferTier.deleteMany({ where: { cryptoId: crypto.id } });
+
+    for (const tier of config.tiers) {
+      const minAmountBase = ConvertCurrency.toBase(tier.minAmount, config.symbol, network).toString();
+      const maxAmountBase = ConvertCurrency.toBase(tier.maxAmount, config.symbol, network).toString();
+
+      await tx.bufferTier.create({
         data: {
           cryptoId: crypto.id,
-          orderType: tier.orderType ?? null,
-          minAmount: minAmountString,
-          maxAmount: maxAmountString,
-          bufferPercent: tier.bufferPercent,
+          orderType: tier.orderType,
+          minAmount: minAmountBase,
+          maxAmount: maxAmountBase,
+          bufferPercent: new Decimal(tier.bufferPercent).toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
         },
       });
     }
-  }
-
-  const updatedTiers = await prisma.bufferTier.findMany({
-    where: { cryptoId: crypto.id },
-    orderBy: { minAmount: 'asc' },
   });
 
-  console.log('\n=== USDT Buffer Tiers ===');
-  for (const tier of updatedTiers) {
-    const min = tier.minAmount !== null ? Number(tier.minAmount) / 100 : 'null';
-    const max = tier.maxAmount !== null ? Number(tier.maxAmount) / 100 : 'null';
-    console.log(
-      `  OrderType: ${tier.orderType || 'ALL'}, Min: ${min}, Max: ${max}, Buffer: ${tier.bufferPercent}%`,
-    );
-  }
+  const updated = await prisma.bufferTier.findMany({
+    where: { cryptoId: crypto.id },
+    orderBy: [{ orderType: 'asc' }, { minAmount: 'asc' }],
+  });
 
-  console.log('\nDone!');
+  console.log(`defaultBufferPercent: ${config.defaultBufferPercent}%`);
+  for (const tier of updated) {
+    const minMajor = ConvertCurrency.fromBase(tier.minAmount.toString(), config.symbol, network);
+    const maxMajor = ConvertCurrency.fromBase(tier.maxAmount.toString(), config.symbol, network);
+    console.log(`  ${tier.orderType}: [${minMajor} - ${maxMajor}] => ${tier.bufferPercent}%`);
+  }
 }
 
-const tiers: BufferTierInput[] = [
-  { orderType: 'BUY', minAmount: '0', maxAmount: '100000', bufferPercent: 2.0 },
-  {
-    orderType: 'BUY',
-    minAmount: '100000',
-    maxAmount: '500000',
-    bufferPercent: 1.5,
-  },
-  {
-    orderType: 'BUY',
-    minAmount: '500000',
-    maxAmount: null,
-    bufferPercent: 1.0,
-  },
-  {
-    orderType: 'SELL',
-    minAmount: '0',
-    maxAmount: '100000',
-    bufferPercent: 2.0,
-  },
-  {
-    orderType: 'SELL',
-    minAmount: '100000',
-    maxAmount: '500000',
-    bufferPercent: 1.5,
-  },
-  {
-    orderType: 'SELL',
-    minAmount: '500000',
-    maxAmount: null,
-    bufferPercent: 1.0,
-  },
-];
+async function main() {
+  for (const config of CONFIGS) {
+    await configureCurrencyBuffer(config);
+  }
+  console.log('\nBuffer tier configuration completed successfully.');
+}
 
-configureUsdtBufferTiers(tiers)
-  .catch((e) => {
-    console.error(e);
+main()
+  .catch((error) => {
+    console.error('Buffer tier configuration failed:', error);
     process.exit(1);
   })
   .finally(async () => {

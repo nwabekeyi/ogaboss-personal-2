@@ -183,7 +183,7 @@ export class VaultInterestScheduler {
                 UPDATE "company_liquidity"
                 SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
                     "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
-                    "totalInterestPaid" = "totalInterestPaid" + ${totalGain.toString()}::decimal
+                    "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${totalGain.toString()}::decimal
                 WHERE "currency" = ${companyCurrency}
               `;
             }

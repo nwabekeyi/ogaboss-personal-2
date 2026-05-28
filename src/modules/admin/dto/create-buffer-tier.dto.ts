@@ -6,13 +6,11 @@ export class CreateBufferTierDto {
   @IsEnum(OrderType, { message: 'orderType must be either BUY or SELL' })
   orderType?: OrderType;
 
-  @IsOptional()
   @IsString({ message: 'minAmount must be a string representing a decimal' })
-  minAmount?: string;
+  minAmount: string;
 
-  @IsOptional()
   @IsString({ message: 'maxAmount must be a string representing a decimal' })
-  maxAmount?: string;
+  maxAmount: string;
 
   @IsNumber({}, { message: 'bufferPercent must be a number' })
   @Min(0, { message: 'bufferPercent must be at least 0' })
