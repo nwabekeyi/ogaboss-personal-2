@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { QuidaxTickerService } from '../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
-import { PrismaService } from '../../../infrastructure/databases/prisma';
+import { AutoStackStatus, PrismaService } from '../../../infrastructure/databases/prisma';
 import { compareHash } from '../../../shared/services/hash';
 import { AutoStackConfirmDto, AutoStackPaymentTypesDto, AutoStackPreviewDto, AutoStackQuoteDto, EndAutoStackDto } from '../dto/autostack.dto';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
@@ -80,7 +80,7 @@ export class AutoStackService {
     const quoteAsset = String(quote.asset || 'USDT').toUpperCase();
     const quoteAssetCurrency = await this.prisma.cryptoCurrency.findUnique({ where: { symbol: quoteAsset }, include: { buffer_tiers: true } });
     const amountMinor = BigInt(Math.floor((quote.amount || 0) * 100000000).toString());
-    const bufferPercent = dto.paymentType === 'CRYPTO_WALLET' && quoteAsset === 'BTC' ? this.getBufferPercentFromTiers(quoteAssetCurrency, amountMinor) : 0;
+    const bufferPercent = dto.paymentType === PaymentType.CRYPTO_WALLET && quoteAsset === 'BTC' ? this.getBufferPercentFromTiers(quoteAssetCurrency, amountMinor) : 0;
     const bufferAmount = bufferPercent > 0 ? quote.amount * (bufferPercent / 100) : 0;
     const totalChargeAmount = quote.amount + bufferAmount;
 
@@ -100,14 +100,14 @@ export class AutoStackService {
     const usdt = await this.prisma.cryptoCurrency.findFirst({ where: { symbol: 'USDT' } });
     if (!usdt) throw new NotFoundException('USDT currency not found');
     const nextExecutionAt = new Date(preview.startDate || new Date());
-    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: 'PENDING' as any, transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
+    const autoStack = await this.prisma.autoStack.create({ data: { userId, currencyId: usdt.id, planName: preview.planName, frequency: preview.frequency, amount: Math.floor(preview.amountInUsdt * 1_000_000).toString(), startDate: new Date(preview.startDate || new Date()), timeOfDay: preview.timeOfDay || '00:00', dayOfWeek: preview.dayOfWeek, dayOfMonth: preview.dayOfMonth, nextExecutionAt, nextInterestAt: nextExecutionAt, status: AutoStackStatus.PENDING as any, transactionFee: Math.floor((preview.transactionFee || 0) * 1_000_000).toString() } });
 
     const reference = `autostack-confirm-${autoStack.id}-${Date.now()}`;
-    const paymentType = preview.paymentType === 'CRYPTO_WALLET' ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
+    const paymentType = preview.paymentType === PaymentType.CRYPTO_WALLET ? PaymentType.CRYPTO_WALLET : PaymentType.CARD;
 
     await this.prisma.transaction.create({ data: { userId, transactionUniqueId: reference, currency: 'USDT', fiatAmountBase: Math.floor(preview.amountInUsdt * 1_000_000).toString(), transactionType: TransactionType.DEBIT, transactionContext: TransactionContext.AUTOSTACK, status: TransactionStatus.PENDING, paymentType, paymentMetadata: { autoStackId: autoStack.id, paymentType: preview.paymentType, paymentCardId: preview.paymentCardId || null, targetAsset: preview.targetAsset || preview.asset || 'USDT', bufferPercent: preview.bufferPercent || 0, bufferAmount: preview.bufferAmount || 0, totalChargeAmount: preview.totalChargeAmount || preview.amount } as any, description: `autostack_config:${autoStack.id}` } as any });
 
-    if (preview.paymentType === 'CRYPTO_WALLET') {
+    if (preview.paymentType === PaymentType.CRYPTO_WALLET) {
       const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, { from_currency: (preview.asset || 'USDT').toLowerCase(), to_currency: 'usdt', from_amount: String(preview.totalChargeAmount || preview.amount || preview.amountInUsdt) }, { skipCircuitBreaker: true });
       const quotationId = swapQuote?.data?.id;
       if (!quotationId) throw new BadRequestException('Unable to create swap quotation');
@@ -118,7 +118,7 @@ export class AutoStackService {
     }
 
     await this.queueService.add(QueueName.CLEANUP, 'autostack.execute', { autoStackId: autoStack.id }, { jobId: `autostack-${autoStack.id}`, delay: Math.max(nextExecutionAt.getTime() - Date.now(), 0) });
-    return { success: true, message: 'Autostack created and awaiting webhook completion', data: autoStack };
+    return { success: true, message: 'Autostack creation awating confirmation', data: autoStack };
   }
 
   async getHistory(userId: string, page = 1, limit = 10) {
@@ -156,7 +156,7 @@ export class AutoStackService {
   }
 
   async cancelPending(userId: string, autoStackId: string) {
-    const stack = await this.prisma.autoStack.findFirst({ where: { id: autoStackId, userId, status: 'PENDING' as any } });
+    const stack = await this.prisma.autoStack.findFirst({ where: { id: autoStackId, userId, status: AutoStackStatus.PENDING as any } });
     if (!stack) throw new NotFoundException('Pending autostack not found');
     const configTx = await this.prisma.transaction.findFirst({ where: { userId, description: `autostack_config:${stack.id}` }, orderBy: { createdAt: 'desc' } });
     const meta = (configTx?.paymentMetadata || {}) as any;
@@ -170,9 +170,9 @@ export class AutoStackService {
       const order = await this.quidaxOrderService.getOrderRecord({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
       const state = String((order as any)?.data?.state || (order as any)?.data?.status || '').toLowerCase();
       if (['done', 'completed'].includes(state)) throw new BadRequestException('Autostack order already processed and cannot be cancelled');
-      await this.quidaxOrderService.cancelBuyOrSellOrderRequest({ user_id: 'me', order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
+      await this.quidaxOrderService.cancelBuyOrSellOrderRequest({ user_id: QUIDAX_COMPANY_USERID, order_id: String(meta.quidaxOrderId) }, { skipCircuitBreaker: true });
     }
-    await this.prisma.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: new Date() } });
+    await this.prisma.autoStack.update({ where: { id: stack.id }, data: { status: AutoStackStatus.TERMINATED as any, endedAt: new Date() } });
     return { success: true, message: 'Pending autostack cancelled successfully' };
   }
 
@@ -200,7 +200,7 @@ export class AutoStackService {
             "totalStackedInterest" = GREATEST("totalStackedInterest" - ${accrued.toString()}::decimal, 0)
         WHERE "id" = ${wallet.id}
       `;
-      await tx.autoStack.update({ where: { id: stack.id }, data: { status: 'ENDED' as any, endedAt: new Date() } });
+      await tx.autoStack.update({ where: { id: stack.id }, data: { status: AutoStackStatus.TERMINATED as any, endedAt: new Date() } });
       await tx.$executeRaw`
         UPDATE "company_liquidity"
         SET "totalAmountStacked" = GREATEST("totalAmountStacked" - ${principal.toString()}::decimal, 0),
@@ -213,14 +213,3 @@ export class AutoStackService {
     return { success: true, message: isEarly ? 'Autostack unlocked early with penalty and no interest' : 'Autostack unlocked successfully' };
   }
 }
-  private getBufferPercentFromTiers(asset: any, amountMinor: bigint): number {
-    const tiers = asset?.buffer_tiers || [];
-    const matchingTier = tiers.find((tier: any) => {
-      if (!tier?.minAmount || !tier?.maxAmount || tier?.bufferPercent === null || tier?.bufferPercent === undefined) return false;
-      const min = BigInt(tier.minAmount.toString());
-      const max = BigInt(tier.maxAmount.toString());
-      return amountMinor >= min && amountMinor <= max;
-    });
-    if (matchingTier) return Number(matchingTier.bufferPercent || 0);
-    return Number(asset?.defaultBufferPercent || 0);
-  }
