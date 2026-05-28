@@ -42,7 +42,7 @@ import axios from 'axios';
 export class VaultService {
   private readonly logger = new Logger(VaultService.name);
 
-  constructor(
+    constructor(
     private readonly prisma: PrismaService,
     private readonly tempStore: TempStoreService,
     private readonly cryptoCurrencyCache: CryptoCurrencyCacheService,
@@ -52,9 +52,8 @@ export class VaultService {
     private readonly transactionService: TransactionService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly queueService: QueueService,
-    private readonly companyLiquidityService: CompanyLiquidityService,
 
-  ) {}
+    ) {}
 
   private async getCurrencyBufferPercent(symbol: string, amountMinor: bigint): Promise<Decimal> {
     let currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
@@ -701,101 +700,103 @@ export class VaultService {
       };
     }
 
-    let totalLockedNgn = new Decimal(0);
-    let totalGainNgn = new Decimal(0);
-    const ngnRateCache = new Map<string, Decimal>();
+     let totalLockedNgn = new Decimal(0);
+     let totalGainNgn = new Decimal(0);
+     const ngnRateCache = new Map<string, Decimal>();
 
-    const vaultResponses = await Promise.all(
-      vaults.map(async (vault) => {
-        const amountLocked = BigInt(vault.amountLocked.toFixed(0));
-        const totalGainVal = BigInt(vault.totalGain.toFixed(0));
-        // Totals should be NGN and only include ACTIVE vaults
-        if (vault.status === VaultStatus.ACTIVE) {
-          let ngnRate = ngnRateCache.get(vault.cryptoCurrency.symbol.toUpperCase());
-          if (!ngnRate) {
-            const symbol = vault.cryptoCurrency.symbol.toUpperCase();
-            const pair = symbol === 'NGN' ? '1' : await this.tickerService.getPrice(`${symbol.toLowerCase()}ngn`);
-            ngnRate = new Decimal(pair || '0');
-            ngnRateCache.set(symbol, ngnRate);
-          }
+     const usdtWallet = await this.prisma.wallet.findFirst({
+       where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+       select: { defaultNetwork: true },
+     });
+     const usdtNetwork = (usdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
 
-          const amountLockedMajor = new Decimal(
-            ConvertCurrency.fromBase(
-              amountLocked.toString(),
-              vault.cryptoCurrency.symbol,
-              wallet.defaultNetwork as CryptoNetwork,
-            ),
-          );
-          const totalGainMajor = new Decimal(
-            ConvertCurrency.fromBase(
-              totalGainVal.toString(),
-              vault.cryptoCurrency.symbol,
-              wallet.defaultNetwork as CryptoNetwork,
-            ),
-          );
+     const vaultResponses = await Promise.all(
+       vaults.map(async (vault) => {
+         const amountLocked = BigInt(vault.amountLocked.toFixed(0));
+         const totalGainVal = BigInt(vault.totalGain.toFixed(0));
 
-          totalLockedNgn = totalLockedNgn.plus(amountLockedMajor.mul(ngnRate));
-          totalGainNgn = totalGainNgn.plus(totalGainMajor.mul(ngnRate));
-        }
+         // Fetch the wallet for the vault's currency
+         const vaultWallet = await this.prisma.wallet.findFirst({
+           where: { userId, currencyId: vault.currencyId },
+         });
+         if (!vaultWallet?.defaultNetwork) {
+           throw new BadRequestException(`Wallet default network not configured for ${vault.cryptoCurrency.symbol}`);
+         }
 
-        const wallet = await this.prisma.wallet.findFirst({
-          where: { userId, currencyId: vault.currencyId },
-        });
+         // Totals should be NGN and only include ACTIVE vaults
+         if (vault.status === VaultStatus.ACTIVE) {
+           let ngnRate = ngnRateCache.get(vault.cryptoCurrency.symbol.toUpperCase());
+           if (!ngnRate) {
+             const symbol = vault.cryptoCurrency.symbol.toUpperCase();
+             const pair = symbol === 'NGN' ? '1' : await this.tickerService.getPrice(`${symbol.toLowerCase()}ngn`);
+             ngnRate = new Decimal(pair || '0');
+             ngnRateCache.set(symbol, ngnRate);
+           }
 
-        if (!wallet?.defaultNetwork) {
-          throw new BadRequestException(`Wallet default network not configured for ${vault.cryptoCurrency.symbol}`);
-        }
-        const userUsdtWallet = await this.prisma.wallet.findFirst({
-          where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
-          select: { defaultNetwork: true },
-        });
-        const usdtNetwork = (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
+           const amountLockedMajor = new Decimal(
+             ConvertCurrency.fromBase(
+               amountLocked.toString(),
+               vault.cryptoCurrency.symbol,
+               vaultWallet.defaultNetwork as CryptoNetwork,
+             ),
+           );
+           const totalGainMajor = new Decimal(
+             ConvertCurrency.fromBase(
+               totalGainVal.toString(),
+               vault.cryptoCurrency.symbol,
+               vaultWallet.defaultNetwork as CryptoNetwork,
+             ),
+           );
 
-        const decimals = getCurrencyDecimals(vault.cryptoCurrency.symbol, wallet.defaultNetwork as CryptoNetwork);
+           totalLockedNgn = totalLockedNgn.plus(amountLockedMajor.mul(ngnRate));
+           totalGainNgn = totalGainNgn.plus(totalGainMajor.mul(ngnRate));
+         }
 
-        return {
-          id: vault.id,
-          currencyId: vault.currencyId,
-          currency: vault.cryptoCurrency.symbol,
-          amountLocked: ConvertCurrency.fromBase(
-            vault.amountLocked.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
-          ),
-          maturityDate: vault.maturityDate,
-          totalGain: ConvertCurrency.fromBase(
-            vault.totalGain.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
-          ),
-          interestRatePerAnum: vault.interestRatePerAnum.toString(),
-          transactionFee: ConvertCurrency.fromBase(
-            vault.transactionFee.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
-          ),
-          rate: ConvertCurrency.fromBase(
-            vault.rate.toFixed(0),
-            'USDT',
-            usdtNetwork,
-          ),
-          amountToReceive: ConvertCurrency.fromBase(
-            vault.amountToReceive.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
-          ),
-          bufferAmount: ConvertCurrency.fromBase(
-            vault.bufferAmount.toFixed(0),
-            vault.cryptoCurrency.symbol,
-            wallet.defaultNetwork as CryptoNetwork,
-          ),
-          bufferPercent: vault.bufferPercent.toString(),
-          status: vault.status,
-          createdAt: vault.createdAt,
-          requestedAt: vault.requestedAt,
-        };
-      }),
-    );
+         const decimals = getCurrencyDecimals(vault.cryptoCurrency.symbol, vaultWallet.defaultNetwork as CryptoNetwork);
+
+         return {
+           id: vault.id,
+           currencyId: vault.currencyId,
+           currency: vault.cryptoCurrency.symbol,
+           amountLocked: ConvertCurrency.fromBase(
+             vault.amountLocked.toFixed(0),
+             vault.cryptoCurrency.symbol,
+             vaultWallet.defaultNetwork as CryptoNetwork,
+           ),
+           maturityDate: vault.maturityDate,
+           totalGain: ConvertCurrency.fromBase(
+             vault.totalGain.toFixed(0),
+             vault.cryptoCurrency.symbol,
+             vaultWallet.defaultNetwork as CryptoNetwork,
+           ),
+           interestRatePerAnum: vault.interestRatePerAnum.toString(),
+           transactionFee: ConvertCurrency.fromBase(
+             vault.transactionFee.toFixed(0),
+             vault.cryptoCurrency.symbol,
+             vaultWallet.defaultNetwork as CryptoNetwork,
+           ),
+           rate: ConvertCurrency.fromBase(
+             vault.rate.toFixed(0),
+             'USDT',
+             usdtNetwork,
+           ),
+           amountToReceive: ConvertCurrency.fromBase(
+             vault.amountToReceive.toFixed(0),
+             vault.cryptoCurrency.symbol,
+             vaultWallet.defaultNetwork as CryptoNetwork,
+           ),
+           bufferAmount: ConvertCurrency.fromBase(
+             vault.bufferAmount.toFixed(0),
+             vault.cryptoCurrency.symbol,
+             vaultWallet.defaultNetwork as CryptoNetwork,
+           ),
+           bufferPercent: vault.bufferPercent.toString(),
+           status: vault.status,
+           createdAt: vault.createdAt,
+           requestedAt: vault.requestedAt,
+         };
+       }),
+     );
 
     return {
       success: true,
@@ -901,13 +902,16 @@ export class VaultService {
       await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_transactions/${swapTx.swapId}/cancel`, {}, { headers: { Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } });
     }
 
-    await this.prisma.$transaction(async (tx) => {
-      await tx.vault.update({ where: { id: vault.id }, data: { status: VaultStatus.TERMINATED } });
-      if (vault.cryptoCurrency.symbol.toUpperCase() === 'BTC') {
-        const principalMinor = BigInt(vault.amountLocked.toFixed(0));
-        await this.companyLiquidityService.releaseLiquidity('USDT', principalMinor, tx as any);
-      }
-    });
+     await this.prisma.$transaction(async (tx) => {
+       await tx.vault.update({ where: { id: vault.id }, data: { status: VaultStatus.TERMINATED } });
+       if (vault.cryptoCurrency.symbol.toUpperCase() === 'BTC') {
+         const principalMinor = BigInt(vault.amountLocked.toFixed(0));
+         const bufferAmountMinor = BigInt(vault.bufferAmount.toFixed(0));
+         const totalChargeMinor = principalMinor + bufferAmountMinor;
+         await this.transactionService.releaseBalance(tx, userId, 'BTC', totalChargeMinor);
+         await this.companyLiquidityService.releaseLiquidity('USDT', principalMinor, tx as any);
+       }
+     });
 
     return { success: true, message: 'Pending vault cancelled successfully' };
   }
