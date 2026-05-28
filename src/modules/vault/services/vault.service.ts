@@ -709,6 +709,19 @@ export class VaultService {
       vaults.map(async (vault) => {
         const amountLocked = BigInt(vault.amountLocked.toFixed(0));
         const totalGainVal = BigInt(vault.totalGain.toFixed(0));
+        const wallet = await this.prisma.wallet.findFirst({
+          where: { userId, currencyId: vault.currencyId },
+        });
+
+        if (!wallet?.defaultNetwork) {
+          throw new BadRequestException(`Wallet default network not configured for ${vault.cryptoCurrency.symbol}`);
+        }
+        const userUsdtWallet = await this.prisma.wallet.findFirst({
+          where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
+          select: { defaultNetwork: true },
+        });
+        const usdtNetwork = (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
+
         // Totals should be NGN and only include ACTIVE vaults
         if (vault.status === VaultStatus.ACTIVE) {
           let ngnRate = ngnRateCache.get(vault.cryptoCurrency.symbol.toUpperCase());
@@ -738,13 +751,6 @@ export class VaultService {
           totalGainNgn = totalGainNgn.plus(totalGainMajor.mul(ngnRate));
         }
 
-        const wallet = await this.prisma.wallet.findFirst({
-          where: { userId, currencyId: vault.currencyId },
-        });
-
-        if (!wallet?.defaultNetwork) {
-          throw new BadRequestException(`Wallet default network not configured for ${vault.cryptoCurrency.symbol}`);
-        }
         const userUsdtWallet = await this.prisma.wallet.findFirst({
           where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
           select: { defaultNetwork: true },
