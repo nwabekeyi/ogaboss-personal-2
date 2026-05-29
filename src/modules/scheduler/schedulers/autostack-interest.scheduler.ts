@@ -166,5 +166,7 @@ export class AutoStackInterestScheduler {
         WHERE "currency" = 'USDT'
       `;
     });
+
+    await this.autoStackService.initiateAutoStack(stack.id, { force: true });
   }
 }

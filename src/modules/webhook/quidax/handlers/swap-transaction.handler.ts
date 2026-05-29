@@ -557,7 +557,10 @@ export class SwapTransactionHandler {
               await tx.autoStack.update({
                 where: { id: autoStack.id },
                 data: {
-                  amount: principal,
+                  amount:
+                    String(autoStack.status) === 'PENDING'
+                      ? principal
+                      : { increment: principal },
                   lastExecutedAt: settledAt,
                   nextExecutionAt,
                   nextInterestAt,

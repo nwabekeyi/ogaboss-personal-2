@@ -401,7 +401,10 @@ export class OrderDoneHandler {
                 await tx.autoStack.update({
                   where: { id: autoStack.id },
                   data: {
-                    amount: cryptoDec,
+                    amount:
+                      String(autoStack.status) === 'PENDING'
+                        ? cryptoDec
+                        : { increment: cryptoDec },
                     status: 'ACTIVE' as any,
                     lastExecutedAt: executedAt,
                     nextExecutionAt,

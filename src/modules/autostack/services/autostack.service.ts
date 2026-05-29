@@ -451,10 +451,12 @@ export class AutoStackService {
     const stack = await this.prisma.autoStack.findUnique({
       where: { id: autoStackId },
     });
-    if (!stack || stack.status !== AutoStackStatus.PENDING) return;
+    const stackStatus = String(stack?.status || '');
+    if (!stack || !['PENDING', 'ACTIVE'].includes(stackStatus)) return;
 
     const now = new Date();
     if (!options.force && stack.nextExecutionAt > now) return;
+    if (stackStatus === 'ACTIVE' && stack.nextInterestAt <= now) return;
 
     const configTx = await this.prisma.transaction.findFirst({
       where: {
@@ -465,12 +467,110 @@ export class AutoStackService {
     });
     if (!configTx) return;
 
+    const configMeta = (configTx.paymentMetadata || {}) as Record<string, any>;
+    const executionTx =
+      stackStatus === 'PENDING'
+        ? configTx
+        : await this.getOrCreateAutoStackExecutionTransaction(
+            stack,
+            configTx,
+            configMeta,
+          );
+
+    if (!executionTx) return;
+
     return this.initiatePendingAutoStack(
       stack,
-      configTx,
-      (configTx.paymentMetadata || {}) as Record<string, any>,
+      executionTx,
+      (executionTx.paymentMetadata || {}) as Record<string, any>,
       now,
     );
+  }
+
+  private async getOrCreateAutoStackExecutionTransaction(
+    stack: any,
+    configTx: any,
+    configMeta: Record<string, any>,
+  ) {
+    const executionReference = `autostack-charge-${stack.id}-${stack.nextExecutionAt.toISOString()}`;
+    const existing = await this.prisma.transaction.findUnique({
+      where: { transactionUniqueId: executionReference },
+    });
+    if (existing) return existing;
+
+    const paymentType =
+      configMeta.paymentType === PaymentType.CRYPTO_WALLET
+        ? PaymentType.CRYPTO_WALLET
+        : PaymentType.CARD;
+    const principalUsdtBase = String(
+      configMeta.principalUsdtAmountBase || stack.amount.toFixed(0),
+    );
+    const principalUsdtOriginal = String(
+      configMeta.principalUsdtAmount ||
+        configTx.cryptoAmountOriginal ||
+        ConvertCurrency.fromBase(BigInt(principalUsdtBase), 'USDT'),
+    );
+    const sourceAmountBase = String(
+      configMeta.sourceAmountBase ||
+        configTx.cryptoAmountBase ||
+        principalUsdtBase,
+    );
+    const sourceAmountOriginal = String(
+      configMeta.sourceAmount ||
+        configMeta.totalChargeAmount ||
+        configTx.cryptoAmountOriginal ||
+        principalUsdtOriginal,
+    );
+
+    try {
+      return await this.prisma.transaction.create({
+        data: {
+          userId: stack.userId,
+          transactionUniqueId: executionReference,
+          receiverWalletAddress: configTx.receiverWalletAddress ?? null,
+          currency:
+            paymentType === PaymentType.CRYPTO_WALLET
+              ? String(configMeta.sourceAsset || configTx.currency || 'USDT')
+              : 'USDT',
+          cryptoAmountBase:
+            paymentType === PaymentType.CRYPTO_WALLET
+              ? sourceAmountBase
+              : principalUsdtBase,
+          cryptoAmountOriginal:
+            paymentType === PaymentType.CRYPTO_WALLET
+              ? sourceAmountOriginal
+              : principalUsdtOriginal,
+          fiatAmountBase: '0',
+          fiatAmountOriginal: '0',
+          transactionType: TransactionType.DEBIT,
+          transactionContext: TransactionContext.AUTOSTACK,
+          status: TransactionStatus.PENDING,
+          paymentType,
+          paymentMetadata: {
+            ...configMeta,
+            autoStackId: stack.id,
+            paymentType,
+            sourceAsset: String(
+              configMeta.sourceAsset || configTx.currency || 'USDT',
+            ).toUpperCase(),
+            targetAsset: 'USDT',
+            principalUsdtAmount: principalUsdtOriginal,
+            principalUsdtAmountBase: principalUsdtBase,
+            sourceAmount: sourceAmountOriginal,
+            sourceAmountBase,
+            autostackInitiationStatus: 'PENDING',
+            autostackExecutionType: 'PERIODIC',
+            scheduledFor: stack.nextExecutionAt.toISOString(),
+          } as any,
+          description: `autostack_charge:${stack.id}`,
+        } as any,
+      });
+    } catch (error: any) {
+      if (error?.code !== 'P2002') throw error;
+      return this.prisma.transaction.findUnique({
+        where: { transactionUniqueId: executionReference },
+      });
+    }
   }
 
   private async initiatePendingAutoStack(
@@ -520,11 +620,6 @@ export class AutoStackService {
       autostackInitiationStatus: 'PROCESSING',
       autostackInitiatedAt: now.toISOString(),
     };
-
-    await this.prisma.transaction.update({
-      where: { id: configTx.id },
-      data: { paymentMetadata: processingMetadata as Prisma.InputJsonValue },
-    });
 
     try {
       if (paymentType === PaymentType.CRYPTO_WALLET) {
@@ -587,10 +682,13 @@ export class AutoStackService {
               SET "totalAmountStacked" = "totalAmountStacked" + ${sourceAmountBase.toString()}::decimal
               WHERE LOWER("currency") = LOWER('USDT')
             `;
+            const isInitialExecution = String(stack.status) === 'PENDING';
             await tx.autoStack.update({
               where: { id: stack.id },
               data: {
-                amount: sourceAmountBase.toString(),
+                amount: isInitialExecution
+                  ? sourceAmountBase.toString()
+                  : { increment: sourceAmountBase.toString() },
                 status: 'ACTIVE' as any,
                 lastExecutedAt: now,
                 nextExecutionAt: this.getNextExecutionAt(stack, now),
@@ -720,7 +818,13 @@ export class AutoStackService {
           paymentCardId: meta.paymentCardId,
           amount: Number(ngnAmountBase),
           reference: chargeReference,
-          metadata: { autoStackId: stack.id, mode: 'AUTOSTACK_CONFIRM' },
+          metadata: {
+            autoStackId: stack.id,
+            mode:
+              String(stack.status) === 'PENDING'
+                ? 'AUTOSTACK_CONFIRM'
+                : 'AUTOSTACK_PERIODIC',
+          },
         },
         { skipCircuitBreaker: true },
       );
