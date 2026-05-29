@@ -5,12 +5,13 @@ import {
 } from '@nestjs/common';
 import { QuidaxTickerService } from '../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
+import { PaystackService } from '../../../infrastructure/providers/paystack';
 import {
   AutoStackStatus,
   PrismaService,
 } from '../../../infrastructure/databases/prisma';
 import { compareHash } from '../../../shared/services/hash';
-import { ConvertCurrency } from '../../../shared';
+import { ConvertCurrency, LiquidityReservationStatus } from '../../../shared';
 import {
   AutoStackConfirmDto,
   AutoStackPaymentTypesDto,
@@ -31,6 +32,10 @@ import {
 import { TempStoreService } from '../../../infrastructure/databases/redis';
 import axios from 'axios';
 import { QuidaxOrderService } from '../../../infrastructure/providers/quidax/order.service';
+import {
+  CompanyLiquidityService,
+  TransactionService,
+} from '../../transaction/services';
 
 import {
   AUTOSTACK_DEFAULT_PLAN_NAME,
@@ -65,6 +70,9 @@ export class AutoStackService {
     private readonly tickerService: QuidaxTickerService,
     private readonly quidaxSwapService: QuidaxSwapService,
     private readonly quidaxOrderService: QuidaxOrderService,
+    private readonly paystackService: PaystackService,
+    private readonly transactionService: TransactionService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
   ) {}
 
   async quote(userId: string, dto: AutoStackQuoteDto) {
@@ -362,13 +370,23 @@ export class AutoStackService {
       return createdAutoStack;
     });
 
+    const now = new Date();
+    if (nextExecutionAt <= now || this.isSameUtcDate(nextExecutionAt, now)) {
+      await this.initiateAutoStack(autoStack.id, { force: true });
+      return {
+        success: true,
+        message: 'Autostack created and initiated for today',
+        data: autoStack,
+      };
+    }
+
     await this.queueService.add(
       QueueName.CLEANUP,
       'scheduler.autostack.charge',
       { autoStackId: autoStack.id },
       {
         jobId: `scheduler.autostack.charge-${autoStack.id}-${nextExecutionAt.toISOString().replace(/:/g, '-')}`,
-        delay: Math.max(nextExecutionAt.getTime() - Date.now(), 0),
+        delay: Math.max(nextExecutionAt.getTime() - now.getTime(), 0),
       },
     );
     return {
@@ -379,6 +397,383 @@ export class AutoStackService {
     };
   }
 
+  private getNextExecutionAt(stack: any, from: Date): Date {
+    const next = new Date(from);
+    if (stack.frequency === 'DAILY') next.setUTCDate(next.getUTCDate() + 1);
+    if (stack.frequency === 'WEEKLY') next.setUTCDate(next.getUTCDate() + 7);
+    if (stack.frequency === 'MONTHLY') next.setUTCMonth(next.getUTCMonth() + 1);
+    return next;
+  }
+
+  private getInterestDate(stack: any, from: Date): Date {
+    const next = new Date(from);
+    const days =
+      stack.frequency === 'DAILY' ? 1 : stack.frequency === 'WEEKLY' ? 7 : 30;
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
+  }
+
+  private isSameUtcDate(left: Date, right: Date): boolean {
+    return (
+      left.getUTCFullYear() === right.getUTCFullYear() &&
+      left.getUTCMonth() === right.getUTCMonth() &&
+      left.getUTCDate() === right.getUTCDate()
+    );
+  }
+
+  async initiateAutoStack(
+    autoStackId: string,
+    options: { force?: boolean } = {},
+  ) {
+    const stack = await this.prisma.autoStack.findUnique({
+      where: { id: autoStackId },
+    });
+    if (!stack || stack.status !== AutoStackStatus.PENDING) return;
+
+    const now = new Date();
+    if (!options.force && stack.nextExecutionAt > now) return;
+
+    const configTx = await this.prisma.transaction.findFirst({
+      where: {
+        userId: stack.userId,
+        description: `autostack_config:${stack.id}`,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!configTx) return;
+
+    return this.initiatePendingAutoStack(
+      stack,
+      configTx,
+      (configTx.paymentMetadata || {}) as Record<string, any>,
+      now,
+    );
+  }
+
+  private async initiatePendingAutoStack(
+    stack: any,
+    configTx: any,
+    meta: Record<string, any>,
+    now: Date,
+  ) {
+    if (
+      ['PROCESSING', 'SUBMITTED', 'COMPLETED'].includes(
+        String(meta.autostackInitiationStatus || '').toUpperCase(),
+      )
+    )
+      return;
+
+    const paymentType =
+      meta.paymentType === 'CRYPTO_WALLET'
+        ? PaymentType.CRYPTO_WALLET
+        : PaymentType.CARD;
+    const sourceAsset = String(
+      meta.sourceAsset ||
+        (paymentType === PaymentType.CRYPTO_WALLET
+          ? configTx.currency
+          : 'USDT'),
+    ).toUpperCase();
+    const principalUsdtBase = BigInt(
+      String(meta.principalUsdtAmountBase || stack.amount.toFixed(0)),
+    );
+    const principalUsdtOriginal = String(
+      meta.principalUsdtAmount ||
+        configTx.cryptoAmountOriginal ||
+        Number(principalUsdtBase) / 1_000_000,
+    );
+    const sourceAmountBase = BigInt(
+      String(
+        meta.sourceAmountBase || configTx.cryptoAmountBase || principalUsdtBase,
+      ),
+    );
+    const sourceAmountOriginal = String(
+      meta.sourceAmount ||
+        meta.totalChargeAmount ||
+        configTx.cryptoAmountOriginal ||
+        principalUsdtOriginal,
+    );
+    const processingMetadata = {
+      ...meta,
+      autostackInitiationStatus: 'PROCESSING',
+      autostackInitiatedAt: now.toISOString(),
+    };
+
+    await this.prisma.transaction.update({
+      where: { id: configTx.id },
+      data: { paymentMetadata: processingMetadata as Prisma.InputJsonValue },
+    });
+
+    try {
+      if (paymentType === PaymentType.CRYPTO_WALLET) {
+        await this.prisma.$transaction(async (tx) => {
+          await this.transactionService.reserveBalance(
+            tx as any,
+            stack.userId,
+            sourceAsset,
+            sourceAmountBase,
+          );
+          const reservedLiquidity =
+            await this.companyLiquidityService.reserveLiquidity(
+              sourceAsset,
+              sourceAmountBase,
+              tx as any,
+            );
+          if (!reservedLiquidity)
+            throw new Error(
+              `Insufficient company ${sourceAsset} liquidity for autostack`,
+            );
+          await tx.transaction.update({
+            where: { id: configTx.id },
+            data: {
+              cryptoAmountBase: sourceAmountBase.toString(),
+              cryptoAmountOriginal: sourceAmountOriginal,
+              fiatAmountBase: principalUsdtBase.toString(),
+              fiatAmountOriginal: principalUsdtOriginal,
+              paymentMetadata: {
+                ...processingMetadata,
+                liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
+                liquidityReservationCurrency: sourceAsset,
+                liquidityReservationAmount: sourceAmountBase.toString(),
+              } as Prisma.InputJsonValue,
+            },
+          });
+        });
+
+        if (sourceAsset === 'USDT') {
+          await this.prisma.$transaction(async (tx) => {
+            const usdtWallet = await tx.wallet.findFirst({
+              where: { userId: stack.userId, currency: 'USDT' },
+            });
+            if (!usdtWallet)
+              throw new Error(
+                `USDT wallet not found for autostack ${stack.id}`,
+              );
+            await tx.$executeRaw`
+              UPDATE "wallets"
+              SET "reservedBalance" = GREATEST("reservedBalance" - ${sourceAmountBase.toString()}::decimal, 0),
+                  "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
+              WHERE "id" = ${usdtWallet.id}
+            `;
+            await this.companyLiquidityService.releaseLiquidity(
+              'USDT',
+              sourceAmountBase,
+              tx as any,
+            );
+            await tx.$executeRaw`
+              UPDATE "company_liquidity"
+              SET "totalAmountStacked" = "totalAmountStacked" + ${sourceAmountBase.toString()}::decimal
+              WHERE LOWER("currency") = LOWER('USDT')
+            `;
+            await tx.autoStack.update({
+              where: { id: stack.id },
+              data: {
+                amount: sourceAmountBase.toString(),
+                status: 'ACTIVE' as any,
+                lastExecutedAt: now,
+                nextExecutionAt: this.getNextExecutionAt(stack, now),
+                nextInterestAt: this.getInterestDate(stack, now),
+              },
+            });
+            await tx.transaction.update({
+              where: { id: configTx.id },
+              data: {
+                status: TransactionStatus.COMPLETED,
+                isProcessed: true,
+                executedAt: now,
+                paymentMetadata: {
+                  ...processingMetadata,
+                  liquidityReservationStatus:
+                    LiquidityReservationStatus.RELEASED,
+                  liquidityReservationCurrency: 'USDT',
+                  liquidityReservationAmount: sourceAmountBase.toString(),
+                  liquidityReleasedAt: now.toISOString(),
+                  liquidityReleaseReason: 'autostack_usdt_wallet_settled',
+                  autostackInitiationStatus: 'COMPLETED',
+                  autostackSettlement: 'wallet_completed',
+                } as Prisma.InputJsonValue,
+              },
+            });
+          });
+          return;
+        }
+
+        const swapQuote = await this.quidaxSwapService.createInstantSwapRequest(
+          QUIDAX_COMPANY_USERID,
+          {
+            from_currency: sourceAsset.toLowerCase(),
+            to_currency: 'usdt',
+            from_amount: sourceAmountOriginal,
+          },
+          { skipCircuitBreaker: true },
+        );
+        const quotationId =
+          swapQuote?.data?.id || swapQuote?.data?.swap_quotation?.id;
+        if (!quotationId)
+          throw new Error('Unable to create autostack swap quotation');
+        const confirmedSwap = await this.quidaxSwapService.confirmInstantSwap(
+          { user_id: QUIDAX_COMPANY_USERID, quotation_id: quotationId },
+          { skipCircuitBreaker: true },
+        );
+        const swapId = confirmedSwap?.data?.id || quotationId;
+        await this.prisma.$transaction(async (tx) => {
+          const fresh = await tx.transaction.findUnique({
+            where: { id: configTx.id },
+            select: { paymentMetadata: true },
+          });
+          await tx.swapTransaction.create({
+            data: {
+              userId: stack.userId,
+              quidaxAccountId: QUIDAX_COMPANY_USERID,
+              fromCurrency: sourceAsset,
+              toCurrency: 'USDT',
+              amountOriginal: sourceAmountOriginal,
+              quoteId: configTx.transactionUniqueId,
+              swapId,
+              status: TransactionStatus.PENDING,
+              description: `Autostack swap ${sourceAsset} → USDT`,
+            },
+          });
+          await tx.transaction.update({
+            where: { id: configTx.id },
+            data: {
+              paymentMetadata: {
+                ...((fresh?.paymentMetadata || {}) as any),
+                autostackInitiationStatus: 'SUBMITTED',
+                autostackSwapQuotationId: quotationId,
+                autostackSwapId: swapId,
+              } as Prisma.InputJsonValue,
+            },
+          });
+        });
+        return;
+      }
+
+      if (!meta.paymentCardId)
+        throw new Error('Payment card is required for card autostack');
+      const usdtNgnRate = await this.tickerService.getPrice('usdtngn');
+      if (!usdtNgnRate)
+        throw new Error('Unable to fetch USDT/NGN rate for autostack');
+      const ngnAmountOriginal = (
+        Number(principalUsdtOriginal) * Number(usdtNgnRate)
+      ).toFixed(2);
+      const ngnAmountBase = ConvertCurrency.toBase(ngnAmountOriginal, 'NGN');
+      const chargeReference = configTx.transactionUniqueId;
+
+      await this.prisma.$transaction(async (tx) => {
+        const reservedLiquidity =
+          await this.companyLiquidityService.reserveLiquidity(
+            'NGN',
+            ngnAmountBase,
+            tx as any,
+          );
+        if (!reservedLiquidity)
+          throw new Error(
+            'Insufficient company NGN liquidity for autostack card charge',
+          );
+        await tx.transaction.update({
+          where: { id: configTx.id },
+          data: {
+            currency: 'USDT',
+            cryptoAmountBase: principalUsdtBase.toString(),
+            cryptoAmountOriginal: principalUsdtOriginal,
+            fiatAmountBase: ngnAmountBase.toString(),
+            fiatAmountOriginal: ngnAmountOriginal,
+            paymentMetadata: {
+              ...processingMetadata,
+              paymentType,
+              sourceAsset,
+              targetAsset: 'USDT',
+              autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
+              liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
+              liquidityReservationCurrency: 'NGN',
+              liquidityReservationAmount: ngnAmountBase.toString(),
+              usdtNgnRate,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      });
+
+      await this.paystackService.chargeSavedCard(
+        {
+          paymentCardId: meta.paymentCardId,
+          amount: Number(ngnAmountBase),
+          reference: chargeReference,
+          metadata: { autoStackId: stack.id, mode: 'AUTOSTACK_CONFIRM' },
+        },
+        { skipCircuitBreaker: true },
+      );
+      await this.prisma.transaction.update({
+        where: { id: configTx.id },
+        data: {
+          paymentMetadata: {
+            ...processingMetadata,
+            paymentType,
+            sourceAsset,
+            targetAsset: 'USDT',
+            autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
+            autostackInitiationStatus: 'SUBMITTED',
+            liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
+            liquidityReservationCurrency: 'NGN',
+            liquidityReservationAmount: ngnAmountBase.toString(),
+            usdtNgnRate,
+          } as Prisma.InputJsonValue,
+        },
+      });
+    } catch (error) {
+      await this.prisma.$transaction(async (tx) => {
+        const failedTx = await tx.transaction.findUnique({
+          where: { id: configTx.id },
+        });
+        const failedMeta = (failedTx?.paymentMetadata || {}) as any;
+        if (
+          failedMeta.liquidityReservationStatus ===
+            LiquidityReservationStatus.RESERVED &&
+          failedMeta.liquidityReservationAmount &&
+          failedMeta.liquidityReservationCurrency
+        ) {
+          await this.companyLiquidityService
+            .releaseLiquidity(
+              String(failedMeta.liquidityReservationCurrency),
+              BigInt(String(failedMeta.liquidityReservationAmount)),
+              tx as any,
+            )
+            .catch(() => undefined);
+        }
+        if (
+          paymentType === PaymentType.CRYPTO_WALLET &&
+          failedMeta.liquidityReservationStatus ===
+            LiquidityReservationStatus.RESERVED
+        ) {
+          await this.transactionService
+            .releaseBalance(
+              tx as any,
+              stack.userId,
+              sourceAsset,
+              sourceAmountBase,
+            )
+            .catch(() => undefined);
+        }
+        await tx.transaction.update({
+          where: { id: configTx.id },
+          data: {
+            paymentMetadata: {
+              ...failedMeta,
+              autostackInitiationStatus: 'FAILED',
+              autostackInitiationFailedAt: new Date().toISOString(),
+              autostackInitiationFailure:
+                (error as any)?.message || 'Autostack initiation failed',
+              liquidityReservationStatus:
+                failedMeta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? LiquidityReservationStatus.RELEASED
+                  : failedMeta.liquidityReservationStatus,
+            } as Prisma.InputJsonValue,
+          },
+        });
+      });
+      throw error;
+    }
+  }
   async getHistory(userId: string, page = 1, limit = 10) {
     const safeLimit = Math.min(Math.max(limit || 10, 1), 20);
     const safePage = Math.max(page || 1, 1);
