@@ -95,6 +95,10 @@ export class AutoStackInterestScheduler {
       return this.autoStackService.initiateAutoStack(stack.id);
     }
 
+    if (stack.status === 'PENDING') {
+      return this.initiatePendingAutoStack(stack, configTx, meta, now);
+    }
+
     const isDueDate = stack.nextInterestAt <= now;
     if (isDueDate) {
       await this.prisma.$transaction(async (tx) => {
