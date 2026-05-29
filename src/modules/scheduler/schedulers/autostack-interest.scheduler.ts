@@ -5,6 +5,7 @@ import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { TempStoreService } from '../../../infrastructure/databases/redis/temp-store.service';
 import { AutoStackService } from '../../autostack/services/autostack.service';
+import Decimal from 'decimal.js';
 
 @Injectable()
 export class AutoStackInterestScheduler {
@@ -78,25 +79,14 @@ export class AutoStackInterestScheduler {
     const stack = await this.prisma.autoStack.findUnique({
       where: { id: autoStackId },
     });
-    if (!stack || !['PENDING', 'ACTIVE'].includes(String(stack.status))) return;
+    const stackStatus = String(stack?.status || '');
+    if (!stack || !['PENDING', 'ACTIVE'].includes(stackStatus)) return;
 
     const now = new Date();
     if (stack.nextExecutionAt > now) return;
 
-    const configTx = await this.prisma.transaction.findFirst({
-      where: {
-        userId: stack.userId,
-        description: `autostack_config:${stack.id}`,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!configTx) return;
-    if (stack.status === 'PENDING') {
+    if (stackStatus === 'PENDING') {
       return this.autoStackService.initiateAutoStack(stack.id);
-    }
-
-    if (stack.status === 'PENDING') {
-      return this.initiatePendingAutoStack(stack, configTx, meta, now);
     }
 
     const isDueDate = stack.nextInterestAt <= now;
@@ -138,17 +128,26 @@ export class AutoStackInterestScheduler {
     }
 
     const setting = await this.prisma.autoStackingSettings.findFirst();
-    const dailyRate = setting?.dailyInterestRatePercent?.toNumber() || 0;
+    const dailyRate = new Decimal(
+      setting?.dailyInterestRatePercent?.toString() || '0',
+    );
     const days =
       stack.frequency === 'DAILY' ? 1 : stack.frequency === 'WEEKLY' ? 7 : 30;
-    const principal = Number(stack.amount.toFixed(0));
-    const interest = Math.floor(principal * (dailyRate / 100) * days);
+    const principal = new Decimal(stack.amount.toFixed(0));
+    const interest = BigInt(
+      principal
+        .mul(dailyRate)
+        .div(100)
+        .mul(days)
+        .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+        .toFixed(0),
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.autoStack.update({
         where: { id: stack.id },
         data: {
-          accruedInterest: { increment: interest },
+          accruedInterest: { increment: interest.toString() },
           nextInterestAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
         },
       });
@@ -158,12 +157,12 @@ export class AutoStackInterestScheduler {
       if (wallet) {
         await tx.wallet.update({
           where: { id: wallet.id },
-          data: { totalStackedInterest: { increment: interest } },
+          data: { totalStackedInterest: { increment: interest.toString() } },
         });
       }
       await tx.$executeRaw`
         UPDATE "company_liquidity"
-        SET "totalAccruedLockedInterest" = "totalAccruedLockedInterest" + ${interest}::decimal
+        SET "totalAccruedLockedInterest" = "totalAccruedLockedInterest" + ${interest.toString()}::decimal
         WHERE "currency" = 'USDT'
       `;
     });

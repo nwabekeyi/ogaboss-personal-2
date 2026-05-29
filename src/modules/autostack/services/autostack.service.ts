@@ -32,6 +32,7 @@ import {
 import { TempStoreService } from '../../../infrastructure/databases/redis';
 import axios from 'axios';
 import { QuidaxOrderService } from '../../../infrastructure/providers/quidax/order.service';
+import Decimal from 'decimal.js';
 import {
   CompanyLiquidityService,
   TransactionService,
@@ -61,6 +62,23 @@ export class AutoStackService {
     });
     if (matchingTier) return Number(matchingTier.bufferPercent || 0);
     return Number(asset?.defaultBufferPercent || 0);
+  }
+
+  private toBaseUnits(amount: Decimal.Value, decimals: number): bigint {
+    return BigInt(
+      new Decimal(amount)
+        .mul(new Decimal(10).pow(decimals))
+        .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+        .toFixed(0),
+    );
+  }
+
+  private toUsdtBase(amount: Decimal.Value): bigint {
+    return this.toBaseUnits(amount, 6);
+  }
+
+  private toNgnBase(amount: Decimal.Value): bigint {
+    return this.toBaseUnits(amount, 2);
   }
 
   constructor(
@@ -93,19 +111,20 @@ export class AutoStackService {
         `Unable to fetch conversion rate for ${assetSymbol}`,
       );
 
-    const conversionRate = Number(tickerRate);
-    if (!Number.isFinite(conversionRate) || conversionRate <= 0)
+    const conversionRate = new Decimal(tickerRate);
+    if (!conversionRate.isFinite() || conversionRate.lte(0))
       throw new BadRequestException(
         `Invalid conversion rate for ${assetSymbol}`,
       );
-    const amountInUsdt = dto.amount * conversionRate;
+    const amountInUsdt = new Decimal(dto.amount).mul(conversionRate);
 
     const payload = {
       quoteId,
       asset: assetSymbol,
       amount: dto.amount,
-      amountInUsdt,
-      rate: conversionRate,
+      amountInUsdt: amountInUsdt.toString(),
+      amountInUsdtBase: this.toUsdtBase(amountInUsdt).toString(),
+      rate: conversionRate.toString(),
       expiresAt: Date.now() + AUTOSTACK_QUOTE_TTL_SECONDS * 1000,
       planName: dto.planName || AUTOSTACK_DEFAULT_PLAN_NAME,
       targetAsset: assetSymbol,
@@ -121,7 +140,7 @@ export class AutoStackService {
         quoteId,
         rates: { assetToUsdt: payload.rate },
         expiresIn: AUTOSTACK_QUOTE_TTL_SECONDS,
-        amountInUsdt: amountInUsdt.toFixed(8),
+        amountInUsdt: amountInUsdt.toString(),
       },
     };
   }
@@ -175,56 +194,62 @@ export class AutoStackService {
     if (!quoteJson) throw new NotFoundException('Quote not found or expired');
     const quote = JSON.parse(quoteJson);
 
-    const amountInUsdt = Number(quote.amountInUsdt || 0);
+    const amountInUsdt = new Decimal(quote.amountInUsdt || 0);
     const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({
       where: {
         currency: 'USDT',
-        fromAmount: { lte: new Prisma.Decimal(amountInUsdt) },
-        toAmount: { gte: new Prisma.Decimal(amountInUsdt) },
+        fromAmount: { lte: new Prisma.Decimal(amountInUsdt.toString()) },
+        toAmount: { gte: new Prisma.Decimal(amountInUsdt.toString()) },
       },
     });
-    const txFee = feeSetting?.feeAmount?.toNumber() || 0;
-    const txFeePct = amountInUsdt > 0 ? (txFee / amountInUsdt) * 100 : 0;
+    const txFee = new Decimal(feeSetting?.feeAmount?.toString() || '0');
+    const txFeePct = amountInUsdt.gt(0)
+      ? txFee.div(amountInUsdt).mul(100).toNumber()
+      : 0;
 
     const setting = await this.prisma.autoStackingSettings.findFirst();
     const dailyInterestRatePercent =
       setting?.dailyInterestRatePercent?.toNumber() || 0;
     const periods = AUTOSTACK_FREQUENCY_PERIOD_DAYS[dto.frequency];
-    const interest = amountInUsdt * (dailyInterestRatePercent / 100) * periods;
-    const estimatedOut = amountInUsdt - txFee + interest;
+    const interest = amountInUsdt
+      .mul(dailyInterestRatePercent)
+      .div(100)
+      .mul(periods);
+    const estimatedOut = amountInUsdt.minus(txFee).plus(interest);
 
     const quoteAsset = String(quote.asset || 'USDT').toUpperCase();
     const quoteAssetCurrency = await this.prisma.cryptoCurrency.findUnique({
       where: { symbol: quoteAsset },
       include: { buffer_tiers: true },
     });
-    const amountMinor = BigInt(
-      Math.floor((quote.amount || 0) * 100000000).toString(),
-    );
+    const amountMinor = this.toBaseUnits(quote.amount || 0, 8);
     const bufferPercent =
       dto.paymentType === PaymentType.CRYPTO_WALLET && quoteAsset === 'BTC'
         ? this.getBufferPercentFromTiers(quoteAssetCurrency, amountMinor)
         : 0;
+    const quoteAmount = new Decimal(quote.amount || 0);
     const bufferAmount =
-      bufferPercent > 0 ? quote.amount * (bufferPercent / 100) : 0;
-    const totalChargeAmount = quote.amount + bufferAmount;
+      bufferPercent > 0
+        ? quoteAmount.mul(bufferPercent).div(100)
+        : new Decimal(0);
+    const totalChargeAmount = quoteAmount.plus(bufferAmount);
 
     const preview = {
       ...quote,
       frequency: dto.frequency,
       paymentType: dto.paymentType,
       paymentCardId: (dto as any).paymentCardId,
-      transactionFee: txFee,
+      transactionFee: txFee.toString(),
       transactionFeePercentage: txFeePct,
       interestRate: dailyInterestRatePercent,
-      estimatedOut,
+      estimatedOut: estimatedOut.toString(),
       startDate: dto.startDate,
       timeOfDay: dto.timeOfDay,
       dayOfWeek: dto.dayOfWeek,
       dayOfMonth: dto.dayOfMonth,
       bufferPercent,
-      bufferAmount,
-      totalChargeAmount,
+      bufferAmount: bufferAmount.toString(),
+      totalChargeAmount: totalChargeAmount.toString(),
     };
     await this.tempStore.set(
       quoteKey,
@@ -235,14 +260,14 @@ export class AutoStackService {
     return {
       success: true,
       data: {
-        amount: amountInUsdt,
+        amount: amountInUsdt.toString(),
         frequency: dto.frequency,
         paymentType: dto.paymentType,
         planName: quote.planName,
         rate: quote.rate,
-        transactionFee: txFee,
+        transactionFee: txFee.toString(),
         interestRate: dailyInterestRatePercent,
-        estimatedOut,
+        estimatedOut: estimatedOut.toString(),
         transactionFeePercentage: txFeePct,
       },
     };
@@ -271,13 +296,13 @@ export class AutoStackService {
       preview.paymentType === PaymentType.CRYPTO_WALLET
         ? PaymentType.CRYPTO_WALLET
         : PaymentType.CARD;
-    const principalUsdtMinor = BigInt(
-      Math.floor(Number(preview.amountInUsdt || 0) * 1_000_000).toString(),
-    );
-    const principalUsdtOriginal = Number(preview.amountInUsdt || 0).toString();
-    const transactionFeeMinor = BigInt(
-      Math.floor(Number(preview.transactionFee || 0) * 1_000_000).toString(),
-    );
+    const principalUsdtOriginal = new Decimal(
+      preview.amountInUsdt || 0,
+    ).toString();
+    const principalUsdtMinor = preview.amountInUsdtBase
+      ? BigInt(String(preview.amountInUsdtBase))
+      : this.toUsdtBase(principalUsdtOriginal);
+    const transactionFeeMinor = this.toUsdtBase(preview.transactionFee || 0);
 
     let sourceWallet: any = null;
     let sourceAmountMinor = principalUsdtMinor;
@@ -294,9 +319,7 @@ export class AutoStackService {
       );
       sourceAmountMinor =
         sourceAsset === 'USDT' && !sourceWallet.defaultNetwork
-          ? BigInt(
-              Math.floor(Number(sourceAmountOriginal) * 1_000_000).toString(),
-            )
+          ? this.toUsdtBase(sourceAmountOriginal)
           : ConvertCurrency.toBase(
               sourceAmountOriginal,
               sourceAsset,
@@ -479,7 +502,7 @@ export class AutoStackService {
     const principalUsdtOriginal = String(
       meta.principalUsdtAmount ||
         configTx.cryptoAmountOriginal ||
-        Number(principalUsdtBase) / 1_000_000,
+        ConvertCurrency.fromBase(principalUsdtBase, 'USDT'),
     );
     const sourceAmountBase = BigInt(
       String(
@@ -653,10 +676,9 @@ export class AutoStackService {
       const usdtNgnRate = await this.tickerService.getPrice('usdtngn');
       if (!usdtNgnRate)
         throw new Error('Unable to fetch USDT/NGN rate for autostack');
-      const ngnAmountOriginal = (
-        Number(principalUsdtOriginal) * Number(usdtNgnRate)
-      ).toFixed(2);
-      const ngnAmountBase = ConvertCurrency.toBase(ngnAmountOriginal, 'NGN');
+      const ngnAmount = new Decimal(principalUsdtOriginal).mul(usdtNgnRate);
+      const ngnAmountBase = this.toNgnBase(ngnAmount);
+      const ngnAmountOriginal = ConvertCurrency.fromBase(ngnAmountBase, 'NGN');
       const chargeReference = configTx.transactionUniqueId;
 
       await this.prisma.$transaction(async (tx) => {
