@@ -5,12 +5,15 @@ import {
   TransactionStatus,
   TransactionType,
   VaultStatus,
+  AutoStackStatus,
+  PaymentType,
 } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
 import {
- ConvertCurrency,
- CryptoNetwork,
- toBigInt,
- toDecimal,
+  ConvertCurrency,
+  CryptoNetwork,
+  toBigInt,
+  toDecimal,
+  LiquidityReservationStatus,
 } from '../../../../shared';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import { CompanyLiquidityService } from '../../../../modules/transaction/services/company-liquidity.service';
@@ -25,69 +28,69 @@ import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 
 @Injectable()
 export class SwapTransactionHandler {
- private readonly logger = new Logger(SwapTransactionHandler.name);
+  private readonly logger = new Logger(SwapTransactionHandler.name);
 
- constructor(
-   private readonly prisma: PrismaService,
-   private readonly quidaxSwapService: QuidaxSwapService,
-   private readonly companyLiquidityService: CompanyLiquidityService,
-   private readonly dashboardStatsQueueService: DashboardStatsQueueService,
-   private readonly transactionNotificationService: TransactionNotificationService,
-   private readonly tickerService: QuidaxTickerService,
-   private readonly transactionService: TransactionService,
- ) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly quidaxSwapService: QuidaxSwapService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
+    private readonly dashboardStatsQueueService: DashboardStatsQueueService,
+    private readonly transactionNotificationService: TransactionNotificationService,
+    private readonly tickerService: QuidaxTickerService,
+    private readonly transactionService: TransactionService,
+  ) {}
 
- async process(data: SwapWebhookDataDto, event: string): Promise<void> {
-   const swapId = data.id;
-   this.logger.log(`Swap webhook received: ${event} | swapId: ${swapId}`);
+  async process(data: SwapWebhookDataDto, event: string): Promise<void> {
+    const swapId = data.id;
+    this.logger.log(`Swap webhook received: ${event} | swapId: ${swapId}`);
 
-   // Initial read (non-transactional) – fast path for already-terminal swaps
-   let swapRecord = await this.prisma.swapTransaction.findFirst({
-     where: { swapId },
-     select: {
-       id: true,
-       status: true,
-       userId: true,
-       fromCurrency: true,
-       toCurrency: true,
-       toAmountOriginal: true,
-       description: true,
-     },
-   });
+    // Initial read (non-transactional) – fast path for already-terminal swaps
+    let swapRecord = await this.prisma.swapTransaction.findFirst({
+      where: { swapId },
+      select: {
+        id: true,
+        status: true,
+        userId: true,
+        fromCurrency: true,
+        toCurrency: true,
+        toAmountOriginal: true,
+        description: true,
+      },
+    });
 
-   if (!swapRecord) {
-     this.logger.error(`No SwapTransaction found for swapId: ${swapId}`);
-     return;
-   }
+    if (!swapRecord) {
+      this.logger.error(`No SwapTransaction found for swapId: ${swapId}`);
+      return;
+    }
 
-   const TERMINAL = new Set([
-     TransactionStatus.COMPLETED,
-     TransactionStatus.FAILED,
-     'completed',
-     'failed',
-     'reversed',
-   ]);
+    const TERMINAL = new Set([
+      TransactionStatus.COMPLETED,
+      TransactionStatus.FAILED,
+      'completed',
+      'failed',
+      'reversed',
+    ]);
 
-   if (TERMINAL.has(swapRecord.status as any)) {
-     this.logger.warn(
-       `Swap ${swapRecord.id} already terminal (${swapRecord.status}) — skipping`,
-     );
-     return;
-   }
+    if (TERMINAL.has(swapRecord.status as any)) {
+      this.logger.warn(
+        `Swap ${swapRecord.id} already terminal (${swapRecord.status}) — skipping`,
+      );
+      return;
+    }
 
-   const userId = swapRecord.userId;
+    const userId = swapRecord.userId;
 
-   // === VAULT SWAP PATH ===
-   if (
-     swapRecord.description?.startsWith('vault_swap:') &&
-     event === 'swap_transaction.completed'
-   ) {
-     return this.processVaultSwapCompletion(swapRecord!, data, event);
-   }
+    // === VAULT SWAP PATH ===
+    if (
+      swapRecord.description?.startsWith('vault_swap:') &&
+      event === 'swap_transaction.completed'
+    ) {
+      return this.processVaultSwapCompletion(swapRecord!, data, event);
+    }
 
-   // === REGULAR SWAP PATH ===
-   return this.processRegularSwap(swapRecord!, data, event);
- }
+    // === REGULAR SWAP PATH ===
+    return this.processRegularSwap(swapRecord!, data, event);
+  }
 
   /** Vault-specific completion (BTC → USDT for vault activation) */
   private async processVaultSwapCompletion(
@@ -105,8 +108,14 @@ export class SwapTransactionHandler {
           where: { id: vaultId },
           select: { status: true },
         });
-        if (existingVault?.status && existingVault.status !== VaultStatus.ACTIVE && existingVault.status !== VaultStatus.PENDING) {
-          this.logger.warn(`Vault ${vaultId} already ${existingVault.status} — skipping idempotently`);
+        if (
+          existingVault?.status &&
+          existingVault.status !== VaultStatus.ACTIVE &&
+          existingVault.status !== VaultStatus.PENDING
+        ) {
+          this.logger.warn(
+            `Vault ${vaultId} already ${existingVault.status} — skipping idempotently`,
+          );
           return;
         }
 
@@ -121,7 +130,9 @@ export class SwapTransactionHandler {
 
         // If linked transaction already completed, skip
         if (linkedTx?.status === TransactionStatus.COMPLETED) {
-          this.logger.warn(`Linked transaction ${linkedTx.id} already COMPLETED — skipping idempotently`);
+          this.logger.warn(
+            `Linked transaction ${linkedTx.id} already COMPLETED — skipping idempotently`,
+          );
           return;
         }
 
@@ -143,64 +154,70 @@ export class SwapTransactionHandler {
         }
 
         const expectedUsdtMinor = BigInt(vault.amountLocked.toFixed(0));
-       const receivedUsdtMinor = ConvertCurrency.toBase(
-         data.received_amount,
-         'USDT',
-       );
-       const differenceMinor = receivedUsdtMinor - expectedUsdtMinor;
+        const receivedUsdtMinor = ConvertCurrency.toBase(
+          data.received_amount,
+          'USDT',
+        );
+        const differenceMinor = receivedUsdtMinor - expectedUsdtMinor;
 
-       if (receivedUsdtMinor < expectedUsdtMinor) {
-         await tx.vault.update({
-           where: { id: vaultId },
-           data: { status: 'TERMINATED' as any },
-         });
+        if (receivedUsdtMinor < expectedUsdtMinor) {
+          await tx.vault.update({
+            where: { id: vaultId },
+            data: { status: 'TERMINATED' as any },
+          });
 
-         await this.companyLiquidityService.releaseLiquidity('USDT', expectedUsdtMinor, tx);
+          await this.companyLiquidityService.releaseLiquidity(
+            'USDT',
+            expectedUsdtMinor,
+            tx,
+          );
 
-         if (linkedTx) {
-           await tx.transaction.update({
-             where: { id: linkedTx.id },
-             data: {
-               status: TransactionStatus.FAILED,
-               description: 'Swap received below principal threshold',
-             },
-           });
-         }
-         this.logger.warn(
-           `Terminated vault ${vaultId}: received ${receivedUsdtMinor} < required ${expectedUsdtMinor}`,
-         );
-         return;
-       }
+          if (linkedTx) {
+            await tx.transaction.update({
+              where: { id: linkedTx.id },
+              data: {
+                status: TransactionStatus.FAILED,
+                description: 'Swap received below principal threshold',
+              },
+            });
+          }
+          this.logger.warn(
+            `Terminated vault ${vaultId}: received ${receivedUsdtMinor} < required ${expectedUsdtMinor}`,
+          );
+          return;
+        }
 
-       // Lock wallets
-       const [userUsdtWallet, btcWallet] = await Promise.all([
-         tx.wallet.findFirst({
-           where: {
-             userId: swapRecord.userId,
-             currency: { equals: 'USDT', mode: 'insensitive' },
-           },
-         }),
-         tx.wallet.findFirst({
-           where: {
-             userId: swapRecord.userId,
-             currency: { equals: 'BTC', mode: 'insensitive' },
-           },
-         }),
-       ]);
+        // Lock wallets
+        const [userUsdtWallet, btcWallet] = await Promise.all([
+          tx.wallet.findFirst({
+            where: {
+              userId: swapRecord.userId,
+              currency: { equals: 'USDT', mode: 'insensitive' },
+            },
+          }),
+          tx.wallet.findFirst({
+            where: {
+              userId: swapRecord.userId,
+              currency: { equals: 'BTC', mode: 'insensitive' },
+            },
+          }),
+        ]);
 
-       if (!userUsdtWallet || !btcWallet) {
-         throw new Error('Required wallets missing for vault swap');
-       }
+        if (!userUsdtWallet || !btcWallet) {
+          throw new Error('Required wallets missing for vault swap');
+        }
 
-       const totalBtcChargeMinor = linkedTx
-         ? BigInt(linkedTx.totalAmountSentBase.toFixed(0))
-         : 0n;
+        const totalBtcChargeMinor = linkedTx
+          ? BigInt(linkedTx.totalAmountSentBase.toFixed(0))
+          : 0n;
 
-      // === BTC Wallet: Final deduction + update originalBalance ===
-       const newBtcBaseBalance = BigInt(btcWallet.baseBalance.toFixed(0)) - totalBtcChargeMinor;
-       const newBtcOriginalBalance = newBtcBaseBalance < 0n ? '0' : newBtcBaseBalance.toString();
+        // === BTC Wallet: Final deduction + update originalBalance ===
+        const newBtcBaseBalance =
+          BigInt(btcWallet.baseBalance.toFixed(0)) - totalBtcChargeMinor;
+        const newBtcOriginalBalance =
+          newBtcBaseBalance < 0n ? '0' : newBtcBaseBalance.toString();
 
-       await tx.$executeRaw`
+        await tx.$executeRaw`
          UPDATE "wallets"
          SET
            "baseBalance" = GREATEST("baseBalance" - ${toDecimal(totalBtcChargeMinor)}, 0),
@@ -225,7 +242,11 @@ export class SwapTransactionHandler {
           },
         });
 
-        await this.companyLiquidityService.releaseLiquidity('USDT', expectedUsdtMinor, tx);
+        await this.companyLiquidityService.releaseLiquidity(
+          'USDT',
+          expectedUsdtMinor,
+          tx,
+        );
 
         // Update company liquidity: USDT vault principal + interest are now locked
         const totalGainMinor = BigInt(vault.totalGain.toFixed(0));
@@ -241,480 +262,603 @@ export class SwapTransactionHandler {
           select: { id: true },
         });
 
-       // Get execution price from the swap transaction (BTC/USDT rate)
-       const executionPrice = data.execution_price;
-       const rateDecimal = executionPrice ? new Decimal(executionPrice) : null;
+        // Get execution price from the swap transaction (BTC/USDT rate)
+        const executionPrice = data.execution_price;
+        const rateDecimal = executionPrice ? new Decimal(executionPrice) : null;
 
-       await tx.vault.update({
-         where: { id: vaultId },
-         data: {
-           status: 'ACTIVE' as any,
-           currencyId: usdtCrypto?.id,
-           amountLocked: toDecimal(expectedUsdtMinor),
-           ...(rateDecimal && { rate: rateDecimal }),
-         },
-       });
+        await tx.vault.update({
+          where: { id: vaultId },
+          data: {
+            status: VaultStatus.ACTIVE,
+            currencyId: usdtCrypto?.id,
+            amountLocked: toDecimal(expectedUsdtMinor),
+            ...(rateDecimal && { rate: rateDecimal }),
+          },
+        });
 
-       if (linkedTx) {
-         await tx.transaction.update({
-           where: { id: linkedTx.id },
-           data: {
-             status: TransactionStatus.COMPLETED,
-             isProcessed: true,
-             executedAt: new Date(),
-             description: `Vault funded via BTC swap: ${data.from_amount} BTC → ${data.received_amount} USDT`,
-           },
-         });
-       }
+        if (linkedTx) {
+          await tx.transaction.update({
+            where: { id: linkedTx.id },
+            data: {
+              status: TransactionStatus.COMPLETED,
+              isProcessed: true,
+              executedAt: new Date(),
+              description: `Vault funded via BTC swap: ${data.from_amount} BTC → ${data.received_amount} USDT`,
+            },
+          });
+        }
+        await tx.swapTransaction.update({
+          where: { id: swapRecord.id },
+          data: {
+            status: TransactionStatus.COMPLETED,
+            receivedAmountOriginal: data.received_amount,
+            confirmed: true,
+            updatedAt: new Date(),
+          },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
 
+    await this.queueDashboard(
+      swapId,
+      swapRecord.userId,
+      'USDT',
+      event,
+      data.updated_at,
+    );
 
+    this.logger.log(`Activated vault ${vaultId} for swap ${swapId}`);
+  }
 
-         const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
-         if (linkedTx.transactionContext === TransactionContext.AUTOSTACK && String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' && meta.autoStackId) {
-           await tx.autoStack.update({ where: { id: String(meta.autoStackId) }, data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any } });
-         }       await tx.swapTransaction.update({
-         where: { id: swapRecord.id },
-         data: {
-           status: TransactionStatus.COMPLETED,
-           receivedAmountOriginal: data.received_amount,
-           confirmed: true,
-           updatedAt: new Date(),
-         },
-       });
-     },
-     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-   );
+  /** Regular user-initiated swap (any → any) */
 
-   await this.queueDashboard(
-     swapId,
-     swapRecord.userId,
-     'USDT',
-     event,
-     data.updated_at,
-   );
+  private frequencyDays(frequency?: string): number {
+    if (frequency === 'WEEKLY') return 7;
+    if (frequency === 'MONTHLY') return 30;
+    return 1;
+  }
 
-   this.logger.log(`Activated vault ${vaultId} for swap ${swapId}`);
- }
+  private async processRegularSwap(
+    swapRecord: any,
+    data: SwapWebhookDataDto,
+    event: string,
+  ): Promise<void> {
+    const swapId = data.id;
+    const userId = swapRecord.userId;
+    const fromCurrency = swapRecord.fromCurrency.toUpperCase();
+    const toCurrency = swapRecord.toCurrency.toUpperCase();
 
- /** Regular user-initiated swap (any → any) */
+    const [fromWallet, toWallet] = await Promise.all([
+      this.prisma.wallet.findFirst({
+        where: {
+          userId,
+          currency: { equals: fromCurrency, mode: 'insensitive' },
+        },
+        select: { id: true, defaultNetwork: true },
+      }),
+      this.prisma.wallet.findFirst({
+        where: {
+          userId,
+          currency: { equals: toCurrency, mode: 'insensitive' },
+        },
+        select: { id: true, defaultNetwork: true },
+      }),
+    ]);
 
- private frequencyDays(frequency?: string): number {
-   if (frequency === 'WEEKLY') return 7;
-   if (frequency === 'MONTHLY') return 30;
-   return 1;
- }
+    if (!fromWallet || !toWallet) {
+      this.logger.error(`Missing wallet(s) for swap ${swapId}`);
+      return;
+    }
 
- private async processRegularSwap(
-   swapRecord: any,
-   data: SwapWebhookDataDto,
-   event: string,
- ): Promise<void> {
-   const swapId = data.id;
-   const userId = swapRecord.userId;
-   const fromCurrency = swapRecord.fromCurrency.toUpperCase();
-   const toCurrency = swapRecord.toCurrency.toUpperCase();
+    const fromNet = fromWallet.defaultNetwork as CryptoNetwork | undefined;
+    const toNet = toWallet.defaultNetwork as CryptoNetwork | undefined;
 
-   const [fromWallet, toWallet] = await Promise.all([
-     this.prisma.wallet.findFirst({
-       where: { userId, currency: { equals: fromCurrency, mode: 'insensitive' } },
-       select: { id: true, defaultNetwork: true },
-     }),
-     this.prisma.wallet.findFirst({
-       where: { userId, currency: { equals: toCurrency, mode: 'insensitive' } },
-       select: { id: true, defaultNetwork: true },
-     }),
-   ]);
+    let linkedTx = await this.prisma.transaction.findFirst({
+      where: {
+        transactionUniqueId: swapId,
+        transactionContext: TransactionContext.SWAP,
+        transactionType: TransactionType.DEBIT,
+        userId,
+      },
+      select: {
+        id: true,
+        cryptoAmountBase: true,
+        platformFeeBase: true,
+        paymentMetadata: true,
+        transactionContext: true,
+      },
+    });
 
-   if (!fromWallet || !toWallet) {
-     this.logger.error(`Missing wallet(s) for swap ${swapId}`);
-     return;
-   }
+    if (!linkedTx) {
+      linkedTx = await this.prisma.transaction.findFirst({
+        where: {
+          transactionContext: TransactionContext.AUTOSTACK,
+          transactionType: TransactionType.DEBIT,
+          transactionUniqueId: swapRecord.quoteId || undefined,
+          userId,
+        },
+        select: {
+          id: true,
+          cryptoAmountBase: true,
+          platformFeeBase: true,
+          paymentMetadata: true,
+          transactionContext: true,
+        },
+      });
+    }
 
-   const fromNet = fromWallet.defaultNetwork as CryptoNetwork | undefined;
-   const toNet = toWallet.defaultNetwork as CryptoNetwork | undefined;
+    const exactFromMinorBooked = linkedTx
+      ? toBigInt(linkedTx.cryptoAmountBase)
+      : ConvertCurrency.toBase(data.from_amount, fromCurrency, fromNet);
 
-   let linkedTx = await this.prisma.transaction.findFirst({
-     where: {
-       transactionUniqueId: swapId,
-       transactionContext: TransactionContext.SWAP,
-       transactionType: TransactionType.DEBIT,
-       userId,
-     },
-     select: { id: true, cryptoAmountBase: true, platformFeeBase: true, paymentMetadata: true, transactionContext: true },
-   });
+    const txFeeBase = linkedTx ? toBigInt(linkedTx.platformFeeBase ?? 0) : 0n;
 
-   if (!linkedTx) {
-     linkedTx = await this.prisma.transaction.findFirst({
-       where: {
-         transactionContext: TransactionContext.AUTOSTACK,
-         transactionType: TransactionType.DEBIT,
-         transactionUniqueId: swapRecord.quoteId || undefined,
-         userId,
-       },
-       select: { id: true, cryptoAmountBase: true, platformFeeBase: true, paymentMetadata: true, transactionContext: true },
-     });
-   }
+    const reservedAmount = linkedTx
+      ? toBigInt(linkedTx.cryptoAmountBase) + txFeeBase
+      : exactFromMinorBooked;
 
-   const exactFromMinorBooked = linkedTx
-     ? toBigInt(linkedTx.cryptoAmountBase)
-     : ConvertCurrency.toBase(data.from_amount, fromCurrency, fromNet);
+    if (
+      event === 'swap_transaction.reversed' ||
+      event === 'swap_transaction.failed'
+    ) {
+      await this.handleFailureOrReversal(
+        event,
+        swapId,
+        swapRecord.id,
+        userId,
+        fromCurrency,
+        toCurrency,
+        fromWallet.id,
+        linkedTx?.id ?? null,
+        reservedAmount,
+        exactFromMinorBooked,
+        data.from_amount,
+      );
 
-   const txFeeBase = linkedTx ? toBigInt(linkedTx.platformFeeBase ?? 0) : 0n;
+      await this.queueDashboard(
+        swapId,
+        userId,
+        toCurrency,
+        event,
+        data.updated_at,
+      );
+      return;
+    }
 
-   const reservedAmount = linkedTx
-     ? toBigInt(linkedTx.cryptoAmountBase) + txFeeBase
-     : exactFromMinorBooked;
+    // === SUCCESS PATH: Confirm with Quidax first (outside tx) ===
+    let confirmedFromAmount: string;
+    let confirmedToAmount: string;
+    let confirmedExecutionPrice: string;
 
-   if (
-     event === 'swap_transaction.reversed' ||
-     event === 'swap_transaction.failed'
-   ) {
-     await this.handleFailureOrReversal(
-       event,
-       swapId,
-       swapRecord.id,
-       userId,
-       fromCurrency,
-       toCurrency,
-       fromWallet.id,
-       linkedTx?.id ?? null,
-       reservedAmount,
-       exactFromMinorBooked,
-       data.from_amount,
-     );
+    try {
+      const quidaxRes = await this.quidaxSwapService.getSwapTransaction(
+        { user_id: QUIDAX_COMPANY_USERID, swap_transaction_id: swapId },
+        { skipCircuitBreaker: true },
+      );
 
-     await this.queueDashboard(swapId, userId, toCurrency, event, data.updated_at);
-     return;
-   }
+      const confirmed = quidaxRes?.data;
+      if (!confirmed?.id || confirmed.status !== 'completed') {
+        this.logger.warn(`Swap ${swapId} not yet completed on Quidax`);
+        return;
+      }
 
-   // === SUCCESS PATH: Confirm with Quidax first (outside tx) ===
-   let confirmedFromAmount: string;
-   let confirmedToAmount: string;
-   let confirmedExecutionPrice: string;
+      confirmedFromAmount = confirmed.from_amount;
+      confirmedToAmount = confirmed.received_amount;
+      confirmedExecutionPrice = confirmed.execution_price;
+    } catch (err: any) {
+      this.logger.error(`Failed to confirm swap ${swapId} with Quidax`, err);
+      throw err;
+    }
 
-   try {
-     const quidaxRes = await this.quidaxSwapService.getSwapTransaction(
-       { user_id: QUIDAX_COMPANY_USERID, swap_transaction_id: swapId },
-       { skipCircuitBreaker: true },
-     );
+    const confirmedFromBase = ConvertCurrency.toBase(
+      confirmedFromAmount,
+      fromCurrency,
+      fromNet,
+    );
+    const confirmedToBase = ConvertCurrency.toBase(
+      confirmedToAmount,
+      toCurrency,
+      toNet,
+    );
 
-     const confirmed = quidaxRes?.data;
-     if (!confirmed?.id || confirmed.status !== 'completed') {
-       this.logger.warn(`Swap ${swapId} not yet completed on Quidax`);
-       return;
-     }
+    // === Atomic Ledger Update ===
+    await this.prisma.$transaction(
+      async (tx) => {
+        const fromDec = toDecimal(confirmedFromBase);
+        const reservedDec = toDecimal(reservedAmount);
+        const liquidityReservedDec = toDecimal(exactFromMinorBooked);
+        const toDec = toDecimal(confirmedToBase);
 
-     confirmedFromAmount = confirmed.from_amount;
-     confirmedToAmount = confirmed.received_amount;
-     confirmedExecutionPrice = confirmed.execution_price;
-   } catch (err: any) {
-     this.logger.error(`Failed to confirm swap ${swapId} with Quidax`, err);
-     throw err;
-   }
-
-   const confirmedFromBase = ConvertCurrency.toBase(
-     confirmedFromAmount,
-     fromCurrency,
-     fromNet,
-   );
-   const confirmedToBase = ConvertCurrency.toBase(
-     confirmedToAmount,
-     toCurrency,
-     toNet,
-   );
-
-   // === Atomic Ledger Update ===
-   await this.prisma.$transaction(
-     async (tx) => {
-       const fromDec = toDecimal(confirmedFromBase);
-       const reservedDec = toDecimal(reservedAmount);
-       const liquidityReservedDec = toDecimal(exactFromMinorBooked);
-       const toDec = toDecimal(confirmedToBase);
-
-       // FROM wallet: deduct full reserved amount
-       await tx.$executeRaw`
+        // FROM wallet: deduct full reserved amount
+        await tx.$executeRaw`
          UPDATE "wallets"
          SET "baseBalance" = GREATEST("baseBalance" - ${reservedDec}, 0),
              "reservedBalance" = GREATEST("reservedBalance" - ${reservedDec}, 0)
          WHERE "id" = ${fromWallet.id}
        `;
 
-       // Company liquidity
-       await this.companyLiquidityService.updateInternalBalance(
-         fromCurrency.toLowerCase(),
-         liquidityReservedDec,
-         'subtract',
-         tx,
-       );
-       const toInternalAddDec = toDecimal(confirmedToBase + txFeeBase);
-       await this.companyLiquidityService.updateInternalBalance(
-         toCurrency.toLowerCase(),
-         toInternalAddDec,
-         'add',
-         tx,
-       );
+        // Company liquidity
+        await this.companyLiquidityService.updateInternalBalance(
+          fromCurrency.toLowerCase(),
+          liquidityReservedDec,
+          'subtract',
+          tx,
+        );
+        const toInternalAddDec = toDecimal(confirmedToBase + txFeeBase);
+        await this.companyLiquidityService.updateInternalBalance(
+          toCurrency.toLowerCase(),
+          toInternalAddDec,
+          'add',
+          tx,
+        );
 
-       if (linkedTx) {
-         await tx.transaction.update({
-           where: { id: linkedTx.id },
-           data: {
-             status: TransactionStatus.COMPLETED,
-             isProcessed: true,
-             fromCurrency,
-             toCurrency,
-             cryptoAmountBase: fromDec,
-             cryptoAmountOriginal: confirmedFromAmount,
-             executedCryptoAmountBase: fromDec,
-             executionPrice: confirmedExecutionPrice,
-             executedAt: data.updated_at
-               ? new Date(data.updated_at)
-               : new Date(),
-             description: `Swap completed: ${confirmedFromAmount} ${fromCurrency} → ${confirmedToAmount} ${toCurrency}`,
-           },
-         });
+        if (linkedTx) {
+          await tx.transaction.update({
+            where: { id: linkedTx.id },
+            data: {
+              status: TransactionStatus.COMPLETED,
+              isProcessed: true,
+              fromCurrency,
+              toCurrency,
+              cryptoAmountBase: fromDec,
+              cryptoAmountOriginal: confirmedFromAmount,
+              executedCryptoAmountBase: fromDec,
+              executionPrice: confirmedExecutionPrice,
+              executedAt: data.updated_at
+                ? new Date(data.updated_at)
+                : new Date(),
+              description: `Swap completed: ${confirmedFromAmount} ${fromCurrency} → ${confirmedToAmount} ${toCurrency}`,
+            },
+          });
 
-         const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
-         if (linkedTx.transactionContext === TransactionContext.AUTOSTACK && String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' && meta.autoStackId) {
-           const autoStack = await tx.autoStack.findUnique({ where: { id: String(meta.autoStackId) } });
-           const usdtWallet = await tx.wallet.findFirst({ where: { userId, currency: 'USDT' } });
-           if (autoStack && usdtWallet) {
-             const principal = toDecimal(confirmedToBase);
-             await tx.wallet.update({ where: { id: usdtWallet.id }, data: { reservedBalance: { decrement: principal }, stackedAmount: { increment: principal } } });
-             await tx.autoStack.update({ where: { id: autoStack.id }, data: { amount: { increment: principal }, lastExecutedAt: new Date() } });
-             await tx.transaction.update({ where: { id: linkedTx.id }, data: { paymentMetadata: { ...meta, autostackWebhookProcessedAt: new Date().toISOString(), autostackSettlement: 'swap_completed' } as Prisma.InputJsonValue } });
-           }
-         }
-       }
+          const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
+          if (
+            linkedTx.transactionContext === TransactionContext.AUTOSTACK &&
+            String(meta.paymentType || '').toUpperCase() ===
+              PaymentType.CRYPTO_WALLET &&
+            meta.autoStackId
+          ) {
+            const autoStack = await tx.autoStack.findUnique({
+              where: { id: String(meta.autoStackId) },
+            });
+            const usdtWallet = await tx.wallet.findFirst({
+              where: { userId, currency: 'USDT' },
+            });
+            if (autoStack && usdtWallet) {
+              const settledAt = data.updated_at
+                ? new Date(data.updated_at)
+                : new Date();
+              const principal = toDecimal(confirmedToBase);
+              const nextExecutionAt = new Date(settledAt);
+              if (autoStack.frequency === 'DAILY')
+                nextExecutionAt.setUTCDate(nextExecutionAt.getUTCDate() + 1);
+              if (autoStack.frequency === 'WEEKLY')
+                nextExecutionAt.setUTCDate(nextExecutionAt.getUTCDate() + 7);
+              if (autoStack.frequency === 'MONTHLY')
+                nextExecutionAt.setUTCMonth(nextExecutionAt.getUTCMonth() + 1);
+              const nextInterestAt = new Date(settledAt);
+              nextInterestAt.setUTCDate(
+                nextInterestAt.getUTCDate() +
+                  this.frequencyDays(String(autoStack.frequency)),
+              );
+              await tx.wallet.update({
+                where: { id: usdtWallet.id },
+                data: { stackedAmount: { increment: principal } },
+              });
+              await tx.autoStack.update({
+                where: { id: autoStack.id },
+                data: {
+                  amount:
+                    String(autoStack.status) === AutoStackStatus.PENDING
+                      ? principal
+                      : { increment: principal },
+                  lastExecutedAt: settledAt,
+                  nextExecutionAt,
+                  nextInterestAt,
+                  status: AutoStackStatus.ACTIVE,
+                },
+              });
+              // The received USDT is stacked for the user; the company only
+              // reserved/released source-currency liquidity for the swap and
+              // must not count the user's USDT as company-owned liquidity.
+              await this.companyLiquidityService.releaseLiquidity(
+                fromCurrency,
+                exactFromMinorBooked,
+                tx,
+              );
+              await tx.transaction.update({
+                where: { id: linkedTx.id },
+                data: {
+                  paymentMetadata: {
+                    ...meta,
+                    liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
+                    liquidityReleasedAt: new Date().toISOString(),
+                    liquidityReleaseReason: 'autostack_swap_completed',
+                    actualReceivedAmountBase: confirmedToBase.toString(),
+                    actualReceivedAmountOriginal: confirmedToAmount,
+                    principalUsdtAmountBase: confirmedToBase.toString(),
+                    principalUsdtAmount: confirmedToAmount,
+                    autostackWebhookProcessedAt: new Date().toISOString(),
+                    autostackInitiationStatus: 'COMPLETED',
+                    autostackSettlement: 'swap_completed',
+                  } as Prisma.InputJsonValue,
+                },
+              });
+            }
+          }
+        }
 
-       await tx.swapTransaction.update({
-         where: { id: swapRecord.id },
-         data: {
-           status: TransactionStatus.COMPLETED,
-           confirmed: true,
-           executionPriceOriginal: confirmedExecutionPrice,
-           receivedAmountOriginal: confirmedToAmount,
-           amountOriginal: confirmedFromAmount,
-           updatedAt: new Date(),
-         },
-       });
+        await tx.swapTransaction.update({
+          where: { id: swapRecord.id },
+          data: {
+            status: TransactionStatus.COMPLETED,
+            confirmed: true,
+            executionPriceOriginal: confirmedExecutionPrice,
+            receivedAmountOriginal: confirmedToAmount,
+            amountOriginal: confirmedFromAmount,
+            updatedAt: new Date(),
+          },
+        });
 
-       // Credit side transaction (idempotent)
-       const creditTxId = `${swapId}-credit`;
-       const existingCredit = await tx.transaction.findUnique({
-         where: { transactionUniqueId: creditTxId },
-       });
+        // Credit side transaction (idempotent)
+        const creditTxId = `${swapId}-credit`;
+        const existingCredit = await tx.transaction.findUnique({
+          where: { transactionUniqueId: creditTxId },
+        });
 
-       if (!existingCredit) {
-         await tx.transaction.create({
-           data: {
-             userId,
-             receiverWalletId: toWallet.id,
-             transactionUniqueId: creditTxId,
-             currency: toCurrency,
-             network: toNet || null,
-             transactionType: TransactionType.CREDIT,
-             transactionContext: TransactionContext.SWAP,
-             fromCurrency,
-             toCurrency,
-             cryptoAmountBase: toDec,
-             cryptoAmountOriginal: confirmedToAmount,
-             executedCryptoAmountBase: toDec,
-             executionPrice: confirmedExecutionPrice,
-             executedAt: data.updated_at
-               ? new Date(data.updated_at)
-               : new Date(),
-             fiatAmountBase: toDecimal(0n),
-             fiatAmountOriginal: '0',
-             description: `Swap received: ${confirmedToAmount} ${toCurrency}`,
-             status: TransactionStatus.COMPLETED,
-             isProcessed: true,
-           },
-         });
-       }
-       // Release from-currency reservation after successful provider swap
-       await this.companyLiquidityService.releaseLiquidity(
-         fromCurrency,
-         exactFromMinorBooked,
-         tx,
-       );
+        if (!existingCredit) {
+          await tx.transaction.create({
+            data: {
+              userId,
+              receiverWalletId: toWallet.id,
+              transactionUniqueId: creditTxId,
+              currency: toCurrency,
+              network: toNet || null,
+              transactionType: TransactionType.CREDIT,
+              transactionContext: TransactionContext.SWAP,
+              fromCurrency,
+              toCurrency,
+              cryptoAmountBase: toDec,
+              cryptoAmountOriginal: confirmedToAmount,
+              executedCryptoAmountBase: toDec,
+              executionPrice: confirmedExecutionPrice,
+              executedAt: data.updated_at
+                ? new Date(data.updated_at)
+                : new Date(),
+              fiatAmountBase: toDecimal(0n),
+              fiatAmountOriginal: '0',
+              description: `Swap received: ${confirmedToAmount} ${toCurrency}`,
+              status: TransactionStatus.COMPLETED,
+              isProcessed: true,
+            },
+          });
+        }
+        // Release from-currency reservation after successful provider swap.
+        // Autostack swaps release above when the stack is activated, so avoid
+        // releasing the same reservation twice.
+        const linkedMeta = (linkedTx?.paymentMetadata || {}) as Record<
+          string,
+          any
+        >;
+        const isAutoStackSwap =
+          linkedTx?.transactionContext === TransactionContext.AUTOSTACK &&
+          String(linkedMeta.paymentType || '').toUpperCase() ===
+            PaymentType.CRYPTO_WALLET &&
+          linkedMeta.autoStackId;
+        if (!isAutoStackSwap) {
+          await this.companyLiquidityService.releaseLiquidity(
+            fromCurrency,
+            exactFromMinorBooked,
+            tx,
+          );
+        }
 
-       // Update user's amountSent (NGN equivalent)
-       const swapNgnPrice = await this.tickerService.getPrice(
-         `${fromCurrency.toLowerCase()}ngn`,
-       );
-       let swapNgnDec = toDecimal(0n);
-       if (swapNgnPrice && parseFloat(swapNgnPrice) > 0) {
-         const swapNgnValue = new Decimal(swapNgnPrice).mul(
-           new Decimal(confirmedFromAmount),
-         );
-         const swapNgnBase = ConvertCurrency.toBase(
-           swapNgnValue.toFixed(2),
-           'ngn',
-         );
-         swapNgnDec = toDecimal(swapNgnBase);
-       }
+        // Update user's amountSent (NGN equivalent)
+        const swapNgnPrice = await this.tickerService.getPrice(
+          `${fromCurrency.toLowerCase()}ngn`,
+        );
+        let swapNgnDec = toDecimal(0n);
+        if (swapNgnPrice && new Decimal(swapNgnPrice).gt(0)) {
+          const swapNgnValue = new Decimal(swapNgnPrice).mul(
+            new Decimal(confirmedFromAmount),
+          );
+          const swapNgnBase = ConvertCurrency.toBase(
+            swapNgnValue.toFixed(2),
+            'ngn',
+          );
+          swapNgnDec = toDecimal(swapNgnBase);
+        }
 
-       await tx.$executeRaw`
+        await tx.$executeRaw`
          UPDATE "users"
          SET "amountSent" = "amountSent" + ${swapNgnDec}
          WHERE "id" = ${userId}
        `;
-     },
-     {
-       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-       maxWait: 5000,
-       timeout: 15000,
-     },
-   );
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 5000,
+        timeout: 15000,
+      },
+    );
 
-   this.logger.log(
-     `Swap ${swapId} completed: ${confirmedFromAmount} ${fromCurrency} → ${confirmedToAmount} ${toCurrency}`,
-   );
+    this.logger.log(
+      `Swap ${swapId} completed: ${confirmedFromAmount} ${fromCurrency} → ${confirmedToAmount} ${toCurrency}`,
+    );
 
-   // Notification (outside transaction)
-   if (linkedTx) {
-     try {
-       const completedTx = await this.prisma.transaction.findUnique({
-         where: { id: linkedTx.id },
-         select: {
-           id: true,
-           userId: true,
-           transactionUniqueId: true,
-           transactionContext: true,
-           status: true,
-           currency: true,
-           network: true,
-           cryptoAmountOriginal: true,
-           fiatAmountOriginal: true,
-           executedCryptoAmountBase: true,
-           executedFiatAmountBase: true,
-           executionPrice: true,
-           executedAt: true,
-           User: { select: { email: true, firstName: true } },
-           paymentMetadata: true,
-         },
-       });
+    // Notification (outside transaction)
+    if (linkedTx) {
+      try {
+        const completedTx = await this.prisma.transaction.findUnique({
+          where: { id: linkedTx.id },
+          select: {
+            id: true,
+            userId: true,
+            transactionUniqueId: true,
+            transactionContext: true,
+            status: true,
+            currency: true,
+            network: true,
+            cryptoAmountOriginal: true,
+            fiatAmountOriginal: true,
+            executedCryptoAmountBase: true,
+            executedFiatAmountBase: true,
+            executionPrice: true,
+            executedAt: true,
+            User: { select: { email: true, firstName: true } },
+            paymentMetadata: true,
+          },
+        });
 
-       if (completedTx) {
-         this.transactionNotificationService.sendTransactionStatusNotification(
-           completedTx,
-         );
-       }
-     } catch (e) {
-       this.logger.error(`Notification failed for swap ${swapId}`, e);
-     }
-   }
+        if (completedTx) {
+          this.transactionNotificationService.sendTransactionStatusNotification(
+            completedTx,
+          );
+        }
+      } catch (e) {
+        this.logger.error(`Notification failed for swap ${swapId}`, e);
+      }
+    }
 
-   await this.queueDashboard(
-     swapId,
-     userId,
-     toCurrency,
-     event,
-     data.updated_at,
-   );
- }
+    await this.queueDashboard(
+      swapId,
+      userId,
+      toCurrency,
+      event,
+      data.updated_at,
+    );
+  }
 
- // handleFailureOrReversal remains mostly the same but wrapped with Serializable
- private async handleFailureOrReversal(
-   event: string,
-   swapId: string,
-   swapRecordId: string,
-   userId: string,
-   fromCurrency: string,
-   toCurrency: string,
-   fromWalletId: string,
-   linkedTxId: string | null,
-   reservedAmount: bigint,
-   exactFromMinorBooked: bigint,
-   fromAmountStr: string,
- ): Promise<void> {
-   const isReversal = event === 'swap_transaction.reversed';
+  // handleFailureOrReversal remains mostly the same but wrapped with Serializable
+  private async handleFailureOrReversal(
+    event: string,
+    swapId: string,
+    swapRecordId: string,
+    userId: string,
+    fromCurrency: string,
+    toCurrency: string,
+    fromWalletId: string,
+    linkedTxId: string | null,
+    reservedAmount: bigint,
+    exactFromMinorBooked: bigint,
+    fromAmountStr: string,
+  ): Promise<void> {
+    const isReversal = event === 'swap_transaction.reversed';
 
-   await this.prisma.$transaction(
-     async (tx) => {
-       const reservedDec = toDecimal(reservedAmount);
+    await this.prisma.$transaction(
+      async (tx) => {
+        const reservedDec = toDecimal(reservedAmount);
 
-       await tx.$executeRaw`
+        await tx.$executeRaw`
          UPDATE "wallets"
          SET "reservedBalance" = GREATEST("reservedBalance" - ${reservedDec}, 0)
          WHERE "id" = ${fromWalletId}
        `;
 
-       await tx.swapTransaction.update({
-         where: { id: swapRecordId },
-         data: {
-           status: isReversal ? 'reversed' : TransactionStatus.FAILED,
-           confirmed: false,
-           updatedAt: new Date(),
-         },
-       });
+        await tx.swapTransaction.update({
+          where: { id: swapRecordId },
+          data: {
+            status: isReversal ? 'reversed' : TransactionStatus.FAILED,
+            confirmed: false,
+            updatedAt: new Date(),
+          },
+        });
 
-       if (linkedTxId) {
-         await tx.transaction.update({
-           where: { id: linkedTxId },
-           data: {
-             status: TransactionStatus.FAILED,
-             isProcessed: true,
-             executedAt: new Date(),
-             description: isReversal
-               ? `Swap reversed: ${fromAmountStr} ${fromCurrency} refunded`
-               : `Swap failed: ${fromAmountStr} ${fromCurrency} → ${toCurrency}`,
-           },
-         });
-       }
+        if (linkedTxId) {
+          const failedLinkedTx = await tx.transaction.findUnique({
+            where: { id: linkedTxId },
+            select: { paymentMetadata: true, transactionContext: true },
+          });
+          const failedMeta = (failedLinkedTx?.paymentMetadata || {}) as Record<
+            string,
+            any
+          >;
+          const isAutoStackFailure =
+            failedLinkedTx?.transactionContext === TransactionContext.AUTOSTACK;
 
-       await this.companyLiquidityService.releaseLiquidity(
-         fromCurrency,
-         exactFromMinorBooked,
-         tx,
-       );
-     },
-     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-   );
+          await tx.transaction.update({
+            where: { id: linkedTxId },
+            data: {
+              status: TransactionStatus.FAILED,
+              isProcessed: true,
+              executedAt: new Date(),
+              description: isReversal
+                ? `Swap reversed: ${fromAmountStr} ${fromCurrency} refunded`
+                : `Swap failed: ${fromAmountStr} ${fromCurrency} → ${toCurrency}`,
+              paymentMetadata: {
+                ...failedMeta,
+                ...(isAutoStackFailure
+                  ? {
+                      liquidityReservationStatus:
+                        LiquidityReservationStatus.RELEASED,
+                      liquidityReleasedAt: new Date().toISOString(),
+                      liquidityReleaseReason: isReversal
+                        ? 'autostack_swap_reversed'
+                        : 'autostack_swap_failed',
+                      autostackInitiationStatus: 'FAILED',
+                      autostackSettlement: isReversal
+                        ? 'swap_reversed'
+                        : 'swap_failed',
+                    }
+                  : {}),
+              } as Prisma.InputJsonValue,
+            },
+          });
+        }
 
-   this.logger.warn(
-     `Swap ${swapId} ${isReversal ? 'reversed' : 'failed'} — reservation released`,
-   );
- }
+        await this.companyLiquidityService.releaseLiquidity(
+          fromCurrency,
+          exactFromMinorBooked,
+          tx,
+        );
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
 
- private async queueDashboard(
-   swapId: string,
-   userId: string,
-   toCurrency: string,
-   event: string,
-   updatedAt?: string,
- ): Promise<void> {
-   const statusMap: Record<string, TransactionStatus> = {
-     'swap_transaction.completed': TransactionStatus.COMPLETED,
-     'swap_transaction.reversed': TransactionStatus.FAILED,
-     'swap_transaction.failed': TransactionStatus.FAILED,
-   };
+    this.logger.warn(
+      `Swap ${swapId} ${isReversal ? 'reversed' : 'failed'} — reservation released`,
+    );
+  }
 
-   try {
-     await this.dashboardStatsQueueService.queueTransactionUpdate({
-       id: swapId,
-       userId,
-       currency: toCurrency,
-       nairaAmountBase: '0',
-       status: statusMap[event] ?? TransactionStatus.PENDING,
-       createdAt: updatedAt || new Date().toISOString(),
-       transactionType:
-         event === 'swap_transaction.completed'
-           ? TransactionType.CREDIT
-           : TransactionType.DEBIT,
-       transactionContext: TransactionContext.SWAP,
-       senderWalletAddress: null,
-       receiverWalletAddress: null,
-       user: { firstName: null, lastName: null },
-     });
-   } catch (err: any) {
-     this.logger.error(
-       `Dashboard queue failed for swap ${swapId}: ${err.message}`,
-     );
-   }
+  private async queueDashboard(
+    swapId: string,
+    userId: string,
+    toCurrency: string,
+    event: string,
+    updatedAt?: string,
+  ): Promise<void> {
+    const statusMap: Record<string, TransactionStatus> = {
+      'swap_transaction.completed': TransactionStatus.COMPLETED,
+      'swap_transaction.reversed': TransactionStatus.FAILED,
+      'swap_transaction.failed': TransactionStatus.FAILED,
+    };
 
-   if (event === 'swap_transaction.completed') {
-     await this.transactionService.syncCompanyLiquidityCache();
-   }
- }
+    try {
+      await this.dashboardStatsQueueService.queueTransactionUpdate({
+        id: swapId,
+        userId,
+        currency: toCurrency,
+        nairaAmountBase: '0',
+        status: statusMap[event] ?? TransactionStatus.PENDING,
+        createdAt: updatedAt || new Date().toISOString(),
+        transactionType:
+          event === 'swap_transaction.completed'
+            ? TransactionType.CREDIT
+            : TransactionType.DEBIT,
+        transactionContext: TransactionContext.SWAP,
+        senderWalletAddress: null,
+        receiverWalletAddress: null,
+        user: { firstName: null, lastName: null },
+      });
+    } catch (err: any) {
+      this.logger.error(
+        `Dashboard queue failed for swap ${swapId}: ${err.message}`,
+      );
+    }
+
+    if (event === 'swap_transaction.completed') {
+      await this.transactionService.syncCompanyLiquidityCache();
+    }
+  }
 }
