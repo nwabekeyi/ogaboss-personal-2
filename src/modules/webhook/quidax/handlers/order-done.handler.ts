@@ -98,7 +98,6 @@ export class OrderDoneHandler {
         cryptoAmountBase: true,
         fiatAmountBase: true,
         platformFeeBase: true,
-        bufferAmountBase: true,
         transactionContext: true,
       },
     });
@@ -231,7 +230,7 @@ export class OrderDoneHandler {
       fiat,
     );
 
-    const executionPrice = Number(avgPriceStr);
+    const executionPrice = new Decimal(avgPriceStr);
     const executedAt = new Date(data.done_at ?? data.updated_at ?? Date.now());
 
     // ────────────────────────────────────────────────
@@ -578,7 +577,7 @@ export class OrderDoneHandler {
         const transfer = await this.paystackService.initiateTransfer(
           {
             source: 'balance',
-            amount: parseInt(String(transaction.fiatAmountBase ?? '0'), 10),
+            amount: String(transaction.fiatAmountBase ?? '0'),
             recipient: recipient.data.recipient_code,
             reason: `Sell payout ${transaction.id}`,
           },
@@ -709,7 +708,7 @@ export class OrderDoneHandler {
     ) {
       try {
         const providerResponse = await this.xpresspayService.payBill({
-          amount: Number(billingMeta.billAmountNgn),
+          amount: new Decimal(billingMeta.billAmountNgn || 0).toString(),
           category: billingMeta.category,
           billerCode: billingMeta.billerCode,
           customerReference: billingMeta.customerReference,

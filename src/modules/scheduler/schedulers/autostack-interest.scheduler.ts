@@ -89,44 +89,6 @@ export class AutoStackInterestScheduler {
       return this.autoStackService.initiateAutoStack(stack.id);
     }
 
-    const isDueDate = stack.nextInterestAt <= now;
-    if (isDueDate) {
-      await this.prisma.$transaction(async (tx) => {
-        const wallet = await tx.wallet.findFirst({
-          where: { userId: stack.userId, currency: 'USDT' },
-        });
-        if (!wallet)
-          throw new Error(`USDT wallet not found for autostack ${stack.id}`);
-
-        const principal = BigInt(stack.amount.toFixed(0));
-        const interestAccrued = BigInt(stack.accruedInterest.toFixed(0));
-        const payout = principal + interestAccrued;
-
-        await tx.$executeRaw`
-          UPDATE "wallets"
-          SET "baseBalance" = "baseBalance" + ${payout.toString()}::decimal,
-              "stackedAmount" = GREATEST("stackedAmount" - ${principal.toString()}::decimal, 0),
-              "totalStackedInterest" = GREATEST("totalStackedInterest" - ${interestAccrued.toString()}::decimal, 0)
-          WHERE "id" = ${wallet.id}
-        `;
-
-        await tx.autoStack.update({
-          where: { id: stack.id },
-          data: { status: 'ENDED' as any, endedAt: now, lastExecutedAt: now },
-        });
-
-        await tx.$executeRaw`
-          UPDATE "company_liquidity"
-          SET "totalAmountStacked" = GREATEST("totalAmountStacked" - ${principal.toString()}::decimal, 0),
-              "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${interestAccrued.toString()}::decimal, 0),
-              "totalStackedInterestPaid" = "totalStackedInterestPaid" + ${interestAccrued.toString()}::decimal,
-              "totalInterestPaid" = "totalInterestPaid" + ${interestAccrued.toString()}::decimal
-          WHERE "currency" = 'USDT'
-        `;
-      });
-      return;
-    }
-
     const setting = await this.prisma.autoStackingSettings.findFirst();
     const dailyRate = new Decimal(
       setting?.dailyInterestRatePercent?.toString() || '0',

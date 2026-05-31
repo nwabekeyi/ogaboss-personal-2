@@ -665,7 +665,7 @@ export class SwapTransactionHandler {
           `${fromCurrency.toLowerCase()}ngn`,
         );
         let swapNgnDec = toDecimal(0n);
-        if (swapNgnPrice && parseFloat(swapNgnPrice) > 0) {
+        if (swapNgnPrice && new Decimal(swapNgnPrice).gt(0)) {
           const swapNgnValue = new Decimal(swapNgnPrice).mul(
             new Decimal(confirmedFromAmount),
           );
