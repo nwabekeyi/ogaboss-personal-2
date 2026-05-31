@@ -141,7 +141,7 @@ export class OrderDoneHandler {
             this.logger.warn(
               `Transaction ${transaction.id} already processed (race guard)`,
             );
-            return;
+            return false;
           }
 
           await tx.transaction.update({
@@ -246,7 +246,7 @@ export class OrderDoneHandler {
     if (isBuy) {
       let buyProcessed = false;
       try {
-        await this.prisma.$transaction(async (tx) => {
+        buyProcessed = await this.prisma.$transaction(async (tx) => {
           // Re-check status inside transaction to prevent TOCTOU race
           await tx.$queryRaw`
             SELECT "id" FROM "transactions"
@@ -264,7 +264,7 @@ export class OrderDoneHandler {
             this.logger.warn(
               `Transaction ${transaction.id} already processed (race guard)`,
             );
-            return;
+            return false;
           }
 
           await tx.transaction.update({
@@ -432,11 +432,9 @@ export class OrderDoneHandler {
               }
             }
 
-            await tx.$executeRaw`
-              UPDATE "company_liquidity"
-              SET "totalAmountStacked" = "totalAmountStacked" + ${cryptoDec}
-              WHERE LOWER("currency") = LOWER('USDT')
-            `;
+            // Card-backed Autostack releases the reserved NGN liquidity above;
+            // the purchased USDT belongs to the user's stacked balance, not the
+            // company's USDT liquidity pool.
           } else {
             // Atomic baseBalance credit
             const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
@@ -462,8 +460,8 @@ export class OrderDoneHandler {
           }
 
           // Update company internal balance only for regular wallet credits.
-          // Autostack buy settlement moves the purchased USDT into stacked
-          // balance and tracks it through totalAmountStacked instead.
+          // Autostack card settlement stacks purchased USDT for the user and
+          // releases the NGN reservation; company USDT liquidity is unchanged.
           if (transaction.transactionContext !== TransactionContext.AUTOSTACK) {
             await this.companyLiquidityService.updateInternalBalance(
               crypto,
@@ -473,7 +471,7 @@ export class OrderDoneHandler {
             );
           }
 
-          buyProcessed = true;
+          return true;
         });
       } catch (error: any) {
         if (isTransientPrismaError(error)) {
@@ -503,7 +501,8 @@ export class OrderDoneHandler {
               isProcessed: true,
               paymentMetadata: {
                 ...paymentMetadata,
-                orderDoneFailure: error?.message || 'order.done processing failed',
+                orderDoneFailure:
+                  error?.message || 'order.done processing failed',
                 orderDoneFailedAt: new Date().toISOString(),
               } as Prisma.InputJsonValue,
             },

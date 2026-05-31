@@ -515,7 +515,8 @@ export class SwapTransactionHandler {
           const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
           if (
             linkedTx.transactionContext === TransactionContext.AUTOSTACK &&
-            String(meta.paymentType || '').toUpperCase() === PaymentType.CRYPTO_WALLET &&
+            String(meta.paymentType || '').toUpperCase() ===
+              PaymentType.CRYPTO_WALLET &&
             meta.autoStackId
           ) {
             const autoStack = await tx.autoStack.findUnique({

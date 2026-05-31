@@ -319,6 +319,14 @@ export class AutoStackService {
             paymentType === PaymentType.CRYPTO_WALLET
               ? sourceAmountOriginal
               : principalUsdtOriginal,
+          totalAmountSentBase:
+            paymentType === PaymentType.CRYPTO_WALLET
+              ? sourceAmountMinor.toString()
+              : principalUsdtMinor.toString(),
+          totalAmountSentOriginal:
+            paymentType === PaymentType.CRYPTO_WALLET
+              ? sourceAmountOriginal
+              : principalUsdtOriginal,
           fiatAmountBase: '0',
           fiatAmountOriginal: '0',
           transactionType: TransactionType.DEBIT,
@@ -521,6 +529,14 @@ export class AutoStackService {
             paymentType === PaymentType.CRYPTO_WALLET
               ? sourceAmountOriginal
               : principalUsdtOriginal,
+          totalAmountSentBase:
+            paymentType === PaymentType.CRYPTO_WALLET
+              ? sourceAmountBase
+              : principalUsdtBase,
+          totalAmountSentOriginal:
+            paymentType === PaymentType.CRYPTO_WALLET
+              ? sourceAmountOriginal
+              : principalUsdtOriginal,
           fiatAmountBase: '0',
           fiatAmountOriginal: '0',
           transactionType: TransactionType.DEBIT,
@@ -612,7 +628,7 @@ export class AutoStackService {
     meta = processingLock.metadata;
 
     const paymentType =
-      meta.paymentType === 'CRYPTO_WALLET'
+      meta.paymentType === PaymentType.CRYPTO_WALLET
         ? PaymentType.CRYPTO_WALLET
         : PaymentType.CARD;
     const sourceAsset = String(
@@ -718,7 +734,7 @@ export class AutoStackService {
                 amount: isInitialExecution
                   ? sourceAmountBase.toString()
                   : { increment: sourceAmountBase.toString() },
-                status: 'ACTIVE' as any,
+                status: AutoStackStatus.ACTIVE as any,
                 lastExecutedAt: now,
                 nextExecutionAt: this.getNextExecutionAt(stack, now),
                 nextInterestAt: this.getInterestDate(stack, now),
@@ -1091,7 +1107,11 @@ export class AutoStackService {
 
   async unlock(userId: string, dto: EndAutoStackDto) {
     const stack = await this.prisma.autoStack.findFirst({
-      where: { id: dto.autoStackId, userId, status: 'ACTIVE' as any },
+      where: {
+        id: dto.autoStackId,
+        userId,
+        status: AutoStackStatus.ACTIVE as any,
+      },
     });
     if (!stack) throw new NotFoundException('Active autostack not found');
     if (!dto.pin) throw new BadRequestException('PIN is required');
