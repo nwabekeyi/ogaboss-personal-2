@@ -422,7 +422,7 @@ export class OrderDoneHandler {
             await tx.$executeRaw`
               UPDATE "company_liquidity"
               SET "totalAmountStacked" = "totalAmountStacked" + ${cryptoDec}
-              WHERE LOWER("currency") = LOWER(${crypto})
+              WHERE LOWER("currency") = LOWER('USDT')
             `;
           } else {
             // Atomic baseBalance credit
@@ -792,23 +792,6 @@ export class OrderDoneHandler {
       );
     }
 
-    if (
-      isBuy &&
-      transaction.transactionContext === TransactionContext.AUTOSTACK
-    ) {
-      const meta = (paymentMetadata || {}) as Record<string, any>;
-      if (
-        String(meta.paymentType || '').toUpperCase() !== 'CRYPTO_WALLET' &&
-        meta.autoStackId
-      ) {
-        await this.prisma.autoStack
-          .update({
-            where: { id: String(meta.autoStackId) },
-            data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any },
-          })
-          .catch(() => undefined);
-      }
-    }
 
     // Only queue dashboard stats for buy (completed immediately).
     // Sell stats are queued in handleTransferSuccess when NGN is sent.
