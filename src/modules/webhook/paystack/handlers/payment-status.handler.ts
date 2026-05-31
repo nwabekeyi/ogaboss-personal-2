@@ -204,18 +204,6 @@ export class PaystackWebhookHandler {
   ): Promise<void> {
     const companyUserId = QUIDAX_COMPANY_USERID;
     const meta = (transaction.paymentMetadata || {}) as Record<string, any>;
-    if (meta?.mode === 'AUTOSTACK_PERIODIC') {
-      await this.prisma.transaction.update({
-        where: { id: transaction.id },
-        data: {
-          paymentMetadata: {
-            ...meta,
-            ...data,
-            autostackWebhookProcessedAt: new Date().toISOString(),
-          } as Prisma.InputJsonValue,
-        },
-      });
-    }
     if (transaction.transactionContext === TransactionContext.AUTOSTACK) {
       const handled = await this.handleAutoStackSuccess(
         transaction,
@@ -309,6 +297,7 @@ export class PaystackWebhookHandler {
             quidaxOrderStatus: 'failed',
             lastQuidaxError: response?.message ?? 'order placement failed',
             buyOrderStatus: 'failed_pending_resolution',
+            autostackPaystackWebhookProcessing: false,
           } as Prisma.InputJsonValue,
         },
       });
@@ -370,6 +359,8 @@ export class PaystackWebhookHandler {
             quidaxOrderReference: providerReference,
             quidaxOrderId: response.data.id,
             quidaxOrderProcessing: false,
+            autostackPaystackWebhookProcessing: false,
+            autostackBuyOrderSubmittedAt: new Date().toISOString(),
           } as Prisma.InputJsonValue,
         },
       });
@@ -385,23 +376,56 @@ export class PaystackWebhookHandler {
     data: any,
     meta: Record<string, any>,
   ): Promise<boolean> {
-    await this.prisma.transaction.update({
-      where: { id: transaction.id },
-      data: {
-        paymentMetadata: {
-          ...(transaction.paymentMetadata || {}),
-          ...data,
-          ...meta,
-          autostackFlow: 'BUY_ORDER',
-          autostackBuyOrderRequestedAt: new Date().toISOString(),
-        } as Prisma.InputJsonValue,
-      },
+    let alreadyHandled = false;
+    await this.prisma.$transaction(async (tx) => {
+      const fresh = await tx.transaction.findUnique({
+        where: { id: transaction.id },
+        select: { paymentMetadata: true },
+      });
+      const currentMeta = (fresh?.paymentMetadata || meta || {}) as Record<
+        string,
+        any
+      >;
+
+      const buyOrderRequestedAt = currentMeta.autostackBuyOrderRequestedAt
+        ? new Date(String(currentMeta.autostackBuyOrderRequestedAt))
+        : null;
+      const hasFreshAutostackProcessing = Boolean(
+        currentMeta.autostackPaystackWebhookProcessing &&
+          buyOrderRequestedAt &&
+          Date.now() - buyOrderRequestedAt.getTime() < 15 * 60 * 1000,
+      );
+
+      if (
+        hasFreshAutostackProcessing ||
+        currentMeta.quidaxOrderProcessing ||
+        currentMeta.quidaxOrderReference ||
+        currentMeta.quidaxOrderId ||
+        currentMeta.autostackBuyOrderSubmittedAt
+      ) {
+        alreadyHandled = true;
+        return;
+      }
+
+      await tx.transaction.update({
+        where: { id: transaction.id },
+        data: {
+          paymentMetadata: {
+            ...currentMeta,
+            ...data,
+            ...meta,
+            autostackFlow: 'BUY_ORDER',
+            autostackPaystackWebhookProcessing: true,
+            autostackBuyOrderRequestedAt: new Date().toISOString(),
+          } as Prisma.InputJsonValue,
+        },
+      });
     });
 
     // Autostack card payments are settled through the normal Quidax BUY order
     // path so order.done can stack the purchased USDT and release the reserved
     // Paystack/NGN liquidity.
-    return false;
+    return alreadyHandled;
   }
 
   private async compensateFailedBuyOrder(

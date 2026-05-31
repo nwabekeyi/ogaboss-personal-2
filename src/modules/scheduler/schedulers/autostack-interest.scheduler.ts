@@ -83,7 +83,8 @@ export class AutoStackInterestScheduler {
     if (!stack || !['PENDING', 'ACTIVE'].includes(stackStatus)) return;
 
     const now = new Date();
-    if (stack.nextExecutionAt > now) return;
+    if (!this.autoStackService.isExecutionDue(stack.nextExecutionAt, now))
+      return;
 
     if (stackStatus === 'PENDING') {
       return this.autoStackService.initiateAutoStack(stack.id);
@@ -129,6 +130,33 @@ export class AutoStackInterestScheduler {
       `;
     });
 
-    await this.autoStackService.initiateAutoStack(stack.id, { force: true });
+    try {
+      await this.autoStackService.initiateAutoStack(stack.id, { force: true });
+    } catch (error) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.autoStack.update({
+          where: { id: stack.id },
+          data: {
+            accruedInterest: { decrement: interest.toString() },
+            nextInterestAt: stack.nextInterestAt,
+          },
+        });
+        const wallet = await tx.wallet.findFirst({
+          where: { userId: stack.userId, currency: 'USDT' },
+        });
+        if (wallet) {
+          await tx.wallet.update({
+            where: { id: wallet.id },
+            data: { totalStackedInterest: { decrement: interest.toString() } },
+          });
+        }
+        await tx.$executeRaw`
+          UPDATE "company_liquidity"
+          SET "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${interest.toString()}::decimal, 0)
+          WHERE "currency" = 'USDT'
+        `;
+      });
+      throw error;
+    }
   }
 }

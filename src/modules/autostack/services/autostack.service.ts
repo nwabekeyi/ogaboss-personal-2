@@ -46,21 +46,12 @@ import {
 
 @Injectable()
 export class AutoStackService {
-  private toBaseUnits(amount: Decimal.Value, decimals: number): bigint {
-    return BigInt(
-      new Decimal(amount)
-        .mul(new Decimal(10).pow(decimals))
-        .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
-        .toFixed(0),
-    );
-  }
-
   private toUsdtBase(amount: Decimal.Value): bigint {
-    return this.toBaseUnits(amount, 6);
+    return ConvertCurrency.toBase(new Decimal(amount).toString(), 'USDT', 6);
   }
 
   private toNgnBase(amount: Decimal.Value): bigint {
-    return this.toBaseUnits(amount, 2);
+    return ConvertCurrency.toBase(new Decimal(amount).toString(), 'NGN', 2);
   }
 
   constructor(
@@ -354,7 +345,9 @@ export class AutoStackService {
     });
 
     const now = new Date();
-    if (nextExecutionAt <= now || this.isSameUtcDate(nextExecutionAt, now)) {
+    if (
+      this.isExecutionDue(nextExecutionAt, now, { includeSameUtcDate: true })
+    ) {
       await this.initiateAutoStack(autoStack.id, { force: true });
       return {
         success: true,
@@ -405,6 +398,17 @@ export class AutoStackService {
     );
   }
 
+  isExecutionDue(
+    nextExecutionAt: Date,
+    now: Date = new Date(),
+    options: { includeSameUtcDate?: boolean } = {},
+  ): boolean {
+    if (nextExecutionAt <= now) return true;
+    return Boolean(
+      options.includeSameUtcDate && this.isSameUtcDate(nextExecutionAt, now),
+    );
+  }
+
   async initiateAutoStack(
     autoStackId: string,
     options: { force?: boolean } = {},
@@ -416,7 +420,8 @@ export class AutoStackService {
     if (!stack || !['PENDING', 'ACTIVE'].includes(stackStatus)) return;
 
     const now = new Date();
-    if (!options.force && stack.nextExecutionAt > now) return;
+    if (!options.force && !this.isExecutionDue(stack.nextExecutionAt, now))
+      return;
 
     const configTx = await this.prisma.transaction.findFirst({
       where: {
@@ -473,7 +478,7 @@ export class AutoStackService {
     const principalUsdtOriginal = String(
       configMeta.principalUsdtAmount ||
         configTx.cryptoAmountOriginal ||
-        ConvertCurrency.fromBase(BigInt(principalUsdtBase), 'USDT'),
+        ConvertCurrency.fromBase(BigInt(principalUsdtBase), 'USDT', 6),
     );
     let sourceAmountOriginal = principalUsdtOriginal;
     let sourceAmountBase = principalUsdtBase;
@@ -555,18 +560,51 @@ export class AutoStackService {
     meta: Record<string, any>,
     now: Date,
   ) {
-    const initiationStatus = String(
-      meta.autostackInitiationStatus || '',
-    ).toUpperCase();
-    if (['SUBMITTED', 'COMPLETED'].includes(initiationStatus)) return;
-    if (initiationStatus === 'PROCESSING') {
-      const initiatedAt = meta.autostackInitiatedAt
-        ? new Date(String(meta.autostackInitiatedAt))
-        : null;
-      const isFreshProcessing =
-        initiatedAt && now.getTime() - initiatedAt.getTime() < 15 * 60 * 1000;
-      if (isFreshProcessing) return;
-    }
+    const processingLock = await this.prisma.$transaction(async (tx) => {
+      const fresh = await tx.transaction.findUnique({
+        where: { id: configTx.id },
+        select: { paymentMetadata: true },
+      });
+      const freshMeta = (fresh?.paymentMetadata || meta || {}) as Record<
+        string,
+        any
+      >;
+      const initiationStatus = String(
+        freshMeta.autostackInitiationStatus || '',
+      ).toUpperCase();
+
+      if (['SUBMITTED', 'COMPLETED'].includes(initiationStatus)) {
+        return { shouldProceed: false, metadata: freshMeta };
+      }
+
+      if (initiationStatus === 'PROCESSING') {
+        const initiatedAt = freshMeta.autostackInitiatedAt
+          ? new Date(String(freshMeta.autostackInitiatedAt))
+          : null;
+        const isFreshProcessing =
+          initiatedAt && now.getTime() - initiatedAt.getTime() < 15 * 60 * 1000;
+        if (isFreshProcessing) {
+          return { shouldProceed: false, metadata: freshMeta };
+        }
+      }
+
+      const processingMetadata = {
+        ...freshMeta,
+        autostackInitiationStatus: 'PROCESSING',
+        autostackInitiatedAt: now.toISOString(),
+      };
+      await tx.transaction.update({
+        where: { id: configTx.id },
+        data: {
+          paymentMetadata: processingMetadata as Prisma.InputJsonValue,
+        },
+      });
+
+      return { shouldProceed: true, metadata: processingMetadata };
+    });
+
+    if (!processingLock.shouldProceed) return;
+    meta = processingLock.metadata;
 
     const paymentType =
       meta.paymentType === 'CRYPTO_WALLET'
@@ -584,7 +622,7 @@ export class AutoStackService {
     const principalUsdtOriginal = String(
       meta.principalUsdtAmount ||
         configTx.cryptoAmountOriginal ||
-        ConvertCurrency.fromBase(principalUsdtBase, 'USDT'),
+        ConvertCurrency.fromBase(principalUsdtBase, 'USDT', 6),
     );
     const sourceAmountBase = BigInt(
       String(
@@ -596,11 +634,7 @@ export class AutoStackService {
         configTx.cryptoAmountOriginal ||
         principalUsdtOriginal,
     );
-    const processingMetadata = {
-      ...meta,
-      autostackInitiationStatus: 'PROCESSING',
-      autostackInitiatedAt: now.toISOString(),
-    };
+    const processingMetadata = meta;
 
     try {
       if (paymentType === PaymentType.CRYPTO_WALLET) {
@@ -693,6 +727,18 @@ export class AutoStackService {
                 executedAt: now,
                 paymentMetadata: {
                   ...processingMetadata,
+                  actualReceivedAmountBase: sourceAmountBase.toString(),
+                  actualReceivedAmountOriginal: ConvertCurrency.fromBase(
+                    sourceAmountBase,
+                    'USDT',
+                    6,
+                  ),
+                  principalUsdtAmountBase: sourceAmountBase.toString(),
+                  principalUsdtAmount: ConvertCurrency.fromBase(
+                    sourceAmountBase,
+                    'USDT',
+                    6,
+                  ),
                   autostackInitiationStatus: 'COMPLETED',
                   autostackSettlement: 'wallet_completed',
                 } as Prisma.InputJsonValue,
@@ -919,9 +965,11 @@ export class AutoStackService {
                 `${symbol.toLowerCase()}ngn`,
               )) || '0';
         const rate = new Decimal(ngnRate || '0');
-        const amountMajor = new Decimal(item.amount.toString()).div(1_000_000);
-        const interestMajor = new Decimal(item.accruedInterest.toString()).div(
-          1_000_000,
+        const amountMajor = new Decimal(
+          ConvertCurrency.fromBase(item.amount, 'USDT', 6),
+        );
+        const interestMajor = new Decimal(
+          ConvertCurrency.fromBase(item.accruedInterest, 'USDT', 6),
         );
         const amountNgn = amountMajor.mul(rate);
         const interestNgn = interestMajor.mul(rate);

@@ -312,6 +312,12 @@ export class OrderDoneHandler {
                       LiquidityReservationStatus.RELEASED,
                     liquidityReleasedAt: new Date().toISOString(),
                     liquidityReleaseReason: 'autostack_order_done_buy',
+                    actualReceivedAmountBase:
+                      executedCryptoAmountBase.toString(),
+                    actualReceivedAmountOriginal: executedVolumeStr,
+                    principalUsdtAmountBase:
+                      executedCryptoAmountBase.toString(),
+                    principalUsdtAmount: executedVolumeStr,
                     autostackInitiationStatus: 'COMPLETED',
                     autostackSettlement: 'buy_order_completed',
                   } as Prisma.InputJsonValue,
