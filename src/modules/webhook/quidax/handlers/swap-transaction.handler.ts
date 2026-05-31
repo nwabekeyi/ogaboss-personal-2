@@ -242,6 +242,13 @@ export class SwapTransactionHandler {
           },
         });
 
+        await this.companyLiquidityService.updateInternalBalance(
+          'USDT',
+          toDecimal(receivedUsdtMinor),
+          'add',
+          tx,
+        );
+
         await this.companyLiquidityService.releaseLiquidity(
           'USDT',
           expectedUsdtMinor,
@@ -559,9 +566,12 @@ export class SwapTransactionHandler {
                   status: AutoStackStatus.ACTIVE,
                 },
               });
-              // The received USDT is stacked for the user; the company only
-              // reserved/released source-currency liquidity for the swap and
-              // must not count the user's USDT as company-owned liquidity.
+              await this.companyLiquidityService.updateInternalBalance(
+                toCurrency,
+                principal,
+                'add',
+                tx,
+              );
               await this.companyLiquidityService.releaseLiquidity(
                 fromCurrency,
                 exactFromMinorBooked,

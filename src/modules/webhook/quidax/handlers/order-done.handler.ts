@@ -432,9 +432,12 @@ export class OrderDoneHandler {
               }
             }
 
-            // Card-backed Autostack releases the reserved NGN liquidity above;
-            // the purchased USDT belongs to the user's stacked balance, not the
-            // company's USDT liquidity pool.
+            await this.companyLiquidityService.updateInternalBalance(
+              crypto,
+              cryptoDec,
+              'add',
+              tx,
+            );
           } else {
             // Atomic baseBalance credit
             const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
@@ -459,9 +462,6 @@ export class OrderDoneHandler {
             `;
           }
 
-          // Update company internal balance only for regular wallet credits.
-          // Autostack card settlement stacks purchased USDT for the user and
-          // releases the NGN reservation; company USDT liquidity is unchanged.
           if (transaction.transactionContext !== TransactionContext.AUTOSTACK) {
             await this.companyLiquidityService.updateInternalBalance(
               crypto,
