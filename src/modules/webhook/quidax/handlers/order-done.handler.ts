@@ -792,7 +792,6 @@ export class OrderDoneHandler {
       );
     }
 
-
     // Only queue dashboard stats for buy (completed immediately).
     // Sell stats are queued in handleTransferSuccess when NGN is sent.
     if (isBuy) {

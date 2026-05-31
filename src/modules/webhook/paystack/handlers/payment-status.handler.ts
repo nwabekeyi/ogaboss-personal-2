@@ -229,6 +229,11 @@ export class PaystackWebhookHandler {
     let currentMetadata: Record<string, any> = {};
 
     await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "transactions"
+        WHERE "id" = ${transaction.id}
+        FOR UPDATE
+      `;
       const fresh = await tx.transaction.findUnique({
         where: { id: transaction.id },
         select: { paymentMetadata: true, status: true },
@@ -378,6 +383,11 @@ export class PaystackWebhookHandler {
   ): Promise<boolean> {
     let alreadyHandled = false;
     await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "transactions"
+        WHERE "id" = ${transaction.id}
+        FOR UPDATE
+      `;
       const fresh = await tx.transaction.findUnique({
         where: { id: transaction.id },
         select: { paymentMetadata: true },

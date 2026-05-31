@@ -561,6 +561,11 @@ export class AutoStackService {
     now: Date,
   ) {
     const processingLock = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "transactions"
+        WHERE "id" = ${configTx.id}
+        FOR UPDATE
+      `;
       const fresh = await tx.transaction.findUnique({
         where: { id: configTx.id },
         select: { paymentMetadata: true },
