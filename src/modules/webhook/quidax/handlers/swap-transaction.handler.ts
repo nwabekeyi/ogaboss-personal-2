@@ -559,11 +559,9 @@ export class SwapTransactionHandler {
                   status: AutoStackStatus.ACTIVE,
                 },
               });
-              await tx.$executeRaw`
-               UPDATE "company_liquidity"
-               SET "totalAmountStacked" = "totalAmountStacked" + ${principal}
-               WHERE LOWER("currency") = LOWER('USDT')
-             `;
+              // The received USDT is stacked for the user; the company only
+              // reserved/released source-currency liquidity for the swap and
+              // must not count the user's USDT as company-owned liquidity.
               await this.companyLiquidityService.releaseLiquidity(
                 fromCurrency,
                 exactFromMinorBooked,
@@ -768,6 +766,17 @@ export class SwapTransactionHandler {
         });
 
         if (linkedTxId) {
+          const failedLinkedTx = await tx.transaction.findUnique({
+            where: { id: linkedTxId },
+            select: { paymentMetadata: true, transactionContext: true },
+          });
+          const failedMeta = (failedLinkedTx?.paymentMetadata || {}) as Record<
+            string,
+            any
+          >;
+          const isAutoStackFailure =
+            failedLinkedTx?.transactionContext === TransactionContext.AUTOSTACK;
+
           await tx.transaction.update({
             where: { id: linkedTxId },
             data: {
@@ -777,6 +786,23 @@ export class SwapTransactionHandler {
               description: isReversal
                 ? `Swap reversed: ${fromAmountStr} ${fromCurrency} refunded`
                 : `Swap failed: ${fromAmountStr} ${fromCurrency} → ${toCurrency}`,
+              paymentMetadata: {
+                ...failedMeta,
+                ...(isAutoStackFailure
+                  ? {
+                      liquidityReservationStatus:
+                        LiquidityReservationStatus.RELEASED,
+                      liquidityReleasedAt: new Date().toISOString(),
+                      liquidityReleaseReason: isReversal
+                        ? 'autostack_swap_reversed'
+                        : 'autostack_swap_failed',
+                      autostackInitiationStatus: 'FAILED',
+                      autostackSettlement: isReversal
+                        ? 'swap_reversed'
+                        : 'swap_failed',
+                    }
+                  : {}),
+              } as Prisma.InputJsonValue,
             },
           });
         }
