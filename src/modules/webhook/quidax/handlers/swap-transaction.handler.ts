@@ -269,11 +269,25 @@ export class SwapTransactionHandler {
           tx,
         );
 
-        await this.companyLiquidityService.releaseLiquidity(
-          'USDT',
-          expectedUsdtMinor,
-          tx,
-        );
+        const usdtLiquidity = await tx.companyLiquidity.findFirst({
+          where: { currency: { equals: 'USDT', mode: 'insensitive' } },
+          select: { reservedBalance: true },
+        });
+        const reservedUsdt = usdtLiquidity
+          ? toBigInt(usdtLiquidity.reservedBalance)
+          : 0n;
+
+        if (reservedUsdt >= expectedUsdtMinor) {
+          await this.companyLiquidityService.releaseLiquidity(
+            'USDT',
+            expectedUsdtMinor,
+            tx,
+          );
+        } else {
+          this.logger.warn(
+            `Skipping vault ${vaultId} USDT liquidity release: reserved ${reservedUsdt} < expected ${expectedUsdtMinor}`,
+          );
+        }
 
         // Update company liquidity: USDT vault principal + interest are now locked
         const totalGainMinor = BigInt(vault.totalGain.toFixed(0));
@@ -543,6 +557,19 @@ export class SwapTransactionHandler {
             PaymentType.CRYPTO_WALLET &&
           linkedMeta.autoStackId;
 
+        if (
+          isAutoStackSwap &&
+          (linkedMeta.autostackWebhookProcessedAt ||
+            linkedMeta.autostackSettlement === 'swap_completed' ||
+            linkedMeta.liquidityReservationStatus ===
+              LiquidityReservationStatus.RELEASED)
+        ) {
+          this.logger.warn(
+            `Autostack swap ${swapRecord.id} already settled for stack ${linkedMeta.autoStackId} — skipping`,
+          );
+          return false;
+        }
+
         // FROM wallet: deduct full reserved amount
         await tx.$executeRaw`
          UPDATE "wallets"
@@ -705,7 +732,7 @@ export class SwapTransactionHandler {
           where: { transactionUniqueId: creditTxId },
         });
 
-        if (!existingCredit) {
+        if (!isAutoStackSwap && !existingCredit) {
           await tx.transaction.create({
             data: {
               userId,
