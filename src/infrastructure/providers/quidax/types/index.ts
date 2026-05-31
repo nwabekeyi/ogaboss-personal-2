@@ -278,8 +278,8 @@ export interface SellOrBuyOrderRequestOptions {
     market: TradingPair;
     side: "buy" | "sell"; //Defaults to buy
     ord_type: "limit" | "market"; //Defaults to limit
-    price?: number; //Required if ord_type is limit. It should be left blank for market ord_type. default: 68000
-    volume: number; //Defaults to 0.1
+    price?: number | string; //Required if ord_type is limit. It should be left blank for market ord_type. default: 68000
+    volume: number | string; //Defaults to 0.1
 }
 
 export type SellOrBuyOrderRequestResponse = IOrder;

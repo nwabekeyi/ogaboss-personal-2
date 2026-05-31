@@ -22,6 +22,7 @@ import { QueueService } from '../../infrastructure/bullMQ/bullmq.service';
 import { AutoStackInterestScheduler } from './schedulers/autostack-interest.scheduler';
 import { SchedulerJobsWorker } from './schedulers/scheduler-jobs.worker';
 import { SchedulerExecutionStateService } from './scheduler-execution-state.service';
+import { AutoStackModule } from '../autostack/autostack.module';
 
 @Module({
   imports: [
@@ -30,7 +31,8 @@ import { SchedulerExecutionStateService } from './scheduler-execution-state.serv
     PaystackModule,
     TransactionModule,
     WebhooksModule,
-    BullModule
+    AutoStackModule,
+    BullModule,
   ],
   providers: [
     SchedulerService,
