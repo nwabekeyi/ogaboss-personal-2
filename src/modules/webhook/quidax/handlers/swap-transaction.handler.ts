@@ -166,11 +166,25 @@ export class SwapTransactionHandler {
             data: { status: 'TERMINATED' as any },
           });
 
-          await this.companyLiquidityService.releaseLiquidity(
-            'USDT',
-            expectedUsdtMinor,
-            tx,
-          );
+          const usdtLiquidity = await tx.companyLiquidity.findFirst({
+            where: { currency: { equals: 'USDT', mode: 'insensitive' } },
+            select: { reservedBalance: true },
+          });
+          const reservedUsdt = usdtLiquidity
+            ? toBigInt(usdtLiquidity.reservedBalance)
+            : 0n;
+
+          if (reservedUsdt >= expectedUsdtMinor) {
+            await this.companyLiquidityService.releaseLiquidity(
+              'USDT',
+              expectedUsdtMinor,
+              tx,
+            );
+          } else {
+            this.logger.warn(
+              `Skipping vault ${vaultId} USDT liquidity release: reserved ${reservedUsdt} < expected ${expectedUsdtMinor}`,
+            );
+          }
 
           if (linkedTx) {
             await tx.transaction.update({
@@ -225,6 +239,13 @@ export class SwapTransactionHandler {
            "originalBalance" = ${newBtcOriginalBalance}
          WHERE "id" = ${btcWallet.id}
        `;
+
+        await this.companyLiquidityService.updateInternalBalance(
+          'BTC',
+          toDecimal(totalBtcChargeMinor),
+          'subtract',
+          tx,
+        );
 
         // USDT: credit surplus to base, principal to locked
         const newUsdtBase =
@@ -470,12 +491,58 @@ export class SwapTransactionHandler {
     );
 
     // === Atomic Ledger Update ===
-    await this.prisma.$transaction(
+    const processed = await this.prisma.$transaction(
       async (tx) => {
+        const [freshSwap] = await tx.$queryRaw<{ status: string }[]>`
+          SELECT "status"
+          FROM "swaptransactions"
+          WHERE "id" = ${swapRecord.id}
+          FOR UPDATE
+        `;
+
+        if (!freshSwap) {
+          this.logger.warn(`Swap ${swapRecord.id} disappeared during processing`);
+          return false;
+        }
+
+        if (TERMINAL.has(freshSwap.status as any)) {
+          this.logger.warn(
+            `Swap ${swapRecord.id} already terminal (${freshSwap.status}) during locked processing — skipping`,
+          );
+          return false;
+        }
+
+        if (linkedTx) {
+          const [freshLinkedTx] = await tx.$queryRaw<{ status: TransactionStatus }[]>`
+            SELECT "status"
+            FROM "transactions"
+            WHERE "id" = ${linkedTx.id}
+            FOR UPDATE
+          `;
+
+          if (
+            freshLinkedTx?.status === TransactionStatus.COMPLETED ||
+            freshLinkedTx?.status === TransactionStatus.FAILED
+          ) {
+            this.logger.warn(
+              `Linked transaction ${linkedTx.id} already ${freshLinkedTx.status} during locked swap processing — skipping`,
+            );
+            return false;
+          }
+        }
+
         const fromDec = toDecimal(confirmedFromBase);
         const reservedDec = toDecimal(reservedAmount);
-        const liquidityReservedDec = toDecimal(exactFromMinorBooked);
         const toDec = toDecimal(confirmedToBase);
+        const linkedMeta = (linkedTx?.paymentMetadata || {}) as Record<
+          string,
+          any
+        >;
+        const isAutoStackSwap =
+          linkedTx?.transactionContext === TransactionContext.AUTOSTACK &&
+          String(linkedMeta.paymentType || '').toUpperCase() ===
+            PaymentType.CRYPTO_WALLET &&
+          linkedMeta.autoStackId;
 
         // FROM wallet: deduct full reserved amount
         await tx.$executeRaw`
@@ -485,20 +552,42 @@ export class SwapTransactionHandler {
          WHERE "id" = ${fromWallet.id}
        `;
 
-        // Company liquidity
         await this.companyLiquidityService.updateInternalBalance(
           fromCurrency.toLowerCase(),
-          liquidityReservedDec,
+          reservedDec,
           'subtract',
           tx,
         );
-        const toInternalAddDec = toDecimal(confirmedToBase + txFeeBase);
-        await this.companyLiquidityService.updateInternalBalance(
-          toCurrency.toLowerCase(),
-          toInternalAddDec,
-          'add',
-          tx,
-        );
+
+        if (!isAutoStackSwap) {
+          const [{ baseBalance: newToBaseStr }] = await tx.$queryRaw<
+            { baseBalance: string }[]
+          >`
+            UPDATE "wallets"
+            SET "baseBalance" = "baseBalance" + ${toDec}
+            WHERE "id" = ${toWallet.id}
+            RETURNING "baseBalance"
+          `;
+
+          const newToOriginalBalance = ConvertCurrency.fromBase(
+            BigInt(String(newToBaseStr)),
+            toCurrency,
+            toNet,
+          );
+
+          await tx.$executeRaw`
+            UPDATE "wallets"
+            SET "originalBalance" = ${newToOriginalBalance}
+            WHERE "id" = ${toWallet.id}
+          `;
+
+          await this.companyLiquidityService.updateInternalBalance(
+            toCurrency.toLowerCase(),
+            toDec,
+            'add',
+            tx,
+          );
+        }
 
         if (linkedTx) {
           await tx.transaction.update({
@@ -647,15 +736,6 @@ export class SwapTransactionHandler {
         // Release from-currency reservation after successful provider swap.
         // Autostack swaps release above when the stack is activated, so avoid
         // releasing the same reservation twice.
-        const linkedMeta = (linkedTx?.paymentMetadata || {}) as Record<
-          string,
-          any
-        >;
-        const isAutoStackSwap =
-          linkedTx?.transactionContext === TransactionContext.AUTOSTACK &&
-          String(linkedMeta.paymentType || '').toUpperCase() ===
-            PaymentType.CRYPTO_WALLET &&
-          linkedMeta.autoStackId;
         if (!isAutoStackSwap) {
           await this.companyLiquidityService.releaseLiquidity(
             fromCurrency,
@@ -685,6 +765,8 @@ export class SwapTransactionHandler {
          SET "amountSent" = "amountSent" + ${swapNgnDec}
          WHERE "id" = ${userId}
        `;
+
+        return true;
       },
       {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -692,6 +774,10 @@ export class SwapTransactionHandler {
         timeout: 15000,
       },
     );
+
+    if (!processed) {
+      return;
+    }
 
     this.logger.log(
       `Swap ${swapId} completed: ${confirmedFromAmount} ${fromCurrency} → ${confirmedToAmount} ${toCurrency}`,
