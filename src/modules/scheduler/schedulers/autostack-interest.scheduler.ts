@@ -106,7 +106,20 @@ export class AutoStackInterestScheduler {
         .toFixed(0),
     );
 
+    await this.autoStackService.initiateAutoStack(stack.id, { force: true });
+
     await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "auto_stacks"
+        WHERE "id" = ${stack.id}
+        FOR UPDATE
+      `;
+      const freshStack = await tx.autoStack.findUnique({
+        where: { id: stack.id },
+        select: { nextInterestAt: true },
+      });
+      if (!freshStack || freshStack.nextInterestAt > now) return;
+
       await tx.autoStack.update({
         where: { id: stack.id },
         data: {
@@ -129,34 +142,5 @@ export class AutoStackInterestScheduler {
         WHERE "currency" = 'USDT'
       `;
     });
-
-    try {
-      await this.autoStackService.initiateAutoStack(stack.id, { force: true });
-    } catch (error) {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.autoStack.update({
-          where: { id: stack.id },
-          data: {
-            accruedInterest: { decrement: interest.toString() },
-            nextInterestAt: stack.nextInterestAt,
-          },
-        });
-        const wallet = await tx.wallet.findFirst({
-          where: { userId: stack.userId, currency: 'USDT' },
-        });
-        if (wallet) {
-          await tx.wallet.update({
-            where: { id: wallet.id },
-            data: { totalStackedInterest: { decrement: interest.toString() } },
-          });
-        }
-        await tx.$executeRaw`
-          UPDATE "company_liquidity"
-          SET "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${interest.toString()}::decimal, 0)
-          WHERE "currency" = 'USDT'
-        `;
-      });
-      throw error;
-    }
   }
 }
