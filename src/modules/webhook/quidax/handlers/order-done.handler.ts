@@ -6,6 +6,8 @@ import {
   TransactionType,
   OrderStatus,
   PaymentStatus,
+  AutoStackStatus,
+  PaymentType,
 } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import {
@@ -42,7 +44,6 @@ export class OrderDoneHandler {
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly xpresspayService: XpresspayService,
   ) {}
-
 
   private frequencyDays(frequency?: string): number {
     if (frequency === 'WEEKLY') return 7;
@@ -99,7 +100,6 @@ export class OrderDoneHandler {
         cryptoAmountBase: true,
         fiatAmountBase: true,
         platformFeeBase: true,
-        bufferAmountBase: true,
         transactionContext: true,
       },
     });
@@ -125,6 +125,11 @@ export class OrderDoneHandler {
       try {
         await this.prisma.$transaction(async (tx) => {
           // Re-check status inside transaction to prevent TOCTOU race
+          await tx.$queryRaw`
+            SELECT "id" FROM "transactions"
+            WHERE "id" = ${transaction.id}
+            FOR UPDATE
+          `;
           const freshTx = await tx.transaction.findUnique({
             where: { id: transaction.id },
             select: { status: true },
@@ -136,7 +141,7 @@ export class OrderDoneHandler {
             this.logger.warn(
               `Transaction ${transaction.id} already processed (race guard)`,
             );
-            return;
+            return false;
           }
 
           await tx.transaction.update({
@@ -232,16 +237,22 @@ export class OrderDoneHandler {
       fiat,
     );
 
-    const executionPrice = Number(avgPriceStr);
+    const executionPrice = new Decimal(avgPriceStr);
     const executedAt = new Date(data.done_at ?? data.updated_at ?? Date.now());
 
     // ────────────────────────────────────────────────
     // BUY FLOW
     // ────────────────────────────────────────────────
     if (isBuy) {
+      let buyProcessed = false;
       try {
-        await this.prisma.$transaction(async (tx) => {
+        buyProcessed = await this.prisma.$transaction(async (tx) => {
           // Re-check status inside transaction to prevent TOCTOU race
+          await tx.$queryRaw`
+            SELECT "id" FROM "transactions"
+            WHERE "id" = ${transaction.id}
+            FOR UPDATE
+          `;
           const freshTx = await tx.transaction.findUnique({
             where: { id: transaction.id },
             select: { status: true },
@@ -253,7 +264,7 @@ export class OrderDoneHandler {
             this.logger.warn(
               `Transaction ${transaction.id} already processed (race guard)`,
             );
-            return;
+            return false;
           }
 
           await tx.transaction.update({
@@ -292,34 +303,69 @@ export class OrderDoneHandler {
             reservedLiquidityAmount > 0n &&
             liquidityReservationStatus === LiquidityReservationStatus.RESERVED
           ) {
-            // Company spent NGN on Quidax — consume from both reserved and total
-            const consumed =
-              await this.companyLiquidityService.consumeReservedLiquidity(
+            const isAutoStackCardBuy =
+              transaction.transactionContext === TransactionContext.AUTOSTACK &&
+              String(
+                paymentMetadata.paymentType || transaction.paymentType || '',
+              ).toUpperCase() !== PaymentType.CRYPTO_WALLET;
+
+            if (isAutoStackCardBuy) {
+              await this.companyLiquidityService.releaseLiquidity(
                 fiat,
                 reservedLiquidityAmount,
                 tx,
               );
-            if (!consumed) {
-              this.logger.error(
-                `Order ${order.id}: consumeReservedLiquidity failed for ${fiat} — reserved or total balance insufficient`,
-              );
-              throw new Error(
-                `Company liquidity consumption failed for order ${order.id}`,
-              );
-            }
 
-            await tx.transaction.update({
-              where: { id: transaction.id },
-              data: {
-                paymentMetadata: {
-                  ...paymentMetadata,
-                  liquidityReservationStatus:
-                    LiquidityReservationStatus.CONSUMED,
-                  liquidityConsumedAt: new Date().toISOString(),
-                  liquidityConsumedReason: 'quidax_order_done_buy',
-                } as Prisma.InputJsonValue,
-              },
-            });
+              await tx.transaction.update({
+                where: { id: transaction.id },
+                data: {
+                  paymentMetadata: {
+                    ...paymentMetadata,
+                    liquidityReservationStatus:
+                      LiquidityReservationStatus.RELEASED,
+                    liquidityReleasedAt: new Date().toISOString(),
+                    liquidityReleaseReason: 'autostack_order_done_buy',
+                    actualReceivedAmountBase:
+                      executedCryptoAmountBase.toString(),
+                    actualReceivedAmountOriginal: executedVolumeStr,
+                    principalUsdtAmountBase:
+                      executedCryptoAmountBase.toString(),
+                    principalUsdtAmount: executedVolumeStr,
+                    autostackInitiationStatus: 'COMPLETED',
+                    autostackSettlement: 'buy_order_completed',
+                  } as Prisma.InputJsonValue,
+                },
+              });
+            } else {
+              // Company spent NGN on Quidax — consume from both reserved and total
+              const consumed =
+                await this.companyLiquidityService.consumeReservedLiquidity(
+                  fiat,
+                  reservedLiquidityAmount,
+                  tx,
+                );
+              if (!consumed) {
+                this.logger.error(
+                  `Order ${order.id}: consumeReservedLiquidity failed for ${fiat} — reserved or total balance insufficient`,
+                );
+                throw new Error(
+                  `Company liquidity consumption failed for order ${order.id}`,
+                );
+              }
+
+              await tx.transaction.update({
+                where: { id: transaction.id },
+                data: {
+                  paymentMetadata: {
+                    ...paymentMetadata,
+                    liquidityReservationStatus:
+                      LiquidityReservationStatus.CONSUMED,
+                    liquidityConsumedAt: new Date().toISOString(),
+                    liquidityConsumedReason: 'quidax_order_done_buy',
+                  } as Prisma.InputJsonValue,
+                },
+              });
+            }
           }
 
           let wallet = null;
@@ -347,10 +393,48 @@ export class OrderDoneHandler {
           if (transaction.transactionContext === TransactionContext.AUTOSTACK) {
             await tx.$executeRaw`
               UPDATE "wallets"
-              SET "reservedBalance" = GREATEST("reservedBalance" - ${cryptoDec}, 0),
-                  "stackedAmount" = "stackedAmount" + ${cryptoDec}
+              SET "stackedAmount" = "stackedAmount" + ${cryptoDec}
               WHERE "id" = ${wallet.id}
             `;
+
+            if (paymentMetadata.autoStackId) {
+              const autoStack = await tx.autoStack.findUnique({
+                where: { id: String(paymentMetadata.autoStackId) },
+              });
+              if (autoStack) {
+                const nextExecutionAt = new Date(executedAt);
+                if (autoStack.frequency === 'DAILY')
+                  nextExecutionAt.setUTCDate(nextExecutionAt.getUTCDate() + 1);
+                if (autoStack.frequency === 'WEEKLY')
+                  nextExecutionAt.setUTCDate(nextExecutionAt.getUTCDate() + 7);
+                if (autoStack.frequency === 'MONTHLY')
+                  nextExecutionAt.setUTCMonth(
+                    nextExecutionAt.getUTCMonth() + 1,
+                  );
+                const nextInterestAt = new Date(executedAt);
+                nextInterestAt.setUTCDate(
+                  nextInterestAt.getUTCDate() +
+                    this.frequencyDays(String(autoStack.frequency)),
+                );
+                await tx.autoStack.update({
+                  where: { id: autoStack.id },
+                  data: {
+                    amount:
+                      String(autoStack.status) === AutoStackStatus.PENDING
+                        ? cryptoDec
+                        : { increment: cryptoDec },
+                    status: AutoStackStatus.ACTIVE,
+                    lastExecutedAt: executedAt,
+                    nextExecutionAt,
+                    nextInterestAt,
+                  },
+                });
+              }
+            }
+
+            // Card-backed Autostack releases the reserved NGN liquidity above;
+            // the purchased USDT belongs to the user's stacked balance, not the
+            // company's USDT liquidity pool.
           } else {
             // Atomic baseBalance credit
             const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
@@ -375,13 +459,19 @@ export class OrderDoneHandler {
             `;
           }
 
-          // Update company internal balance (user wallet was credited)
-          await this.companyLiquidityService.updateInternalBalance(
-            crypto,
-            cryptoDec,
-            'add',
-            tx,
-          );
+          // Update company internal balance only for regular wallet credits.
+          // Autostack card settlement stacks purchased USDT for the user and
+          // releases the NGN reservation; company USDT liquidity is unchanged.
+          if (transaction.transactionContext !== TransactionContext.AUTOSTACK) {
+            await this.companyLiquidityService.updateInternalBalance(
+              crypto,
+              cryptoDec,
+              'add',
+              tx,
+            );
+          }
+
+          return true;
         });
       } catch (error: any) {
         if (isTransientPrismaError(error)) {
@@ -394,8 +484,44 @@ export class OrderDoneHandler {
           `Failed to process buy order ${order.id}: ${error?.message}`,
           error?.stack,
         );
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              status: OrderStatus.FAILED,
+              paymentStatus: PaymentStatus.FAILED,
+              gatewayResponse: JSON.stringify({ error: error?.message, data }),
+            },
+          });
+          await tx.transaction.update({
+            where: { id: transaction.id },
+            data: {
+              status: TransactionStatus.FAILED,
+              isProcessed: true,
+              paymentMetadata: {
+                ...paymentMetadata,
+                orderDoneFailure:
+                  error?.message || 'order.done processing failed',
+                orderDoneFailedAt: new Date().toISOString(),
+              } as Prisma.InputJsonValue,
+            },
+          });
+          if (
+            reservedLiquidityAmount > 0n &&
+            liquidityReservationStatus === LiquidityReservationStatus.RESERVED
+          ) {
+            await this.companyLiquidityService.releaseLiquidity(
+              fiat,
+              reservedLiquidityAmount,
+              tx,
+            );
+          }
+        });
         return;
       }
+
+      if (!buyProcessed) return;
     }
 
     // ────────────────────────────────────────────────
@@ -510,7 +636,7 @@ export class OrderDoneHandler {
         const transfer = await this.paystackService.initiateTransfer(
           {
             source: 'balance',
-            amount: parseInt(String(transaction.fiatAmountBase ?? '0'), 10),
+            amount: String(transaction.fiatAmountBase ?? '0'),
             recipient: recipient.data.recipient_code,
             reason: `Sell payout ${transaction.id}`,
           },
@@ -559,7 +685,9 @@ export class OrderDoneHandler {
         });
       } catch (payoutError: any) {
         const retryCount = (paymentMetadata.payoutRetryCount || 0) + 1;
-        this.logger.error(`Payout failed for sell order ${order.id}: ${payoutError?.message}. Queue retry will handle retries.`);
+        this.logger.error(
+          `Payout failed for sell order ${order.id}: ${payoutError?.message}. Queue retry will handle retries.`,
+        );
 
         await this.prisma.$transaction(async (tx) => {
           // Release reserved balance (un-locks the crypto amount)
@@ -628,13 +756,18 @@ export class OrderDoneHandler {
     // Common final step — notification + dashboard stats
     // ────────────────────────────────────────────────
 
-
     // Billing hook: if this SELL belongs to bills flow, trigger xpress payment here
-    const billingMeta = (transaction.paymentMetadata || {}) as Record<string, any>;
-    if (billingMeta.billingFlow === true && billingMeta.billingStatus === 'PROCESSING') {
+    const billingMeta = (transaction.paymentMetadata || {}) as Record<
+      string,
+      any
+    >;
+    if (
+      billingMeta.billingFlow === true &&
+      billingMeta.billingStatus === 'PROCESSING'
+    ) {
       try {
         const providerResponse = await this.xpresspayService.payBill({
-          amount: Number(billingMeta.billAmountNgn),
+          amount: new Decimal(billingMeta.billAmountNgn || 0).toString(),
           category: billingMeta.category,
           billerCode: billingMeta.billerCode,
           customerReference: billingMeta.customerReference,
@@ -643,18 +776,37 @@ export class OrderDoneHandler {
         });
 
         await this.prisma.$transaction([
-          this.prisma.transaction.update({ where: { id: transaction.id }, data: {
-            paymentMetadata: { ...billingMeta, billingStatus: 'PROCESSING', xpresspayResponse: providerResponse } as any,
-          } }),
-          this.prisma.billPayment.updateMany({ where: { transactionId: transaction.id }, data: { status: 'PROCESSING', providerResponse } }),
+          this.prisma.transaction.update({
+            where: { id: transaction.id },
+            data: {
+              paymentMetadata: {
+                ...billingMeta,
+                billingStatus: 'PROCESSING',
+                xpresspayResponse: providerResponse,
+              } as any,
+            },
+          }),
+          this.prisma.billPayment.updateMany({
+            where: { transactionId: transaction.id },
+            data: { status: 'PROCESSING', providerResponse },
+          }),
         ]);
       } catch (billingErr) {
         await this.prisma.$transaction([
-          this.prisma.transaction.update({ where: { id: transaction.id }, data: {
-            paymentMetadata: { ...billingMeta, billingStatus: 'FAILED' } as any,
-            status: TransactionStatus.FAILED,
-          } }),
-          this.prisma.billPayment.updateMany({ where: { transactionId: transaction.id }, data: { status: 'FAILED' } }),
+          this.prisma.transaction.update({
+            where: { id: transaction.id },
+            data: {
+              paymentMetadata: {
+                ...billingMeta,
+                billingStatus: 'FAILED',
+              } as any,
+              status: TransactionStatus.FAILED,
+            },
+          }),
+          this.prisma.billPayment.updateMany({
+            where: { transactionId: transaction.id },
+            data: { status: 'FAILED' },
+          }),
         ]);
       }
     }
@@ -691,13 +843,6 @@ export class OrderDoneHandler {
       this.logger.error(
         `Failed to send notification for order ${order.id}: ${error?.message}`,
       );
-    }
-
-    if (isBuy && transaction.transactionContext === TransactionContext.AUTOSTACK) {
-      const meta = (paymentMetadata || {}) as Record<string, any>;
-      if (String(meta.paymentType || '').toUpperCase() !== 'CRYPTO_WALLET' && meta.autoStackId) {
-        await this.prisma.autoStack.update({ where: { id: String(meta.autoStackId) }, data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any } }).catch(() => undefined);
-      }
     }
 
     // Only queue dashboard stats for buy (completed immediately).
