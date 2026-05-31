@@ -105,7 +105,7 @@ export class PaystackWebhookHandler {
         transaction.status === TransactionStatus.FAILED
       ) {
         this.logger.warn(`Transaction ${reference} already processed`);
-        return true;
+        return;
       }
 
       const verification = await this.paystackService.verifyTransaction(
@@ -173,12 +173,12 @@ export class PaystackWebhookHandler {
           );
         }
       }
-      return true;
+      return;
     }
 
     if (payload.event === 'transfer.success') {
       await this.handleTransferSuccess(data?.reference, data);
-      return true;
+      return;
     }
 
     if (
@@ -186,7 +186,7 @@ export class PaystackWebhookHandler {
       payload.event === 'transfer.reversed'
     ) {
       await this.handleTransferFailure(data?.reference, data, payload.event);
-      return true;
+      return;
     }
 
     // Unknown / unhandled event
@@ -533,7 +533,7 @@ export class PaystackWebhookHandler {
       this.logger.warn(
         `Refund already completed for transaction ${transaction.id}`,
       );
-      return true;
+      return;
     }
 
     try {
@@ -714,7 +714,7 @@ export class PaystackWebhookHandler {
       this.logger.warn(
         `Sell payout order not found for transfer reference ${reference}`,
       );
-      return true;
+      return;
     }
 
     const transaction = await this.prisma.transaction.findUnique({
@@ -746,7 +746,7 @@ export class PaystackWebhookHandler {
       this.logger.error(
         `Sell payout ${transaction.id}: no valid amount to deduct — cannot process`,
       );
-      return true;
+      return;
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -902,7 +902,7 @@ export class PaystackWebhookHandler {
       this.logger.warn(
         `Sell payout order not found for transfer reference ${reference}`,
       );
-      return true;
+      return;
     }
 
     const transaction = await this.prisma.transaction.findUnique({

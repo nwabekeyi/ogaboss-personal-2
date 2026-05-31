@@ -17,7 +17,7 @@ export class InternalBalanceScheduler implements OnModuleInit {
     await this.calculateInternalBalances();
   }
 
-  @Cron('30 0 * * *') // Staggered: 00:30
+  @Cron('0 */2 * * *')
   async calculateInternalBalances() {
     this.logger.log('Starting internal balance calculation...');
 
