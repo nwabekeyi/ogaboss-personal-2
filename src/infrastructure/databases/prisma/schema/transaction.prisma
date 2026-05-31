@@ -47,6 +47,7 @@ model Transaction {
   @@index([receiverWalletAddress])
   @@index([platformWalletAddress])
   @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, description, createdAt(sort: Desc)])
   @@index([createdAt, status])
   @@index([userId, status])
   @@map("transactions")

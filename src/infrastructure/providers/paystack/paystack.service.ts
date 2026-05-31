@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { HttpService } from '../../../infrastructure/httpService/httpService.service';
 import {
   PaystackTransactionResponse,
@@ -48,7 +49,7 @@ export class PaystackService {
   async initializePayment(
     data: {
       email: string;
-      amount: number;
+      amount: number | string;
       reference: string;
       currency?: string;
       callback_url?: string;
@@ -122,7 +123,7 @@ export class PaystackService {
   async initiateTransfer(
     data: {
       source: 'balance' | 'bank';
-      amount: number;
+      amount: number | string;
       recipient: string;
       reason: string;
     },
@@ -160,13 +161,14 @@ export class PaystackService {
       metadata = {},
     }: {
       paymentCardId: string;
-      amount: number;
+      amount: number | string;
       reference: string;
       metadata?: Record<string, any>;
     },
     opts?: { skipCircuitBreaker?: boolean },
   ): Promise<PaystackChargeSavedCardResponse> {
-    if (amount > this.paystackLimit) {
+    const chargeAmount = new Decimal(amount.toString());
+    if (chargeAmount.gt(this.paystackLimit)) {
       throw new BadRequestException('transactionn amount is too large');
     }
 
