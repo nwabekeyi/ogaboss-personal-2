@@ -5,12 +5,15 @@ import {
   TransactionStatus,
   TransactionType,
   VaultStatus,
+  AutoStackStatus,
+  PaymentType,
 } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
 import {
   ConvertCurrency,
   CryptoNetwork,
   toBigInt,
   toDecimal,
+  LiquidityReservationStatus,
 } from '../../../../shared';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import { CompanyLiquidityService } from '../../../../modules/transaction/services/company-liquidity.service';
@@ -266,7 +269,7 @@ export class SwapTransactionHandler {
         await tx.vault.update({
           where: { id: vaultId },
           data: {
-            status: 'ACTIVE' as any,
+            status: VaultStatus.ACTIVE,
             currencyId: usdtCrypto?.id,
             amountLocked: toDecimal(expectedUsdtMinor),
             ...(rateDecimal && { rate: rateDecimal }),
@@ -282,18 +285,6 @@ export class SwapTransactionHandler {
               executedAt: new Date(),
               description: `Vault funded via BTC swap: ${data.from_amount} BTC → ${data.received_amount} USDT`,
             },
-          });
-        }
-
-        const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
-        if (
-          linkedTx.transactionContext === TransactionContext.AUTOSTACK &&
-          String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' &&
-          meta.autoStackId
-        ) {
-          await tx.autoStack.update({
-            where: { id: String(meta.autoStackId) },
-            data: { lastExecutedAt: new Date(), status: 'ACTIVE' as any },
           });
         }
         await tx.swapTransaction.update({
@@ -524,7 +515,7 @@ export class SwapTransactionHandler {
           const meta = (linkedTx.paymentMetadata || {}) as Record<string, any>;
           if (
             linkedTx.transactionContext === TransactionContext.AUTOSTACK &&
-            String(meta.paymentType || '').toUpperCase() === 'CRYPTO_WALLET' &&
+            String(meta.paymentType || '').toUpperCase() === PaymentType.CRYPTO_WALLET &&
             meta.autoStackId
           ) {
             const autoStack = await tx.autoStack.findUnique({
@@ -558,13 +549,13 @@ export class SwapTransactionHandler {
                 where: { id: autoStack.id },
                 data: {
                   amount:
-                    String(autoStack.status) === 'PENDING'
+                    String(autoStack.status) === AutoStackStatus.PENDING
                       ? principal
                       : { increment: principal },
                   lastExecutedAt: settledAt,
                   nextExecutionAt,
                   nextInterestAt,
-                  status: 'ACTIVE' as any,
+                  status: AutoStackStatus.ACTIVE,
                 },
               });
               await tx.$executeRaw`
@@ -582,7 +573,7 @@ export class SwapTransactionHandler {
                 data: {
                   paymentMetadata: {
                     ...meta,
-                    liquidityReservationStatus: 'released',
+                    liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
                     liquidityReleasedAt: new Date().toISOString(),
                     liquidityReleaseReason: 'autostack_swap_completed',
                     actualReceivedAmountBase: confirmedToBase.toString(),
@@ -654,7 +645,7 @@ export class SwapTransactionHandler {
         const isAutoStackSwap =
           linkedTx?.transactionContext === TransactionContext.AUTOSTACK &&
           String(linkedMeta.paymentType || '').toUpperCase() ===
-            'CRYPTO_WALLET' &&
+            PaymentType.CRYPTO_WALLET &&
           linkedMeta.autoStackId;
         if (!isAutoStackSwap) {
           await this.companyLiquidityService.releaseLiquidity(

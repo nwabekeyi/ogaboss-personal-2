@@ -6,6 +6,8 @@ import {
   TransactionType,
   OrderStatus,
   PaymentStatus,
+  AutoStackStatus,
+  PaymentType,
 } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import {
@@ -123,6 +125,11 @@ export class OrderDoneHandler {
       try {
         await this.prisma.$transaction(async (tx) => {
           // Re-check status inside transaction to prevent TOCTOU race
+          await tx.$queryRaw`
+            SELECT "id" FROM "transactions"
+            WHERE "id" = ${transaction.id}
+            FOR UPDATE
+          `;
           const freshTx = await tx.transaction.findUnique({
             where: { id: transaction.id },
             select: { status: true },
@@ -237,9 +244,15 @@ export class OrderDoneHandler {
     // BUY FLOW
     // ────────────────────────────────────────────────
     if (isBuy) {
+      let buyProcessed = false;
       try {
         await this.prisma.$transaction(async (tx) => {
           // Re-check status inside transaction to prevent TOCTOU race
+          await tx.$queryRaw`
+            SELECT "id" FROM "transactions"
+            WHERE "id" = ${transaction.id}
+            FOR UPDATE
+          `;
           const freshTx = await tx.transaction.findUnique({
             where: { id: transaction.id },
             select: { status: true },
@@ -294,7 +307,7 @@ export class OrderDoneHandler {
               transaction.transactionContext === TransactionContext.AUTOSTACK &&
               String(
                 paymentMetadata.paymentType || transaction.paymentType || '',
-              ).toUpperCase() !== 'CRYPTO_WALLET';
+              ).toUpperCase() !== PaymentType.CRYPTO_WALLET;
 
             if (isAutoStackCardBuy) {
               await this.companyLiquidityService.releaseLiquidity(
@@ -407,10 +420,10 @@ export class OrderDoneHandler {
                   where: { id: autoStack.id },
                   data: {
                     amount:
-                      String(autoStack.status) === 'PENDING'
+                      String(autoStack.status) === AutoStackStatus.PENDING
                         ? cryptoDec
                         : { increment: cryptoDec },
-                    status: 'ACTIVE' as any,
+                    status: AutoStackStatus.ACTIVE,
                     lastExecutedAt: executedAt,
                     nextExecutionAt,
                     nextInterestAt,
@@ -448,13 +461,19 @@ export class OrderDoneHandler {
             `;
           }
 
-          // Update company internal balance (user wallet was credited)
-          await this.companyLiquidityService.updateInternalBalance(
-            crypto,
-            cryptoDec,
-            'add',
-            tx,
-          );
+          // Update company internal balance only for regular wallet credits.
+          // Autostack buy settlement moves the purchased USDT into stacked
+          // balance and tracks it through totalAmountStacked instead.
+          if (transaction.transactionContext !== TransactionContext.AUTOSTACK) {
+            await this.companyLiquidityService.updateInternalBalance(
+              crypto,
+              cryptoDec,
+              'add',
+              tx,
+            );
+          }
+
+          buyProcessed = true;
         });
       } catch (error: any) {
         if (isTransientPrismaError(error)) {
@@ -467,8 +486,43 @@ export class OrderDoneHandler {
           `Failed to process buy order ${order.id}: ${error?.message}`,
           error?.stack,
         );
+
+        await this.prisma.$transaction(async (tx) => {
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              status: OrderStatus.FAILED,
+              paymentStatus: PaymentStatus.FAILED,
+              gatewayResponse: JSON.stringify({ error: error?.message, data }),
+            },
+          });
+          await tx.transaction.update({
+            where: { id: transaction.id },
+            data: {
+              status: TransactionStatus.FAILED,
+              isProcessed: true,
+              paymentMetadata: {
+                ...paymentMetadata,
+                orderDoneFailure: error?.message || 'order.done processing failed',
+                orderDoneFailedAt: new Date().toISOString(),
+              } as Prisma.InputJsonValue,
+            },
+          });
+          if (
+            reservedLiquidityAmount > 0n &&
+            liquidityReservationStatus === LiquidityReservationStatus.RESERVED
+          ) {
+            await this.companyLiquidityService.releaseLiquidity(
+              fiat,
+              reservedLiquidityAmount,
+              tx,
+            );
+          }
+        });
         return;
       }
+
+      if (!buyProcessed) return;
     }
 
     // ────────────────────────────────────────────────
