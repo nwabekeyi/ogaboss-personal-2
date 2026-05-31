@@ -26,7 +26,6 @@ export class InternalBalanceScheduler implements OnModuleInit {
         where: { currency: currency.toLowerCase() },
         _sum: {
           baseBalance: true,
-          reservedBalance: true,
           lockedAmount: true,
           stackedAmount: true,
           totalStackedInterest: true,
@@ -36,7 +35,6 @@ export class InternalBalanceScheduler implements OnModuleInit {
 
       const totalInternalBalance = [
         result._sum.baseBalance,
-        result._sum.reservedBalance,
         result._sum.lockedAmount,
         result._sum.stackedAmount,
         result._sum.totalStackedInterest,

@@ -29,6 +29,13 @@ import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 @Injectable()
 export class SwapTransactionHandler {
   private readonly logger = new Logger(SwapTransactionHandler.name);
+  private readonly terminalSwapStatuses = new Set<string>([
+    TransactionStatus.COMPLETED,
+    TransactionStatus.FAILED,
+    'completed',
+    'failed',
+    'reversed',
+  ]);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -63,15 +70,7 @@ export class SwapTransactionHandler {
       return;
     }
 
-    const TERMINAL = new Set([
-      TransactionStatus.COMPLETED,
-      TransactionStatus.FAILED,
-      'completed',
-      'failed',
-      'reversed',
-    ]);
-
-    if (TERMINAL.has(swapRecord.status as any)) {
+    if (this.terminalSwapStatuses.has(String(swapRecord.status))) {
       this.logger.warn(
         `Swap ${swapRecord.id} already terminal (${swapRecord.status}) — skipping`,
       );
@@ -270,11 +269,25 @@ export class SwapTransactionHandler {
           tx,
         );
 
-        await this.companyLiquidityService.releaseLiquidity(
-          'USDT',
-          expectedUsdtMinor,
-          tx,
-        );
+        const usdtLiquidity = await tx.companyLiquidity.findFirst({
+          where: { currency: { equals: 'USDT', mode: 'insensitive' } },
+          select: { reservedBalance: true },
+        });
+        const reservedUsdt = usdtLiquidity
+          ? toBigInt(usdtLiquidity.reservedBalance)
+          : 0n;
+
+        if (reservedUsdt >= expectedUsdtMinor) {
+          await this.companyLiquidityService.releaseLiquidity(
+            'USDT',
+            expectedUsdtMinor,
+            tx,
+          );
+        } else {
+          this.logger.warn(
+            `Skipping vault ${vaultId} USDT liquidity release: reserved ${reservedUsdt} < expected ${expectedUsdtMinor}`,
+          );
+        }
 
         // Update company liquidity: USDT vault principal + interest are now locked
         const totalGainMinor = BigInt(vault.totalGain.toFixed(0));
@@ -505,7 +518,7 @@ export class SwapTransactionHandler {
           return false;
         }
 
-        if (TERMINAL.has(freshSwap.status as any)) {
+        if (this.terminalSwapStatuses.has(String(freshSwap.status))) {
           this.logger.warn(
             `Swap ${swapRecord.id} already terminal (${freshSwap.status}) during locked processing — skipping`,
           );
@@ -543,6 +556,19 @@ export class SwapTransactionHandler {
           String(linkedMeta.paymentType || '').toUpperCase() ===
             PaymentType.CRYPTO_WALLET &&
           linkedMeta.autoStackId;
+
+        if (
+          isAutoStackSwap &&
+          (linkedMeta.autostackWebhookProcessedAt ||
+            linkedMeta.autostackSettlement === 'swap_completed' ||
+            linkedMeta.liquidityReservationStatus ===
+              LiquidityReservationStatus.RELEASED)
+        ) {
+          this.logger.warn(
+            `Autostack swap ${swapRecord.id} already settled for stack ${linkedMeta.autoStackId} — skipping`,
+          );
+          return false;
+        }
 
         // FROM wallet: deduct full reserved amount
         await tx.$executeRaw`
@@ -706,7 +732,7 @@ export class SwapTransactionHandler {
           where: { transactionUniqueId: creditTxId },
         });
 
-        if (!existingCredit) {
+        if (!isAutoStackSwap && !existingCredit) {
           await tx.transaction.create({
             data: {
               userId,
