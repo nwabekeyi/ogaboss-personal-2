@@ -62,12 +62,12 @@ export class VaultService {
       currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
     }
 
-    const matchingTier = (currency?.buffer_tiers || []).find((tier: any) => {
-      if (!tier?.minAmount || !tier?.maxAmount || !tier?.bufferPercent) return false;
-      const min = BigInt(tier.minAmount);
-      const max = BigInt(tier.maxAmount);
-      return amountMinor >= min && amountMinor <= max;
-    });
+       const matchingTier = (currency?.buffer_tiers || []).find((tier: any) => {
+         if (!tier?.minAmount || !tier?.maxAmount || !tier?.bufferPercent) return false;
+         const min = tier.minAmount ? BigInt(new Decimal(tier.minAmount).toFixed(0)) : null;
+         const max = tier.maxAmount ? BigInt(new Decimal(tier.maxAmount).toFixed(0)) : null;
+         return amountMinor >= min && amountMinor <= max;
+       });
 
     if (matchingTier?.bufferPercent !== null && matchingTier?.bufferPercent !== undefined) {
       const tierPercent = new Decimal(matchingTier.bufferPercent as any);
