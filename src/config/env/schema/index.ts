@@ -73,9 +73,7 @@ export const schema = {
   PAYSTACK_PUBLIC_KEY_TEST: Joi.string().required(),
 
   // Redis
-  REDIS_HOST: Joi.string().required(),
-  REDIS_PORT: Joi.number().required(),
-  REDIS_PASSWORD: Joi.string().allow('').required(),
+  REDIS_URL: Joi.string().uri({ scheme: ['redis', 'rediss'] }).required(),
 
   // Sentry
   SENRTY_DSN: Joi.string().required(),

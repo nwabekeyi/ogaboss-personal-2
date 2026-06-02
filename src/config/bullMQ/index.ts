@@ -13,15 +13,10 @@ export class BullConfigService implements SharedBullConfigurationFactory {
 
   // REQUIRED METHOD
   createSharedConfiguration(): BullRootModuleOptions {
-    const redisUrl = this.config.get<string>('REDIS_URL');
+    const redisUrl = this.config.getOrThrow<string>('REDIS_URL');
 
     return {
-      connection: redisUrl
-        ? new IORedis(redisUrl, { maxRetriesPerRequest: null })
-        : {
-            host: this.config.get('REDIS_HOST', 'localhost'),
-            port: this.config.get('REDIS_PORT', 6379),
-          },
+      connection: new IORedis(redisUrl, { maxRetriesPerRequest: null }),
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 2000 },
