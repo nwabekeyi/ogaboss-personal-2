@@ -144,15 +144,15 @@ export class QuotationService {
         ? new Decimal(crypto.maxBufferPercent)
         : new Decimal(0),
 
-      buffer_tiers: (crypto.buffer_tiers ?? []).map((t: any) => ({
-        ...t,
-        bufferPercent: t.bufferPercent
-          ? new Decimal(t.bufferPercent)
-          : new Decimal(0),
+       buffer_tiers: (crypto.buffer_tiers ?? []).map((t: any) => ({
+         ...t,
+         bufferPercent: t.bufferPercent
+           ? new Decimal(t.bufferPercent)
+           : new Decimal(0),
 
-        minAmount: t.minAmount ? BigInt(t.minAmount) : null,
-        maxAmount: t.maxAmount ? BigInt(t.maxAmount) : null,
-      })),
+         minAmount: t.minAmount ? BigInt(new Decimal(t.minAmount).toFixed(0)) : null,
+         maxAmount: t.maxAmount ? BigInt(new Decimal(t.maxAmount).toFixed(0)) : null,
+       })),
     };
   }
 
@@ -544,7 +544,8 @@ export class QuotationService {
       );
     }
 
-    const marketRateDec = new Decimal(pairPriceStr);
+    const rawRateDec = new Decimal(pairPriceStr);
+    const marketRateDec = new Decimal(1).div(rawRateDec); // now to per from (e.g., BTC per USDT)
     const platformFeeDec = amountDec.mul(PLATFORM_SPREAD);
     const netFromDec = amountDec.sub(platformFeeDec);
 
