@@ -750,18 +750,14 @@ export class PaystackWebhookHandler {
     }
 
     await this.prisma.$transaction(async (tx) => {
-      const settled =
-        await this.companyLiquidityService.consumeReservedLiquidity(
-          this.baseCurrency.toLowerCase(),
-          toBigInt(transaction.fiatAmountBase),
-          tx,
-        );
-
-      if (!settled) {
-        throw new BadRequestException(
-          `Unable to consume liquidity for sell payout ${transaction.id}`,
-        );
-      }
+      // The completed Quidax sell order already increased company NGN
+      // totalBalance. Payout completion should only free the reserved payout
+      // amount, not reduce the Quidax-backed totalBalance.
+      await this.companyLiquidityService.releaseLiquidity(
+        this.baseCurrency.toLowerCase(),
+        toBigInt(transaction.fiatAmountBase),
+        tx,
+      );
 
       await this.transactionService.releaseBalance(
         tx,
@@ -822,8 +818,9 @@ export class PaystackWebhookHandler {
             ...metadata,
             payoutStatus: 'success',
             payoutSettledAt: new Date().toISOString(),
-            liquidityReservationStatus: LiquidityReservationStatus.CONSUMED,
-            liquidityConsumedAt: new Date().toISOString(),
+            liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
+            liquidityReleasedAt: new Date().toISOString(),
+            liquidityReleaseReason: 'sell_payout_paid',
           } as Prisma.InputJsonValue,
         },
       });

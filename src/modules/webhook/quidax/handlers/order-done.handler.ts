@@ -589,6 +589,8 @@ export class OrderDoneHandler {
         return;
       }
 
+      let sellPaymentMetadata = paymentMetadata;
+
       try {
         // Re-fetch payment metadata to get latest bank details (prevents TOCTOU
         // if user updates bank account between order.done webhook and this call)
@@ -614,6 +616,58 @@ export class OrderDoneHandler {
             'Missing payout bank details in transaction metadata',
           );
         }
+
+        sellPaymentMetadata = await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`
+            SELECT "id" FROM "transactions"
+            WHERE "id" = ${transaction.id}
+            FOR UPDATE
+          `;
+
+          const currentTx = await tx.transaction.findUnique({
+            where: { id: transaction.id },
+            select: { paymentMetadata: true },
+          });
+          const currentMeta = (currentTx?.paymentMetadata || {}) as Record<
+            string,
+            any
+          >;
+
+          if (currentMeta.sellProceedsLiquidityStatus === 'ADDED') {
+            return currentMeta;
+          }
+
+          // Company received NGN from the completed Quidax sell order. Reflect
+          // that immediately in totalBalance until the Quidax balance scheduler
+          // later reconciles the authoritative wallet balance.
+          await this.companyLiquidityService.addLiquidity(
+            fiat,
+            executedFiatAmountBase,
+            tx,
+          );
+
+          const updatedMeta = {
+            ...currentMeta,
+            sellOrderStatus: 'filled',
+            sellProceedsLiquidityStatus: 'ADDED',
+            sellProceedsLiquidityAddedAt: new Date().toISOString(),
+            sellProceedsLiquidityAmountBase: executedFiatAmountBase.toString(),
+            sellProceedsLiquidityReason: 'quidax_order_done_sell',
+          };
+
+          await tx.transaction.update({
+            where: { id: transaction.id },
+            data: {
+              executedCryptoAmountBase: toDecimal(executedCryptoAmountBase),
+              executedFiatAmountBase: toDecimal(executedFiatAmountBase),
+              executionPrice: executionPrice.toString(),
+              executedAt,
+              paymentMetadata: updatedMeta as Prisma.InputJsonValue,
+            },
+          });
+
+          return updatedMeta;
+        });
 
         const recipient = await this.paystackService.createTransferRecipient(
           {
@@ -660,7 +714,7 @@ export class OrderDoneHandler {
               executedAt,
               isProcessed: false,
               paymentMetadata: {
-                ...paymentMetadata,
+                ...sellPaymentMetadata,
                 sellOrderStatus: 'filled',
                 payoutStatus: 'initiated',
                 payoutReference: transfer.data.reference,
@@ -684,7 +738,7 @@ export class OrderDoneHandler {
           });
         });
       } catch (payoutError: any) {
-        const retryCount = (paymentMetadata.payoutRetryCount || 0) + 1;
+        const retryCount = (sellPaymentMetadata.payoutRetryCount || 0) + 1;
         this.logger.error(
           `Payout failed for sell order ${order.id}: ${payoutError?.message}. Queue retry will handle retries.`,
         );
@@ -733,7 +787,7 @@ export class OrderDoneHandler {
               status: TransactionStatus.FAILED,
               isProcessed: true,
               paymentMetadata: {
-                ...paymentMetadata,
+                ...sellPaymentMetadata,
                 sellOrderStatus: 'filled',
                 payoutStatus: 'failed',
                 payoutFailureReason: payoutError?.message ?? 'unknown',
@@ -748,6 +802,7 @@ export class OrderDoneHandler {
           });
         });
 
+        await this.transactionService.syncCompanyLiquidityCache();
         throw payoutError;
       }
     }
@@ -878,8 +933,6 @@ export class OrderDoneHandler {
       `${isBuy ? 'Buy' : 'Sell'} order executed for user ${transaction.userId}, order ID: ${order.id}`,
     );
 
-    if (isBuy) {
-      await this.transactionService.syncCompanyLiquidityCache();
-    }
+    await this.transactionService.syncCompanyLiquidityCache();
   }
 }
