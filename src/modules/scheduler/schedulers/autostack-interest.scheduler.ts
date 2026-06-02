@@ -96,17 +96,6 @@ export class AutoStackInterestScheduler {
     );
     const days =
       stack.frequency === 'DAILY' ? 1 : stack.frequency === 'WEEKLY' ? 7 : 30;
-    const principal = new Decimal(stack.amount.toFixed(0));
-    const interest = BigInt(
-      principal
-        .mul(dailyRate)
-        .div(100)
-        .mul(days)
-        .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
-        .toFixed(0),
-    );
-
-    await this.autoStackService.initiateAutoStack(stack.id, { force: true });
 
     await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`
@@ -116,15 +105,27 @@ export class AutoStackInterestScheduler {
       `;
       const freshStack = await tx.autoStack.findUnique({
         where: { id: stack.id },
-        select: { nextInterestAt: true },
+        select: { amount: true, nextInterestAt: true },
       });
       if (!freshStack || freshStack.nextInterestAt > now) return;
+
+      const principal = new Decimal(freshStack.amount.toFixed(0));
+      const interest = BigInt(
+        principal
+          .mul(dailyRate)
+          .div(100)
+          .mul(days)
+          .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+          .toFixed(0),
+      );
+      const nextInterestAt = new Date(now);
+      nextInterestAt.setUTCDate(nextInterestAt.getUTCDate() + days);
 
       await tx.autoStack.update({
         where: { id: stack.id },
         data: {
           accruedInterest: { increment: interest.toString() },
-          nextInterestAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+          nextInterestAt,
         },
       });
       const wallet = await tx.wallet.findFirst({
@@ -142,5 +143,7 @@ export class AutoStackInterestScheduler {
         WHERE "currency" = 'USDT'
       `;
     });
+
+    await this.autoStackService.initiateAutoStack(stack.id, { force: true });
   }
 }
