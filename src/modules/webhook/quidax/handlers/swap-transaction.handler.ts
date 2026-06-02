@@ -580,7 +580,7 @@ export class SwapTransactionHandler {
 
         await this.companyLiquidityService.updateInternalBalance(
           fromCurrency.toLowerCase(),
-          reservedDec,
+          fromDec,
           'subtract',
           tx,
         );
