@@ -687,19 +687,25 @@ export class SwapTransactionHandler {
                 'add',
                 tx,
               );
-              await this.companyLiquidityService.releaseLiquidity(
-                fromCurrency,
-                exactFromMinorBooked,
-                tx,
-              );
+              const consumedSourceLiquidity =
+                await this.companyLiquidityService.consumeReservedLiquidity(
+                  fromCurrency,
+                  exactFromMinorBooked,
+                  tx,
+                );
+              if (!consumedSourceLiquidity) {
+                throw new Error(
+                  `Autostack swap ${swapRecord.id}: unable to consume reserved ${fromCurrency} liquidity`,
+                );
+              }
               await tx.transaction.update({
                 where: { id: linkedTx.id },
                 data: {
                   paymentMetadata: {
                     ...meta,
-                    liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
-                    liquidityReleasedAt: new Date().toISOString(),
-                    liquidityReleaseReason: 'autostack_swap_completed',
+                    liquidityReservationStatus: LiquidityReservationStatus.CONSUMED,
+                    liquidityConsumedAt: new Date().toISOString(),
+                    liquidityConsumedReason: 'autostack_swap_completed',
                     actualReceivedAmountBase: confirmedToBase.toString(),
                     actualReceivedAmountOriginal: confirmedToAmount,
                     principalUsdtAmountBase: confirmedToBase.toString(),

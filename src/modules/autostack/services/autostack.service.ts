@@ -715,9 +715,10 @@ export class AutoStackService {
               );
             const walletUpdateResult = await tx.$executeRaw`
               UPDATE "wallets"
-              SET "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
+              SET "baseBalance" = "baseBalance" - ${sourceAmountBase.toString()}::decimal,
+                  "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
               WHERE "id" = ${usdtWallet.id}
-                AND ("baseBalance" - "reservedBalance" - COALESCE("lockedAmount", 0) - COALESCE("stackedAmount", 0)) >= ${sourceAmountBase.toString()}::decimal
+                AND ("baseBalance" - "reservedBalance" - COALESCE("lockedAmount", 0)) >= ${sourceAmountBase.toString()}::decimal
             `;
             if (walletUpdateResult === 0) {
               throw new Error('Insufficient USDT balance for autostack');

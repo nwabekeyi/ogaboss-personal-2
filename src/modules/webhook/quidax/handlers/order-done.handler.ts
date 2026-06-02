@@ -310,11 +310,23 @@ export class OrderDoneHandler {
               ).toUpperCase() !== PaymentType.CRYPTO_WALLET;
 
             if (isAutoStackCardBuy) {
-              await this.companyLiquidityService.releaseLiquidity(
-                fiat,
-                reservedLiquidityAmount,
-                tx,
-              );
+              // Autostack card buys still spend company NGN on Quidax. Consume
+              // the reserved NGN immediately; the scheduler will later reconcile
+              // the authoritative Quidax NGN balance.
+              const consumed =
+                await this.companyLiquidityService.consumeReservedLiquidity(
+                  fiat,
+                  reservedLiquidityAmount,
+                  tx,
+                );
+              if (!consumed) {
+                this.logger.error(
+                  `Autostack buy order ${order.id}: consumeReservedLiquidity failed for ${fiat} — reserved or total balance insufficient`,
+                );
+                throw new Error(
+                  `Autostack company liquidity consumption failed for order ${order.id}`,
+                );
+              }
 
               await tx.transaction.update({
                 where: { id: transaction.id },
@@ -322,9 +334,9 @@ export class OrderDoneHandler {
                   paymentMetadata: {
                     ...paymentMetadata,
                     liquidityReservationStatus:
-                      LiquidityReservationStatus.RELEASED,
-                    liquidityReleasedAt: new Date().toISOString(),
-                    liquidityReleaseReason: 'autostack_order_done_buy',
+                      LiquidityReservationStatus.CONSUMED,
+                    liquidityConsumedAt: new Date().toISOString(),
+                    liquidityConsumedReason: 'autostack_order_done_buy',
                     actualReceivedAmountBase:
                       executedCryptoAmountBase.toString(),
                     actualReceivedAmountOriginal: executedVolumeStr,
