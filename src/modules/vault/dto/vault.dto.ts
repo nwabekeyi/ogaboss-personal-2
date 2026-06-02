@@ -17,7 +17,7 @@ export class VaultQuoteDto {
 
   @ApiProperty({ description: 'Amount to lock', example: '100.00' })
   @IsNumber()
-  @Min(0.00000001)
+  @Min(0.00000001, { message: 'amount must not be less than 0.00000001' })
   amount: number;
 
   @ApiProperty({ description: 'Duration in days', example: 30 })
@@ -54,7 +54,7 @@ export class LockVaultDto {
 
   @ApiProperty({ description: 'Amount to lock', example: '100.00' })
   @IsNumber()
-  @Min(0.00000001)
+  @Min(0.00000001, { message: 'amount must not be less than 0.00000001' })
   amount: number;
 }
 

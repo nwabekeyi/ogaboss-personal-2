@@ -226,7 +226,11 @@ export class VaultService {
       data: {
         id: quoteId,
         currency: symbol,
-        principalAmount: dto.amount.toString(),
+        principalAmount: ConvertCurrency.fromBase(
+          principalMinor,
+          symbol,
+          wallet.defaultNetwork as CryptoNetwork,
+        ),
         bufferAmount: ConvertCurrency.fromBase(bufferAmountMinor.toString(), symbol, wallet.defaultNetwork as CryptoNetwork),
         totalCharge: ConvertCurrency.fromBase(totalChargeMinor.toString(), symbol, wallet.defaultNetwork as CryptoNetwork),
         duration: dto.durationDays.toString(),
