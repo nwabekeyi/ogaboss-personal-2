@@ -55,33 +55,69 @@ export class VaultService {
 
     ) {}
 
-  private async getCurrencyBufferPercent(symbol: string, amountMinor: bigint): Promise<Decimal> {
+  private normalizeBufferPercent(value: any): Decimal | null {
+    if (value === null || value === undefined) return null;
+
+    const percent = new Decimal(value as any);
+    return percent.isFinite() && percent.gte(0) ? percent : null;
+  }
+
+  private normalizeBufferTierAmount(value: any): bigint | null {
+    if (value === null || value === undefined) return null;
+
+    return BigInt(new Decimal(value as any).toFixed(0));
+  }
+
+  private async getCurrencyBufferPercent(
+    symbol: string,
+    amountMinor: bigint,
+    orderType: 'buy' | 'sell' = 'sell',
+  ): Promise<Decimal> {
     let currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
     if (!currency) {
       await this.cryptoCurrencyCache.refreshCryptoCurrencyCache(symbol);
       currency = await this.cryptoCurrencyCache.getBySymbol(symbol);
     }
 
-       const matchingTier = (currency?.buffer_tiers || []).find((tier: any) => {
-         if (!tier?.minAmount || !tier?.maxAmount || !tier?.bufferPercent) return false;
-         const min = tier.minAmount ? BigInt(new Decimal(tier.minAmount).toFixed(0)) : null;
-         const max = tier.maxAmount ? BigInt(new Decimal(tier.maxAmount).toFixed(0)) : null;
-         return amountMinor >= min && amountMinor <= max;
-       });
-
-    if (matchingTier?.bufferPercent !== null && matchingTier?.bufferPercent !== undefined) {
-      const tierPercent = new Decimal(matchingTier.bufferPercent as any);
-      if (tierPercent.isFinite() && tierPercent.gte(0)) return tierPercent;
+    if (!currency) {
+      throw new BadRequestException(
+        `Buffer not configured for ${symbol}. Cannot create vault quote.`,
+      );
     }
 
-    const rawBufferPercent = currency?.defaultBufferPercent;
-    if (rawBufferPercent === null || rawBufferPercent === undefined) {
-      throw new BadRequestException(`Buffer not configured for ${symbol}. Cannot create vault quote.`);
+    const bufferTiers = (currency.buffer_tiers || []).map((tier: any) => ({
+      ...tier,
+      bufferPercent: this.normalizeBufferPercent(tier.bufferPercent),
+      minAmount: this.normalizeBufferTierAmount(tier.minAmount),
+      maxAmount: this.normalizeBufferTierAmount(tier.maxAmount),
+    }));
+
+    const matchingTier = bufferTiers.find((tier: any) => {
+      const typeMatch =
+        !tier.orderType || tier.orderType.toLowerCase() === orderType;
+      if (!typeMatch) return false;
+      if (tier.minAmount === null || tier.maxAmount === null) return false;
+      if (amountMinor < tier.minAmount) return false;
+      if (amountMinor > tier.maxAmount) return false;
+      return true;
+    });
+
+    let bufferPercent = matchingTier?.bufferPercent;
+    if (!bufferPercent) {
+      bufferPercent = this.normalizeBufferPercent(currency.defaultBufferPercent);
     }
 
-    const bufferPercent = new Decimal(rawBufferPercent as any);
-    if (!bufferPercent.isFinite() || bufferPercent.lte(0)) {
-      throw new BadRequestException(`Buffer not configured for ${symbol}. Cannot create vault quote.`);
+    if (!bufferPercent) {
+      throw new BadRequestException(
+        `Buffer not configured for ${symbol}. Cannot create vault quote.`,
+      );
+    }
+
+    const maxBufferPercent = this.normalizeBufferPercent(
+      currency.maxBufferPercent,
+    );
+    if (maxBufferPercent?.gt(0) && bufferPercent.gt(maxBufferPercent)) {
+      return maxBufferPercent;
     }
 
     return bufferPercent;
@@ -122,9 +158,18 @@ export class VaultService {
     let bufferPercent = new Decimal(0);
 
     if (symbol === 'BTC') {
-      bufferPercent = await this.getCurrencyBufferPercent(symbol, BigInt(principalMinor));
-      const bufferBps = BigInt(bufferPercent.mul(100).toFixed(0));
-      bufferAmountMinor = (BigInt(principalMinor) * bufferBps) / 10000n;
+      bufferPercent = await this.getCurrencyBufferPercent(
+        symbol,
+        BigInt(principalMinor),
+        'sell',
+      );
+      bufferAmountMinor = BigInt(
+        new Decimal(principalMinor)
+          .mul(bufferPercent)
+          .div(100)
+          .floor()
+          .toFixed(0),
+      );
     }
 
     const totalChargeMinor = BigInt(principalMinor) + bufferAmountMinor;
@@ -176,13 +221,16 @@ export class VaultService {
       ? ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork)
       : ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork);
 
-    const decimals = getCurrencyDecimals(symbol, wallet.defaultNetwork as CryptoNetwork);
     return {
       success: true,
       data: {
         id: quoteId,
         currency: symbol,
-        principalAmount: dto.amount.toString(),
+        principalAmount: ConvertCurrency.fromBase(
+          principalMinor,
+          symbol,
+          wallet.defaultNetwork as CryptoNetwork,
+        ),
         bufferAmount: ConvertCurrency.fromBase(bufferAmountMinor.toString(), symbol, wallet.defaultNetwork as CryptoNetwork),
         totalCharge: ConvertCurrency.fromBase(totalChargeMinor.toString(), symbol, wallet.defaultNetwork as CryptoNetwork),
         duration: dto.durationDays.toString(),
