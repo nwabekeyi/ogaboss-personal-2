@@ -544,14 +544,12 @@ export class QuotationService {
       );
     }
 
-    const rawRateDec = new Decimal(pairPriceStr);
-    const marketRateDec = new Decimal(1).div(rawRateDec); // now to per from (e.g., BTC per USDT)
+    // Quidax quoted_price is already the target-currency amount per one
+    // source-currency unit (e.g. BTC per USDT for USDT → BTC). Do not
+    // invert it; doing so turns a BTC-per-USDT rate into a USDT-per-BTC
+    // price and makes quote values many orders of magnitude too large.
+    const marketRateDec = new Decimal(pairPriceStr);
     const platformFeeDec = amountDec.mul(PLATFORM_SPREAD);
-    const netFromDec = amountDec.sub(platformFeeDec);
-
-    if (netFromDec.lte(0)) {
-      throw new BadRequestException('Amount too small after transaction fee');
-    }
 
     await this.validateSwapMinimumAmount(amountDec, fromSymbol);
 
@@ -562,8 +560,9 @@ export class QuotationService {
       fromNet,
     );
 
-    // Use net source amount (after platform fee) to estimate destination volume
-    const estimatedOutAtMarketDec = netFromDec.mul(marketRateDec);
+    // Platform fee is charged separately, so the full requested source amount
+    // is what Quidax swaps and what we use to estimate destination volume.
+    const estimatedOutAtMarketDec = amountDec.mul(marketRateDec);
     const estimatedOutAtMarketMinor = ConvertCurrency.toBase(
       estimatedOutAtMarketDec.toFixed(toDecimals),
       toSymbol,
@@ -587,7 +586,8 @@ export class QuotationService {
       .sub(protectedRateDec.div(marketRateDec))
       .mul(100);
 
-    const estimatedOutDec = netFromDec.mul(protectedRateDec);
+    const estimatedOutDec = amountDec.mul(protectedRateDec);
+    const bufferAmountDec = estimatedOutAtMarketDec.sub(estimatedOutDec);
 
     const platformFeeMinor = ConvertCurrency.toBase(
       platformFeeDec.toFixed(fromDecimals),
@@ -673,11 +673,7 @@ export class QuotationService {
         ),
         marketRate: pairPriceStr,
         protectedRate: protectedRateDec.toFixed(toDecimals),
-        bufferAmount: ConvertCurrency.fromBase(
-          bufferSpreadMinor,
-          toSymbol,
-          toNet,
-        ),
+        bufferAmount: bufferAmountDec.toFixed(toDecimals),
         bufferPercent: sellBufferFactor.mul(100).toFixed(2),
         totalBufferPercent: totalBufferPercent.toFixed(2),
         expiresIn: `${QUOTE_TTL_SECONDS}s`,
