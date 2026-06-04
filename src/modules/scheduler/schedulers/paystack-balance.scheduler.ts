@@ -3,8 +3,8 @@ import { Cron} from '@nestjs/schedule';
 import { PrismaService, RedisService } from '../../../infrastructure';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { ConvertCurrency } from '../../../shared';
-import {
 import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
+import {
   BASE_CURRENCY,
   COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY,
   COMPANY_PAYSTACK_NGN_WALLET_ID,

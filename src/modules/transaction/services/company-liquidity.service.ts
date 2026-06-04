@@ -317,19 +317,24 @@ export class CompanyLiquidityService {
     const client = tx || this.prisma;
     const normalizedCurrency = this.verifyCurrency(currency);
 
-    if (operation === 'add') {
-      await client.$executeRaw`
-        UPDATE "company_liquidity"
-        SET "internalBalance" = "internalBalance" + ${amount}, "updatedAt" = NOW()
-        WHERE LOWER(currency) = LOWER(${normalizedCurrency})
-      `;
-    } else {
-      await client.$executeRaw`
-        UPDATE "company_liquidity"
-        SET "internalBalance" = "internalBalance" - ${amount}, "updatedAt" = NOW()
-        WHERE LOWER(currency) = LOWER(${normalizedCurrency})
-        AND "internalBalance" >= ${amount}
-      `;
+    const result =
+      operation === 'add'
+        ? await client.$executeRaw`
+            UPDATE "company_liquidity"
+            SET "internalBalance" = "internalBalance" + ${amount}, "updatedAt" = NOW()
+            WHERE LOWER(currency) = LOWER(${normalizedCurrency})
+          `
+        : await client.$executeRaw`
+            UPDATE "company_liquidity"
+            SET "internalBalance" = "internalBalance" - ${amount}, "updatedAt" = NOW()
+            WHERE LOWER(currency) = LOWER(${normalizedCurrency})
+            AND "internalBalance" >= ${amount}
+          `;
+
+    if (Number(result) === 0) {
+      throw new BadRequestException(
+        `Company ${normalizedCurrency} internal balance inconsistency`,
+      );
     }
 
     if (!tx) {

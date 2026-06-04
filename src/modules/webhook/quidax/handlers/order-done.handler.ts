@@ -660,70 +660,37 @@ export class OrderDoneHandler {
           ]);
         } catch (billingErr: any) {
           await this.prisma.$transaction(async (tx) => {
-            const failureMeta = {
+            const retryMeta = {
               ...billingMeta,
-              billingStatus: 'PROVIDER_SUBMIT_FAILED',
+              billingStatus: 'PROVIDER_SUBMIT_FAILED_RETRYABLE',
               billingFailureReason: billingErr?.message || 'unknown',
-              liquidityReservationStatus:
-                billingMeta.liquidityReservationStatus ===
-                LiquidityReservationStatus.RESERVED
-                  ? LiquidityReservationStatus.RELEASED
-                  : billingMeta.liquidityReservationStatus,
-              liquidityReleasedAt:
-                billingMeta.liquidityReservationStatus ===
-                LiquidityReservationStatus.RESERVED
-                  ? new Date().toISOString()
-                  : billingMeta.liquidityReleasedAt,
-              liquidityReleaseReason:
-                billingMeta.liquidityReservationStatus ===
-                LiquidityReservationStatus.RESERVED
-                  ? 'bill_provider_submit_failed'
-                  : billingMeta.liquidityReleaseReason,
+              billingFailureAt: new Date().toISOString(),
+              billingRequiresRetry: true,
             };
-
-            if (transaction.totalAmountSentBase) {
-              await this.transactionService.releaseBalance(
-                tx,
-                transaction.userId,
-                crypto,
-                toBigInt(transaction.totalAmountSentBase),
-              );
-            }
-
-            if (
-              reservedLiquidityAmount > 0n &&
-              billingMeta.liquidityReservationStatus ===
-                LiquidityReservationStatus.RESERVED
-            ) {
-              await this.companyLiquidityService.releaseLiquidity(
-                fiat,
-                reservedLiquidityAmount,
-                tx,
-              );
-            }
 
             await tx.transaction.update({
               where: { id: transaction.id },
               data: {
-                status: TransactionStatus.FAILED,
-                isProcessed: true,
-                paymentMetadata: failureMeta as Prisma.InputJsonValue,
+                status: TransactionStatus.PENDING,
+                isProcessed: false,
+                paymentMetadata: retryMeta as Prisma.InputJsonValue,
               },
             });
             await tx.order.update({
               where: { id: order.id },
               data: {
-                status: OrderStatus.FAILED,
-                paymentStatus: PaymentStatus.FAILED,
+                status: OrderStatus.PROCESSING,
+                paymentStatus: PaymentStatus.PAID,
                 gatewayResponse: JSON.stringify({
                   quidax: data,
                   billingError: billingErr?.message || 'unknown',
+                  retryable: true,
                 }),
               },
             });
             await tx.billPayment.updateMany({
               where: { transactionId: transaction.id },
-              data: { status: 'FAILED' },
+              data: { status: 'PROCESSING' },
             });
           });
         }

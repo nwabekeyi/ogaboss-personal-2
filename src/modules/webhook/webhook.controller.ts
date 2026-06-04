@@ -49,7 +49,6 @@ export class WebhooksController {
     @Body() payload: any,
     @Headers('quidax-signature') signature: string,
   ) {
-    console.log(payload);
     this.logger.debug(
       `Received quidax webhook, event: ${payload.event}, data.id: ${payload.data?.id}`,
     );
@@ -127,7 +126,7 @@ export class WebhooksController {
     @Body() payload: PaystackWebhookEvent,
     @Req() req: any,
   ) {
-    if (!signature) return { received: true };
+    if (!signature) throw new BadRequestException('Missing Paystack signature');
 
     // Verify signature using raw body when available
     const rawBody = req?.rawBody
@@ -177,7 +176,18 @@ export class WebhooksController {
 
   @Post('xpresspay')
   @HttpCode(200)
-  async handleXpresspayWebhook(@Body() payload: any) {
+  async handleXpresspayWebhook(
+    @Body() payload: any,
+    @Headers('x-xpresspay-secret') webhookSecret?: string,
+  ) {
+    const configuredSecret = this.configService.get<string>(
+      'XPRESSPAY_WEBHOOK_SECRET',
+      '',
+    );
+    if (configuredSecret && webhookSecret !== configuredSecret) {
+      throw new BadRequestException('Invalid Xpresspay webhook secret');
+    }
+
     const merchantId = Number(
       this.configService.get<string>('XPRESSPAY_MERCHANT_ID', '0'),
     );

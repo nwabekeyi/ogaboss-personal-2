@@ -698,8 +698,8 @@ export class VaultService {
         if (normalizedCurrency === 'USDT' || normalizedCurrency === 'USDC') {
           await tx.$executeRaw`
             UPDATE "company_liquidity"
-            SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
-                "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
+            SET "totalLockedPrincipal" = GREATEST("totalLockedPrincipal" - ${amountLocked.toString()}::decimal, 0),
+                "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${totalGain.toString()}::decimal, 0),
                 "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestReceived.toString()}::decimal
             WHERE LOWER("currency") = LOWER(${normalizedCurrency})
           `;

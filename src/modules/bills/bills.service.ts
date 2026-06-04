@@ -226,6 +226,12 @@ export class BillsService {
               customerReference: quote.customerReference,
               productCode: quote.productCode,
               billAmountNgn: quote.billAmountNgn,
+              billCryptoAmountBase: cryptoMinor.toString(),
+              billCryptoAmountOriginal: String(quote.cryptoAmount),
+              platformFeeAmountBase: feeMinor.toString(),
+              platformFeeAmountOriginal: String(quote.feeAmount),
+              totalSellAmountBase: totalMinor.toString(),
+              totalSellAmountOriginal: String(quote.totalToPay),
               liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
               liquidityReservationCurrency: BASE_CURRENCY,
               liquidityReservationAmount: netFiatBase.toString(),
@@ -255,8 +261,8 @@ export class BillsService {
           data: {
             transactionId: transaction.id,
             userId,
-            cryptoAmountBase: cryptoMinor.toString(),
-            cryptoAmountOriginal: String(quote.cryptoAmount),
+            cryptoAmountBase: totalMinor.toString(),
+            cryptoAmountOriginal: String(quote.totalToPay),
             fiatAmountBase: netFiatBase.toString(),
             fiatAmountOriginal: String(quote.billAmountNgn),
             fiatCurrency: 'NGN',
@@ -280,7 +286,7 @@ export class BillsService {
           market: 'usdtngn',
           side: 'sell',
           ord_type: 'market',
-          volume: String(quote.cryptoAmount),
+          volume: String(quote.totalToPay),
         } as any,
       );
       if (orderResponse.status !== 'success')
@@ -330,12 +336,19 @@ export class BillsService {
         await this.companyLiquidityService
           .releaseLiquidity(BASE_CURRENCY, netFiatBase, tx)
           .catch(() => undefined);
+        const current = await tx.transaction.findUnique({
+          where: { id: transaction.id },
+          select: { paymentMetadata: true },
+        });
         await tx.transaction.update({
           where: { id: transaction.id },
           data: {
             status: 'FAILED' as any,
             paymentMetadata: {
+              ...((current?.paymentMetadata || {}) as Record<string, any>),
               liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
+              liquidityReleasedAt: new Date().toISOString(),
+              liquidityReleaseReason: 'quidax_order_submit_failed',
               billingStatus: 'FAILED_ORDER_SUBMIT',
             } as any,
           },

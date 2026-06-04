@@ -62,6 +62,7 @@ export class SwapTransactionHandler {
         fromCurrency: true,
         toCurrency: true,
         toAmountOriginal: true,
+        quoteId: true,
         description: true,
       },
     });
@@ -81,15 +82,112 @@ export class SwapTransactionHandler {
     const userId = swapRecord.userId;
 
     // === VAULT SWAP PATH ===
-    if (
-      swapRecord.description?.startsWith('vault_swap:') &&
-      event === 'swap_transaction.completed'
-    ) {
+    if (swapRecord.description?.startsWith('vault_swap:')) {
       return this.processVaultSwapCompletion(swapRecord!, data, event);
     }
 
     // === REGULAR SWAP PATH ===
     return this.processRegularSwap(swapRecord!, data, event);
+  }
+
+  private async processVaultSwapFailure(
+    swapRecord: any,
+    data: SwapWebhookDataDto,
+    event: string,
+    vaultId: string,
+  ): Promise<void> {
+    const failureEvents = new Set([
+      'swap_transaction.failed',
+      'swap_transaction.reversed',
+      'swap_transaction.cancelled',
+      'swap_transaction.canceled',
+    ]);
+    if (!failureEvents.has(event)) {
+      this.logger.log(`Ignoring non-terminal vault swap event ${event}`);
+      return;
+    }
+
+    const isReversal = event === 'swap_transaction.reversed';
+    await this.prisma.$transaction(
+      async (tx) => {
+        const vault = await tx.vault.findUnique({
+          where: { id: vaultId },
+          select: { id: true, amountLocked: true, status: true },
+        });
+        if (!vault || vault.status === VaultStatus.TERMINATED) return;
+
+        const linkedTx = await tx.transaction.findFirst({
+          where: {
+            transactionUniqueId: data.id,
+            transactionContext: TransactionContext.VAULT_SWAP,
+            userId: swapRecord.userId,
+          },
+          select: { id: true, totalAmountSentBase: true, status: true },
+        });
+
+        if (linkedTx?.status !== TransactionStatus.FAILED) {
+          const reservedBtc = linkedTx?.totalAmountSentBase
+            ? BigInt(linkedTx.totalAmountSentBase.toFixed(0))
+            : 0n;
+          if (reservedBtc > 0n) {
+            await this.transactionService.releaseBalance(
+              tx,
+              swapRecord.userId,
+              'BTC',
+              reservedBtc,
+            );
+          }
+
+          if (linkedTx) {
+            await tx.transaction.update({
+              where: { id: linkedTx.id },
+              data: {
+                status: TransactionStatus.FAILED,
+                isProcessed: true,
+                description: isReversal
+                  ? 'Vault BTC swap reversed before funding vault'
+                  : 'Vault BTC swap failed before funding vault',
+              },
+            });
+          }
+        }
+
+        const expectedUsdtMinor = swapRecord.toAmountOriginal
+          ? ConvertCurrency.toBase(String(swapRecord.toAmountOriginal), 'USDT', 6)
+          : BigInt(vault.amountLocked.toFixed(0));
+        if (expectedUsdtMinor > 0n) {
+          const usdtLiquidity = await tx.companyLiquidity.findFirst({
+            where: { currency: { equals: 'USDT', mode: 'insensitive' } },
+            select: { reservedBalance: true },
+          });
+          const reservedUsdt = usdtLiquidity
+            ? toBigInt(usdtLiquidity.reservedBalance)
+            : 0n;
+          if (reservedUsdt >= expectedUsdtMinor) {
+            await this.companyLiquidityService.releaseLiquidity(
+              'USDT',
+              expectedUsdtMinor,
+              tx,
+            );
+          }
+        }
+
+        await tx.vault.update({
+          where: { id: vaultId },
+          data: { status: VaultStatus.TERMINATED },
+        });
+        await tx.swapTransaction.update({
+          where: { id: swapRecord.id },
+          data: {
+            status: isReversal ? 'reversed' : TransactionStatus.FAILED,
+            receivedAmountOriginal: data.received_amount,
+            confirmed: false,
+            updatedAt: new Date(),
+          },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
   }
 
   /** Vault-specific completion (BTC → USDT for vault activation) */
@@ -100,6 +198,11 @@ export class SwapTransactionHandler {
   ): Promise<void> {
     const swapId = data.id;
     const vaultId = swapRecord.description.replace('vault_swap:', '');
+
+    if (event !== 'swap_transaction.completed') {
+      await this.processVaultSwapFailure(swapRecord, data, event, vaultId);
+      return;
+    }
 
     await this.prisma.$transaction(
       async (tx) => {
@@ -245,20 +348,27 @@ export class SwapTransactionHandler {
           ? BigInt(linkedTx.totalAmountSentBase.toFixed(0))
           : 0n;
 
-        // === BTC Wallet: Final deduction + update originalBalance ===
-        const newBtcBaseBalance =
-          BigInt(btcWallet.baseBalance.toFixed(0)) - totalBtcChargeMinor;
-        const newBtcOriginalBalance =
-          newBtcBaseBalance < 0n ? '0' : newBtcBaseBalance.toString();
-
+        // === BTC Wallet: final deduction with atomic RETURNING update ===
+        const [{ baseBalance: newBtcBaseStr }] = await tx.$queryRaw<
+          { baseBalance: string }[]
+        >`
+          UPDATE "wallets"
+          SET
+            "baseBalance" = GREATEST("baseBalance" - ${toDecimal(totalBtcChargeMinor)}, 0),
+            "reservedBalance" = GREATEST("reservedBalance" - ${toDecimal(totalBtcChargeMinor)}, 0)
+          WHERE "id" = ${btcWallet.id}
+          RETURNING "baseBalance"
+        `;
+        const newBtcOriginalBalance = ConvertCurrency.fromBase(
+          BigInt(String(newBtcBaseStr)),
+          'BTC',
+          btcWallet.defaultNetwork as CryptoNetwork,
+        );
         await tx.$executeRaw`
-         UPDATE "wallets"
-         SET
-           "baseBalance" = GREATEST("baseBalance" - ${toDecimal(totalBtcChargeMinor)}, 0),
-           "reservedBalance" = GREATEST("reservedBalance" - ${toDecimal(totalBtcChargeMinor)}, 0),
-           "originalBalance" = ${newBtcOriginalBalance}
-         WHERE "id" = ${btcWallet.id}
-       `;
+          UPDATE "wallets"
+          SET "originalBalance" = ${newBtcOriginalBalance}
+          WHERE "id" = ${btcWallet.id}
+        `;
 
         await this.companyLiquidityService.updateInternalBalance(
           'BTC',
@@ -267,12 +377,7 @@ export class SwapTransactionHandler {
           tx,
         );
 
-        // USDT: credit surplus to base, principal to locked
-        const newUsdtBase =
-          BigInt(userUsdtWallet.baseBalance.toFixed(0)) + differenceMinor;
-        const newUsdtLocked =
-          BigInt(userUsdtWallet.lockedAmount?.toFixed(0) || '0') +
-          expectedUsdtMinor;
+        // USDT: credit surplus to base, principal to locked atomically
         const durationDays = Math.max(
           1,
           Math.ceil(
@@ -296,15 +401,26 @@ export class SwapTransactionHandler {
           1000000n;
         const amountToReceiveMinor = totalPayoutBeforeFee - transactionFeeMinor;
 
-        await tx.wallet.update({
-          where: { id: userUsdtWallet.id },
-          data: {
-            baseBalance: toDecimal(newUsdtBase),
-            lockedAmount: toDecimal(newUsdtLocked),
-            totalLockedInterest: { increment: totalGainMinor.toString() },
-            originalBalance: ConvertCurrency.fromBase(newUsdtBase.toString(), 'USDT', 6),
-          },
-        });
+        const [{ baseBalance: newUsdtBaseStr }] = await tx.$queryRaw<
+          { baseBalance: string }[]
+        >`
+          UPDATE "wallets"
+          SET "baseBalance" = "baseBalance" + ${toDecimal(differenceMinor)},
+              "lockedAmount" = "lockedAmount" + ${toDecimal(expectedUsdtMinor)},
+              "totalLockedInterest" = "totalLockedInterest" + ${toDecimal(totalGainMinor)}
+          WHERE "id" = ${userUsdtWallet.id}
+          RETURNING "baseBalance"
+        `;
+        const newUsdtOriginalBalance = ConvertCurrency.fromBase(
+          BigInt(String(newUsdtBaseStr)),
+          'USDT',
+          6,
+        );
+        await tx.$executeRaw`
+          UPDATE "wallets"
+          SET "originalBalance" = ${newUsdtOriginalBalance}
+          WHERE "id" = ${userUsdtWallet.id}
+        `;
 
         await this.companyLiquidityService.updateInternalBalance(
           'USDT',
@@ -616,13 +732,26 @@ export class SwapTransactionHandler {
           return false;
         }
 
-        // FROM wallet: deduct full reserved amount
+        // FROM wallet: deduct full reserved amount and reconcile originalBalance
+        const [{ baseBalance: newFromBaseStr }] = await tx.$queryRaw<
+          { baseBalance: string }[]
+        >`
+          UPDATE "wallets"
+          SET "baseBalance" = GREATEST("baseBalance" - ${reservedDec}, 0),
+              "reservedBalance" = GREATEST("reservedBalance" - ${reservedDec}, 0)
+          WHERE "id" = ${fromWallet.id}
+          RETURNING "baseBalance"
+        `;
+        const newFromOriginalBalance = ConvertCurrency.fromBase(
+          BigInt(String(newFromBaseStr)),
+          fromCurrency,
+          fromNet,
+        );
         await tx.$executeRaw`
-         UPDATE "wallets"
-         SET "baseBalance" = GREATEST("baseBalance" - ${reservedDec}, 0),
-             "reservedBalance" = GREATEST("reservedBalance" - ${reservedDec}, 0)
-         WHERE "id" = ${fromWallet.id}
-       `;
+          UPDATE "wallets"
+          SET "originalBalance" = ${newFromOriginalBalance}
+          WHERE "id" = ${fromWallet.id}
+        `;
 
         await this.companyLiquidityService.updateInternalBalance(
           fromCurrency.toLowerCase(),
@@ -927,13 +1056,12 @@ export class SwapTransactionHandler {
 
     await this.prisma.$transaction(
       async (tx) => {
-        const reservedDec = toDecimal(reservedAmount);
-
-        await tx.$executeRaw`
-         UPDATE "wallets"
-         SET "reservedBalance" = GREATEST("reservedBalance" - ${reservedDec}, 0)
-         WHERE "id" = ${fromWalletId}
-       `;
+        await this.transactionService.releaseBalance(
+          tx,
+          userId,
+          fromCurrency,
+          reservedAmount,
+        );
 
         await tx.swapTransaction.update({
           where: { id: swapRecordId },

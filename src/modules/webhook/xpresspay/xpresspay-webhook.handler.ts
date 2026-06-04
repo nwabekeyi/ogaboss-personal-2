@@ -20,6 +20,21 @@ export class XpresspayWebhookHandler {
     private readonly companyLiquidityService: CompanyLiquidityService,
   ) {}
 
+  private isTerminalFailure(payload: any): boolean {
+    const status = String(payload?.Status || '').trim().toUpperCase();
+    const terminalStatuses = new Set([
+      '99',
+      'FAILED',
+      'FAILURE',
+      'REVERSED',
+      'CANCELLED',
+      'CANCELED',
+      'DECLINED',
+      'ERROR',
+    ]);
+    return payload?.IsSuccessful === false && terminalStatuses.has(status);
+  }
+
   async process(payload: any): Promise<void> {
     const providerReference =
       payload?.TransactionReference || payload?.TransactionId || payload?.Id;
@@ -37,6 +52,7 @@ export class XpresspayWebhookHandler {
     if (!tx || !tx.billPayment) return;
 
     const ok = payload.IsSuccessful === true && payload.Status === '00';
+    const terminalFailure = this.isTerminalFailure(payload);
     const totalSentBase = toBigInt(
       tx.totalAmountSentBase ?? tx.cryptoAmountBase ?? 0n,
     );
@@ -61,7 +77,12 @@ export class XpresspayWebhookHandler {
       if (!latest) return;
 
       const metadata = (latest.paymentMetadata || {}) as Record<string, any>;
-      if (metadata.xpresspayWebhookStatus === 'COMPLETED') return;
+      if (
+        metadata.xpresspayWebhookStatus === 'COMPLETED' ||
+        (metadata.xpresspayWebhookStatus === 'FAILED' && terminalFailure)
+      ) {
+        return;
+      }
 
       if (ok) {
         if (!latest.senderWalletId || totalSentBase <= 0n) return;
@@ -106,7 +127,7 @@ export class XpresspayWebhookHandler {
         );
       }
 
-      if (!ok && metadata.xpresspayWebhookStatus !== 'FAILED') {
+      if (!ok && terminalFailure && metadata.xpresspayWebhookStatus !== 'FAILED') {
         if (latest.senderWalletId && totalSentBase > 0n) {
           await this.transactionService.releaseBalance(
             db,
@@ -134,35 +155,47 @@ export class XpresspayWebhookHandler {
             liquidityConsumedAt: new Date().toISOString(),
             liquidityConsumedReason: 'bill_payment_completed',
           }
-        : {
-            liquidityReservationStatus:
-              metadata.liquidityReservationStatus ===
-              LiquidityReservationStatus.RESERVED
-                ? LiquidityReservationStatus.RELEASED
-                : metadata.liquidityReservationStatus,
-            liquidityReleasedAt:
-              metadata.liquidityReservationStatus ===
-              LiquidityReservationStatus.RESERVED
-                ? new Date().toISOString()
-                : metadata.liquidityReleasedAt,
-            liquidityReleaseReason:
-              metadata.liquidityReservationStatus ===
-              LiquidityReservationStatus.RESERVED
-                ? 'bill_payment_failed'
-                : metadata.liquidityReleaseReason,
-          };
+        : terminalFailure
+          ? {
+              liquidityReservationStatus:
+                metadata.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? LiquidityReservationStatus.RELEASED
+                  : metadata.liquidityReservationStatus,
+              liquidityReleasedAt:
+                metadata.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? new Date().toISOString()
+                  : metadata.liquidityReleasedAt,
+              liquidityReleaseReason:
+                metadata.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? 'bill_payment_failed'
+                  : metadata.liquidityReleaseReason,
+            }
+          : {
+              liquidityReservationStatus: metadata.liquidityReservationStatus,
+              xpresspayPendingAt: new Date().toISOString(),
+            };
+
+      const nextStatus = ok ? 'COMPLETED' : terminalFailure ? 'FAILED' : 'PENDING';
+      const nextWebhookStatus = ok
+        ? 'COMPLETED'
+        : terminalFailure
+          ? 'FAILED'
+          : 'PENDING';
 
       await db.transaction.update({
         where: { id: tx.id },
         data: {
-          status: ok ? ('COMPLETED' as any) : ('FAILED' as any),
-          isProcessed: true,
+          status: nextStatus as any,
+          isProcessed: ok || terminalFailure,
           paymentMetadata: {
             ...metadata,
             ...settlementMetadata,
             xpresspayWebhook: payload,
-            xpresspayWebhookStatus: ok ? 'COMPLETED' : 'FAILED',
-            billingStatus: ok ? 'COMPLETED' : 'FAILED',
+            xpresspayWebhookStatus: nextWebhookStatus,
+            billingStatus: nextStatus,
           } as any,
         },
       });
@@ -170,7 +203,7 @@ export class XpresspayWebhookHandler {
       await db.billPayment.update({
         where: { id: tx.billPayment!.id },
         data: {
-          status: ok ? 'COMPLETED' : 'FAILED',
+          status: nextStatus as any,
           providerResponse: payload,
         },
       });
@@ -178,8 +211,8 @@ export class XpresspayWebhookHandler {
       await db.order.updateMany({
         where: { transactionId: tx.id },
         data: {
-          status: ok ? ('COMPLETED' as any) : ('FAILED' as any),
-          paymentStatus: ok ? ('PAID' as any) : ('FAILED' as any),
+          status: (ok ? 'COMPLETED' : terminalFailure ? 'FAILED' : 'PROCESSING') as any,
+          paymentStatus: (ok ? 'PAID' : terminalFailure ? 'FAILED' : 'PENDING') as any,
           gatewayResponse: JSON.stringify(payload),
         },
       });

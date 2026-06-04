@@ -5,8 +5,8 @@ import { Cron} from '@nestjs/schedule';
 import { QuidaxWalletService } from '../../../infrastructure/providers/quidax';
 import { PrismaService, RedisService } from '../../../infrastructure';
 import { Prisma } from '../../../infrastructure/databases/prisma/generated/prisma/client';
-import {
 import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
+import {
   COMPANY_WALLETS_KEY,
   ConvertCurrency,
   CryptoNetwork,

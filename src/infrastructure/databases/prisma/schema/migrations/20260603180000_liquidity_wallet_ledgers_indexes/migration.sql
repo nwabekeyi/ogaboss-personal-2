@@ -1,4 +1,6 @@
 -- Ledger tables for auditable liquidity and wallet aggregate changes.
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
 CREATE TABLE IF NOT EXISTS "company_liquidity_movements" (
   "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
   "currency" TEXT NOT NULL,
