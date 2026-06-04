@@ -160,7 +160,7 @@ export class WalletService {
         ),
       );
 
-      const availableBalance = balanceNum - reservedNum - lockedNum;
+      const availableBalance = balanceNum - reservedNum;
       const totalBalance = balanceNum + lockedNum + stackedNum;
       const currencyLower = w.currency.toLowerCase();
 

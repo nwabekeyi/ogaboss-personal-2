@@ -25,5 +25,7 @@ model AutoStack {
   @@index([userId, status])
   @@index([nextExecutionAt, status])
   @@index([status, nextInterestAt])
+  @@index([status, nextExecutionAt, id])
+  @@index([status, nextInterestAt, id])
   @@map("auto_stacks")
 }

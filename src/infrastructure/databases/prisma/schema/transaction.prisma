@@ -49,6 +49,8 @@ model Transaction {
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, description, createdAt(sort: Desc)])
   @@index([createdAt, status])
+  @@index([transactionContext, status, createdAt])
+  @@index([currency, status, createdAt])
   @@index([userId, status])
   @@map("transactions")
 }

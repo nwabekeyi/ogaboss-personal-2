@@ -25,6 +25,7 @@ import { SwapWebhookDataDto } from '../dtos/swap-webhook.dto';
 import { TransactionNotificationService } from '../../../../modules/transaction/services/transaction-notification.service';
 import { Prisma } from '../../../../infrastructure/databases/prisma/generated/prisma/browser';
 import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
+import { VAULT_TRANSACTION_FEE } from '../../../transaction/constants';
 
 @Injectable()
 export class SwapTransactionHandler {
@@ -142,6 +143,9 @@ export class SwapTransactionHandler {
             id: true,
             amountLocked: true,
             totalGain: true,
+            maturityDate: true,
+            requestedAt: true,
+            interestRatePerAnum: true,
             currencyId: true,
             cryptoCurrency: { select: { symbol: true } },
           },
@@ -152,7 +156,9 @@ export class SwapTransactionHandler {
           throw new Error(`Vault ${vaultId} not found`);
         }
 
-        const expectedUsdtMinor = BigInt(vault.amountLocked.toFixed(0));
+        const expectedUsdtMinor = swapRecord.toAmountOriginal
+          ? ConvertCurrency.toBase(String(swapRecord.toAmountOriginal), 'USDT', 6)
+          : BigInt(vault.amountLocked.toFixed(0));
         const receivedUsdtMinor = ConvertCurrency.toBase(
           data.received_amount,
           'USDT',
@@ -186,6 +192,12 @@ export class SwapTransactionHandler {
           }
 
           if (linkedTx) {
+            await this.transactionService.releaseBalance(
+              tx,
+              swapRecord.userId,
+              'BTC',
+              BigInt(linkedTx.totalAmountSentBase.toFixed(0)),
+            );
             await tx.transaction.update({
               where: { id: linkedTx.id },
               data: {
@@ -194,6 +206,15 @@ export class SwapTransactionHandler {
               },
             });
           }
+          await tx.swapTransaction.update({
+            where: { id: swapRecord.id },
+            data: {
+              status: TransactionStatus.FAILED,
+              receivedAmountOriginal: data.received_amount,
+              confirmed: false,
+              updatedAt: new Date(),
+            },
+          });
           this.logger.warn(
             `Terminated vault ${vaultId}: received ${receivedUsdtMinor} < required ${expectedUsdtMinor}`,
           );
@@ -252,13 +273,36 @@ export class SwapTransactionHandler {
         const newUsdtLocked =
           BigInt(userUsdtWallet.lockedAmount?.toFixed(0) || '0') +
           expectedUsdtMinor;
+        const durationDays = Math.max(
+          1,
+          Math.ceil(
+            (new Date(vault.maturityDate).getTime() -
+              new Date(vault.requestedAt).getTime()) /
+              (24 * 60 * 60 * 1000),
+          ),
+        );
+        const totalGainMinor = BigInt(
+          new Decimal(expectedUsdtMinor.toString())
+            .mul(new Decimal(vault.interestRatePerAnum.toString()))
+            .mul(durationDays)
+            .div(36500)
+            .toDecimalPlaces(0, Decimal.ROUND_FLOOR)
+            .toFixed(0),
+        );
+        const totalPayoutBeforeFee = expectedUsdtMinor + totalGainMinor;
+        const transactionFeeMinor =
+          (totalPayoutBeforeFee *
+            BigInt(Math.floor(VAULT_TRANSACTION_FEE * 10000))) /
+          1000000n;
+        const amountToReceiveMinor = totalPayoutBeforeFee - transactionFeeMinor;
 
         await tx.wallet.update({
           where: { id: userUsdtWallet.id },
           data: {
             baseBalance: toDecimal(newUsdtBase),
             lockedAmount: toDecimal(newUsdtLocked),
-            originalBalance: newUsdtBase.toString(),
+            totalLockedInterest: { increment: totalGainMinor.toString() },
+            originalBalance: ConvertCurrency.fromBase(newUsdtBase.toString(), 'USDT', 6),
           },
         });
 
@@ -290,12 +334,11 @@ export class SwapTransactionHandler {
         }
 
         // Update company liquidity: USDT vault principal + interest are now locked
-        const totalGainMinor = BigInt(vault.totalGain.toFixed(0));
         await tx.$executeRaw`
           UPDATE "company_liquidity"
           SET "totalLockedPrincipal" = "totalLockedPrincipal" + ${expectedUsdtMinor.toString()}::decimal,
               "totalAccruedLockedInterest" = "totalAccruedLockedInterest" + ${totalGainMinor.toString()}::decimal
-          WHERE "currency" = 'usdt'
+          WHERE LOWER("currency") = LOWER('USDT')
         `;
 
         const usdtCrypto = await tx.cryptoCurrency.findUnique({
@@ -313,6 +356,9 @@ export class SwapTransactionHandler {
             status: VaultStatus.ACTIVE,
             currencyId: usdtCrypto?.id,
             amountLocked: toDecimal(expectedUsdtMinor),
+            totalGain: toDecimal(totalGainMinor),
+            transactionFee: toDecimal(transactionFeeMinor),
+            amountToReceive: toDecimal(amountToReceiveMinor),
             ...(rateDecimal && { rate: rateDecimal }),
           },
         });
@@ -687,6 +733,11 @@ export class SwapTransactionHandler {
                 'add',
                 tx,
               );
+              await tx.$executeRaw`
+                UPDATE "company_liquidity"
+                SET "totalAmountStacked" = "totalAmountStacked" + ${principal}
+                WHERE LOWER("currency") = LOWER(${toCurrency})
+              `;
               const consumedSourceLiquidity =
                 await this.companyLiquidityService.consumeReservedLiquidity(
                   fromCurrency,

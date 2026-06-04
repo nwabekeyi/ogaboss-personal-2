@@ -6,6 +6,7 @@ import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { TempStoreService } from '../../../infrastructure/databases/redis/temp-store.service';
 import { AutoStackService } from '../../autostack/services/autostack.service';
 import Decimal from 'decimal.js';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 @Injectable()
 export class AutoStackInterestScheduler {
@@ -21,6 +22,7 @@ export class AutoStackInterestScheduler {
 
   @Cron('*/10 * * * *')
   async accrueDailyInterest() {
+    if (!isDedicatedSchedulerRuntime()) return;
     try {
       await this.queueService.add(
         QueueName.CLEANUP,
@@ -50,22 +52,30 @@ export class AutoStackInterestScheduler {
     if (!lockAcquired) return;
 
     const now = new Date();
-    const dueStacks = await this.prisma.autoStack.findMany({
-      where: {
-        status: { in: ['PENDING', 'ACTIVE'] as any },
-        nextExecutionAt: { lte: now },
-      },
-      take: this.BATCH_SIZE,
-    });
-    for (const stack of dueStacks) {
-      await this.queueService.add(
-        QueueName.CLEANUP,
-        'scheduler.autostack.charge',
-        { autoStackId: stack.id },
-        {
-          jobId: `scheduler.autostack.charge-${stack.id}-${now.toISOString().replace(/:/g, '-')}`,
+    let cursor: string | undefined;
+    while (true) {
+      const dueStacks = await this.prisma.autoStack.findMany({
+        where: {
+          status: { in: ['PENDING', 'ACTIVE'] as any },
+          nextExecutionAt: { lte: now },
         },
-      );
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: this.BATCH_SIZE,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      if (dueStacks.length === 0) break;
+      cursor = dueStacks[dueStacks.length - 1].id;
+      for (const stack of dueStacks) {
+        await this.queueService.add(
+          QueueName.CLEANUP,
+          'scheduler.autostack.charge',
+          { autoStackId: stack.id },
+          {
+            jobId: `scheduler.autostack.charge-${stack.id}-${now.toISOString().replace(/:/g, '-')}`,
+          },
+        );
+      }
     }
   }
 
@@ -140,7 +150,7 @@ export class AutoStackInterestScheduler {
       await tx.$executeRaw`
         UPDATE "company_liquidity"
         SET "totalAccruedLockedInterest" = "totalAccruedLockedInterest" + ${interest.toString()}::decimal
-        WHERE "currency" = 'USDT'
+        WHERE LOWER("currency") = LOWER('USDT')
       `;
     });
 

@@ -3,6 +3,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron} from '@nestjs/schedule';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { RedisService } from '../../../infrastructure/databases/redis';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 @Injectable()
 export class PaystackBanksScheduler implements OnModuleInit {
@@ -18,6 +19,7 @@ export class PaystackBanksScheduler implements OnModuleInit {
    * Runs immediately when the module starts
    */
   async onModuleInit() {
+    if (!isDedicatedSchedulerRuntime()) return;
     await this.cacheBanks(); // call shared method
   }
 
@@ -26,6 +28,7 @@ export class PaystackBanksScheduler implements OnModuleInit {
      */
     @Cron('0 0 */7 * *')
     async cacheBanksDaily() {
+    if (!isDedicatedSchedulerRuntime()) return;
     this.logger.log('Running daily Paystack bank cache refresh...');
     await this.cacheBanks();
   }

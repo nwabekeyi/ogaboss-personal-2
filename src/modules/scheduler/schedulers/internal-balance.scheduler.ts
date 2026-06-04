@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../infrastructure/databases/prisma/prisma.service';
 import { ALLOWED_CURRENCIES } from '../../../shared';
 import { CompanyLiquidityService } from '../../transaction/services/company-liquidity.service';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 @Injectable()
 export class InternalBalanceScheduler implements OnModuleInit {
@@ -14,11 +15,13 @@ export class InternalBalanceScheduler implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    if (!isDedicatedSchedulerRuntime()) return;
     await this.calculateInternalBalances();
   }
 
   @Cron('0 */2 * * *')
   async calculateInternalBalances() {
+    if (!isDedicatedSchedulerRuntime()) return;
     this.logger.log('Starting internal balance calculation...');
 
     for (const currency of ALLOWED_CURRENCIES) {

@@ -99,6 +99,7 @@ export class OrderDoneHandler {
         paymentMetadata: true,
         cryptoAmountBase: true,
         fiatAmountBase: true,
+        totalAmountSentBase: true,
         platformFeeBase: true,
         transactionContext: true,
       },
@@ -450,6 +451,11 @@ export class OrderDoneHandler {
               'add',
               tx,
             );
+            await tx.$executeRaw`
+              UPDATE "company_liquidity"
+              SET "totalAmountStacked" = "totalAmountStacked" + ${cryptoDec}
+              WHERE LOWER("currency") = LOWER(${crypto})
+            `;
           } else {
             // Atomic baseBalance credit
             const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
@@ -540,6 +546,190 @@ export class OrderDoneHandler {
     // SELL FLOW
     // ────────────────────────────────────────────────
     else {
+      if (
+        transaction.transactionContext === TransactionContext.BILL_PAYMENT &&
+        paymentMetadata.billingFlow === true
+      ) {
+        let billingMeta = paymentMetadata;
+        try {
+          billingMeta = await this.prisma.$transaction(async (tx) => {
+            await tx.$queryRaw`
+              SELECT "id" FROM "transactions"
+              WHERE "id" = ${transaction.id}
+              FOR UPDATE
+            `;
+            const currentTx = await tx.transaction.findUnique({
+              where: { id: transaction.id },
+              select: { paymentMetadata: true },
+            });
+            const currentMeta = (currentTx?.paymentMetadata || {}) as Record<
+              string,
+              any
+            >;
+
+            if (
+              ['PROVIDER_SUBMITTED', 'COMPLETED'].includes(
+                String(currentMeta.billingStatus || '').toUpperCase(),
+              )
+            ) {
+              return currentMeta;
+            }
+
+            if (currentMeta.sellProceedsLiquidityStatus !== 'ADDED') {
+              await this.companyLiquidityService.addLiquidity(
+                fiat,
+                executedFiatAmountBase,
+                tx,
+              );
+            }
+
+            const updatedMeta = {
+              ...currentMeta,
+              sellOrderStatus: 'filled',
+              sellProceedsLiquidityStatus: 'ADDED',
+              sellProceedsLiquidityAddedAt:
+                currentMeta.sellProceedsLiquidityAddedAt ||
+                new Date().toISOString(),
+              sellProceedsLiquidityAmountBase:
+                currentMeta.sellProceedsLiquidityAmountBase ||
+                executedFiatAmountBase.toString(),
+              billingStatus: 'PAYING',
+              billingPayRequestedAt: new Date().toISOString(),
+            };
+
+            await tx.transaction.update({
+              where: { id: transaction.id },
+              data: {
+                executedCryptoAmountBase: toDecimal(executedCryptoAmountBase),
+                executedFiatAmountBase: toDecimal(executedFiatAmountBase),
+                executionPrice: executionPrice.toString(),
+                executedAt,
+                isProcessed: false,
+                paymentMetadata: updatedMeta as Prisma.InputJsonValue,
+              },
+            });
+
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                status: OrderStatus.PROCESSING,
+                paymentStatus: PaymentStatus.PAID,
+                paymentReference: quidaxReference,
+                paymentChannel: transaction.paymentType,
+                paymentDate: executedAt,
+                gatewayResponse: JSON.stringify({ quidax: data }),
+              },
+            });
+
+            return updatedMeta;
+          });
+
+          if (
+            ['PROVIDER_SUBMITTED', 'COMPLETED'].includes(
+              String(billingMeta.billingStatus || '').toUpperCase(),
+            )
+          ) {
+            return;
+          }
+
+          const providerResponse = await this.xpresspayService.payBill({
+            amount: new Decimal(billingMeta.billAmountNgn || 0).toString(),
+            category: billingMeta.category,
+            billerCode: billingMeta.billerCode,
+            customerReference: billingMeta.customerReference,
+            productCode: billingMeta.productCode,
+            reference: transaction.id,
+          });
+
+          await this.prisma.$transaction([
+            this.prisma.transaction.update({
+              where: { id: transaction.id },
+              data: {
+                paymentMetadata: {
+                  ...billingMeta,
+                  billingStatus: 'PROVIDER_SUBMITTED',
+                  xpresspayResponse: providerResponse,
+                  xpresspaySubmittedAt: new Date().toISOString(),
+                } as Prisma.InputJsonValue,
+              },
+            }),
+            this.prisma.billPayment.updateMany({
+              where: { transactionId: transaction.id },
+              data: { status: 'PROCESSING', providerResponse },
+            }),
+          ]);
+        } catch (billingErr: any) {
+          await this.prisma.$transaction(async (tx) => {
+            const failureMeta = {
+              ...billingMeta,
+              billingStatus: 'PROVIDER_SUBMIT_FAILED',
+              billingFailureReason: billingErr?.message || 'unknown',
+              liquidityReservationStatus:
+                billingMeta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? LiquidityReservationStatus.RELEASED
+                  : billingMeta.liquidityReservationStatus,
+              liquidityReleasedAt:
+                billingMeta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? new Date().toISOString()
+                  : billingMeta.liquidityReleasedAt,
+              liquidityReleaseReason:
+                billingMeta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? 'bill_provider_submit_failed'
+                  : billingMeta.liquidityReleaseReason,
+            };
+
+            if (transaction.totalAmountSentBase) {
+              await this.transactionService.releaseBalance(
+                tx,
+                transaction.userId,
+                crypto,
+                toBigInt(transaction.totalAmountSentBase),
+              );
+            }
+
+            if (
+              reservedLiquidityAmount > 0n &&
+              billingMeta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+            ) {
+              await this.companyLiquidityService.releaseLiquidity(
+                fiat,
+                reservedLiquidityAmount,
+                tx,
+              );
+            }
+
+            await tx.transaction.update({
+              where: { id: transaction.id },
+              data: {
+                status: TransactionStatus.FAILED,
+                isProcessed: true,
+                paymentMetadata: failureMeta as Prisma.InputJsonValue,
+              },
+            });
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                status: OrderStatus.FAILED,
+                paymentStatus: PaymentStatus.FAILED,
+                gatewayResponse: JSON.stringify({
+                  quidax: data,
+                  billingError: billingErr?.message || 'unknown',
+                }),
+              },
+            });
+            await tx.billPayment.updateMany({
+              where: { transactionId: transaction.id },
+              data: { status: 'FAILED' },
+            });
+          });
+        }
+        return;
+      }
+
       const payoutAccountNumber = paymentMetadata.payoutAccountNumber as
         | string
         | undefined;
@@ -822,61 +1012,6 @@ export class OrderDoneHandler {
     // ────────────────────────────────────────────────
     // Common final step — notification + dashboard stats
     // ────────────────────────────────────────────────
-
-    // Billing hook: if this SELL belongs to bills flow, trigger xpress payment here
-    const billingMeta = (transaction.paymentMetadata || {}) as Record<
-      string,
-      any
-    >;
-    if (
-      billingMeta.billingFlow === true &&
-      billingMeta.billingStatus === 'PROCESSING'
-    ) {
-      try {
-        const providerResponse = await this.xpresspayService.payBill({
-          amount: new Decimal(billingMeta.billAmountNgn || 0).toString(),
-          category: billingMeta.category,
-          billerCode: billingMeta.billerCode,
-          customerReference: billingMeta.customerReference,
-          productCode: billingMeta.productCode,
-          reference: transaction.id,
-        });
-
-        await this.prisma.$transaction([
-          this.prisma.transaction.update({
-            where: { id: transaction.id },
-            data: {
-              paymentMetadata: {
-                ...billingMeta,
-                billingStatus: 'PROCESSING',
-                xpresspayResponse: providerResponse,
-              } as any,
-            },
-          }),
-          this.prisma.billPayment.updateMany({
-            where: { transactionId: transaction.id },
-            data: { status: 'PROCESSING', providerResponse },
-          }),
-        ]);
-      } catch (billingErr) {
-        await this.prisma.$transaction([
-          this.prisma.transaction.update({
-            where: { id: transaction.id },
-            data: {
-              paymentMetadata: {
-                ...billingMeta,
-                billingStatus: 'FAILED',
-              } as any,
-              status: TransactionStatus.FAILED,
-            },
-          }),
-          this.prisma.billPayment.updateMany({
-            where: { transactionId: transaction.id },
-            data: { status: 'FAILED' },
-          }),
-        ]);
-      }
-    }
 
     // Send notification (buy is completed, sell is still PENDING)
     try {

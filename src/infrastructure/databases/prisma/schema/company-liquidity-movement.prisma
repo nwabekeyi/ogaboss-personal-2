@@ -1,0 +1,28 @@
+model CompanyLiquidityMovement {
+  id                         String   @id @default(cuid())
+  currency                   String
+  operation                  String
+  transactionId             String?
+  sourceType                String?
+  sourceId                  String?
+  idempotencyKey            String?
+  providerReference         String?
+  amount                     Decimal  @db.Decimal(78, 0)
+  totalBalanceBefore         Decimal  @default(0) @db.Decimal(78, 0)
+  totalBalanceAfter          Decimal  @default(0) @db.Decimal(78, 0)
+  reservedBalanceBefore      Decimal  @default(0) @db.Decimal(78, 0)
+  reservedBalanceAfter       Decimal  @default(0) @db.Decimal(78, 0)
+  internalBalanceBefore      Decimal  @default(0) @db.Decimal(78, 0)
+  internalBalanceAfter       Decimal  @default(0) @db.Decimal(78, 0)
+  totalLockedPrincipalBefore Decimal  @default(0) @db.Decimal(78, 0)
+  totalLockedPrincipalAfter  Decimal  @default(0) @db.Decimal(78, 0)
+  metadata                   Json?
+  createdAt                  DateTime @default(now())
+
+  @@index([currency, createdAt])
+  @@index([transactionId])
+  @@index([sourceType, sourceId])
+  @@index([idempotencyKey])
+  @@index([operation, createdAt])
+  @@map("company_liquidity_movements")
+}

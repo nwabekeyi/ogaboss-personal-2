@@ -8,6 +8,7 @@ import { TempStoreService } from '../../../infrastructure';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { SchedulerExecutionStateService } from '../scheduler-execution-state.service';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 const COMPANY_WITHDRAWAL_RETRY_LOCK_KEY =
   'lock:company-withdrawal-retry-scheduler';
@@ -30,6 +31,7 @@ export class CompanyWithdrawalRetryScheduler {
 
   @Cron('45 1 * * *') // Staggered: 01:45
   async retryFailedCompanyWithdrawals() {
+    if (!isDedicatedSchedulerRuntime()) return;
     try {
       await this.queueService.add(QueueName.CLEANUP, this.JOB_NAME, {}, { jobId: `${this.JOB_NAME}-${new Date().toISOString().slice(0,13)}` });
       return;

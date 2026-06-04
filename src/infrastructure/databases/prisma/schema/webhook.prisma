@@ -18,6 +18,7 @@ model Webhook {
   user              User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([provider, eventType])
+  @@index([provider, eventType, createdAt])
   @@index([userId])
   @@index([createdAt])
   @@index([isProcessed, createdAt])

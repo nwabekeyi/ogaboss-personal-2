@@ -1,0 +1,34 @@
+model WalletMovement {
+  id                    String   @id @default(cuid())
+  walletId              String
+  userId                String
+  currency              String
+  operation             String
+  transactionId        String?
+  sourceType           String?
+  sourceId             String?
+  idempotencyKey       String?
+  providerReference    String?
+  baseBalanceBefore     Decimal  @default(0) @db.Decimal(78, 0)
+  baseBalanceAfter      Decimal  @default(0) @db.Decimal(78, 0)
+  reservedBalanceBefore Decimal  @default(0) @db.Decimal(78, 0)
+  reservedBalanceAfter  Decimal  @default(0) @db.Decimal(78, 0)
+  lockedAmountBefore    Decimal  @default(0) @db.Decimal(78, 0)
+  lockedAmountAfter     Decimal  @default(0) @db.Decimal(78, 0)
+  stackedAmountBefore   Decimal  @default(0) @db.Decimal(78, 0)
+  stackedAmountAfter    Decimal  @default(0) @db.Decimal(78, 0)
+  amount                Decimal  @default(0) @db.Decimal(78, 0)
+  metadata              Json?
+  createdAt             DateTime @default(now())
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([walletId, createdAt])
+  @@index([transactionId])
+  @@index([sourceType, sourceId])
+  @@index([idempotencyKey])
+  @@index([userId, currency, createdAt])
+  @@index([operation, createdAt])
+  @@map("wallet_movements")
+}

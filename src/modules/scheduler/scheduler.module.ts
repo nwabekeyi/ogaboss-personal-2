@@ -23,6 +23,7 @@ import { AutoStackInterestScheduler } from './schedulers/autostack-interest.sche
 import { SchedulerJobsWorker } from './schedulers/scheduler-jobs.worker';
 import { SchedulerExecutionStateService } from './scheduler-execution-state.service';
 import { AutoStackModule } from '../autostack/autostack.module';
+import { isDedicatedSchedulerRuntime } from './scheduler-runtime.util';
 
 @Module({
   imports: [
@@ -50,7 +51,7 @@ import { AutoStackModule } from '../autostack/autostack.module';
     VaultInterestScheduler,
     QueueService,
     AutoStackInterestScheduler,
-    SchedulerJobsWorker,
+    ...(isDedicatedSchedulerRuntime() ? [SchedulerJobsWorker] : []),
     SchedulerExecutionStateService,
   ],
   exports: [SchedulerService, QueueService],

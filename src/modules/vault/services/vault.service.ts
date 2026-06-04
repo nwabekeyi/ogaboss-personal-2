@@ -29,7 +29,8 @@ import {
   IVaultPreview,
 } from '../../../modules/transaction/services/types';
 import { QuidaxTickerService } from '../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
-import { COMPANY_NGN_WALLET_ID, CryptoNetwork, toDecimal } from '../../../shared';
+import { CryptoNetwork, toDecimal } from '../../../shared';
+import { QUIDAX_COMPANY_USERID } from '../../transaction/constants';
 import { compareHash } from '../../../shared/services/hash';
 import { QuidaxSwapService } from '../../../infrastructure/providers/quidax';
 import Decimal from 'decimal.js';
@@ -344,6 +345,14 @@ export class VaultService {
 
       if (preview.userId !== userId) throw new UnauthorizedException('Unauthorized quote');
       if (Date.now() > preview.expiresAt) throw new BadRequestException('Quote expired');
+      if (
+        !preview.expectedInterestMinor ||
+        !preview.transactionFeeMinor ||
+        !preview.amountToReceiveMinor ||
+        !preview.interestRatePerAnum
+      ) {
+        throw new BadRequestException('Preview quote before confirming vault');
+      }
 
       const isBTC = preview.currencySymbol?.toUpperCase() === 'BTC';
 
@@ -368,8 +377,6 @@ export class VaultService {
         // Balance management
         if (isBTC) {
           await this.transactionService.reserveBalance(tx, userId, 'BTC', totalChargeMinor);
-          const reservedCompanyLiquidity = await this.companyLiquidityService.reserveLiquidity('USDT', principalMinor, tx);
-          if (!reservedCompanyLiquidity) throw new BadRequestException('Something went wrong, try again later');
         } else {
           const newBaseBalance = walletBaseMinor - totalChargeMinor;
           const newLockedAmount = walletLockedMinor + principalMinor;
@@ -379,7 +386,11 @@ export class VaultService {
             data: {
               baseBalance: toDecimal(newBaseBalance),
               lockedAmount: toDecimal(newLockedAmount),
-              originalBalance: newBaseBalance.toString(),
+              originalBalance: ConvertCurrency.fromBase(
+                newBaseBalance.toString(),
+                preview.currencySymbol,
+                wallet.defaultNetwork as CryptoNetwork,
+              ),
             },
           });
         }
@@ -425,7 +436,7 @@ export class VaultService {
             UPDATE "company_liquidity"
             SET "totalLockedPrincipal" = "totalLockedPrincipal" + ${principalMinor.toString()}::decimal,
                 "totalAccruedLockedInterest" = "totalAccruedLockedInterest" + ${expectedInterestMinor.toString()}::decimal
-            WHERE "currency" = ${symbol}
+            WHERE LOWER("currency") = LOWER(${symbol})
           `;
         }
 
@@ -456,7 +467,7 @@ export class VaultService {
           swapTx = await tx.swapTransaction.create({
             data: {
               userId,
-              quidaxAccountId: 'me',
+              quidaxAccountId: QUIDAX_COMPANY_USERID,
               fromCurrency: 'BTC',
               toCurrency: 'USDT',
               amountOriginal: ConvertCurrency.fromBase(totalChargeMinor.toString(), 'BTC', wallet.defaultNetwork as CryptoNetwork),
@@ -472,17 +483,35 @@ export class VaultService {
 
       // Execute BTC swap if needed
       if (isBTC) {
+        let reservedExpectedUsdtMinor = 0n;
         try {
-          const swapReq = await this.quidaxSwapService.createInstantSwapRequest('me', {
+          const swapReq = await this.quidaxSwapService.createInstantSwapRequest(QUIDAX_COMPANY_USERID, {
             from_currency: 'btc',
             to_currency: 'usdt',
             from_amount: ConvertCurrency.fromBase(preview.totalChargeMinor, 'BTC', result.wallet.defaultNetwork as CryptoNetwork),
           });
 
           if (!swapReq?.data?.id) throw new Error('Quote refresh Failed');
+          const quotedToAmount =
+            (swapReq.data as any)?.to_amount ||
+            (swapReq.data as any)?.swap_quotation?.to_amount;
+          if (!quotedToAmount) throw new Error('Swap quotation missing USDT amount');
+          reservedExpectedUsdtMinor = ConvertCurrency.toBase(
+            String(quotedToAmount),
+            'USDT',
+            6,
+          );
+          const reservedCompanyLiquidity =
+            await this.companyLiquidityService.reserveLiquidity(
+              'USDT',
+              reservedExpectedUsdtMinor,
+            );
+          if (!reservedCompanyLiquidity) {
+            throw new BadRequestException('Insufficient company USDT liquidity for vault');
+          }
 
           const confirmRes = await this.quidaxSwapService.confirmInstantSwap({
-            user_id: COMPANY_NGN_WALLET_ID,
+            user_id: QUIDAX_COMPANY_USERID,
             quotation_id: swapReq.data.id,
           });
 
@@ -494,7 +523,12 @@ export class VaultService {
               });
               await tx.swapTransaction.update({
                 where: { id: result.swapTx.id },
-                data: { swapId: confirmRes.data.id, toAmountOriginal: confirmRes.data.swap_quotation?.to_amount || '0' },
+                data: {
+                  swapId: confirmRes.data.id,
+                  toAmountOriginal:
+                    confirmRes.data.swap_quotation?.to_amount ||
+                    String(quotedToAmount),
+                },
               });
             });
           } else {
@@ -508,6 +542,9 @@ export class VaultService {
             await tx.transaction.update({ where: { id: result.transaction.id }, data: { status: TransactionStatus.FAILED } });
             await tx.swapTransaction.update({ where: { id: result.swapTx.id }, data: { status: TransactionStatus.FAILED } });
             await tx.vault.update({ where: { id: result.vault.id }, data: { status: VaultStatus.TERMINATED } });
+            if (reservedExpectedUsdtMinor > 0n) {
+              await this.companyLiquidityService.releaseLiquidity('USDT', reservedExpectedUsdtMinor, tx as any);
+            }
           });
 
           throw new BadRequestException('Exchange failed. BTC balance has been released.');
@@ -621,17 +658,21 @@ export class VaultService {
         if (isEarlyTermination) {
           const amountAfterPenalty = amountLocked - penaltyMinor;
           newBaseBalance = BigInt(wallet.baseBalance.toFixed(0)) + amountAfterPenalty;
-          newLockedAmount = BigInt(wallet.lockedAmount?.toFixed(0) || 0) - amountLocked;
+          newLockedAmount = BigInt(wallet.lockedAmount?.toFixed(0) || 0) > amountLocked
+              ? BigInt(wallet.lockedAmount?.toFixed(0) || 0) - amountLocked
+              : 0n;
           newStatus = VaultStatus.TERMINATED;
           returnedAmount = amountAfterPenalty;
           interestReceived = 0n;
         } else {
-          const totalAmount = amountLocked + totalGain;
-          newBaseBalance = BigInt(wallet.baseBalance.toFixed(0)) + totalAmount;
-          newLockedAmount = BigInt(wallet.lockedAmount?.toFixed(0) || 0) - amountLocked;
+          const amountToReceive = BigInt(vault.amountToReceive.toFixed(0));
+          newBaseBalance = BigInt(wallet.baseBalance.toFixed(0)) + amountToReceive;
+          newLockedAmount = BigInt(wallet.lockedAmount?.toFixed(0) || 0) > amountLocked
+              ? BigInt(wallet.lockedAmount?.toFixed(0) || 0) - amountLocked
+              : 0n;
           newStatus = VaultStatus.MATURED;
-          returnedAmount = totalAmount;
-          interestReceived = totalGain;
+          returnedAmount = amountToReceive;
+          interestReceived = amountToReceive > amountLocked ? amountToReceive - amountLocked : 0n;
         }
 
         await tx.wallet.update({
@@ -640,7 +681,11 @@ export class VaultService {
             baseBalance: newBaseBalance.toString(),
             lockedAmount: newLockedAmount.toString(),
             totalLockedInterest: { decrement: totalGain.toString() },
-            originalBalance: newBaseBalance.toString(),
+            originalBalance: ConvertCurrency.fromBase(
+              newBaseBalance.toString(),
+              vault.cryptoCurrency.symbol,
+              wallet.defaultNetwork as CryptoNetwork,
+            ),
           },
         });
 
@@ -656,7 +701,7 @@ export class VaultService {
             SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
                 "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
                 "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestReceived.toString()}::decimal
-            WHERE "currency" = ${normalizedCurrency}
+            WHERE LOWER("currency") = LOWER(${normalizedCurrency})
           `;
         }
 
@@ -944,10 +989,10 @@ export class VaultService {
 
     const swapTx = await this.prisma.swapTransaction.findFirst({ where: { userId, description: `vault_swap:${vault.id}` } });
     if (swapTx?.swapId) {
-      const swap = await this.quidaxSwapService.getSwapTransaction({ user_id: 'me', swap_transaction_id: swapTx.swapId }, { skipCircuitBreaker: true });
+      const swap = await this.quidaxSwapService.getSwapTransaction({ user_id: QUIDAX_COMPANY_USERID, swap_transaction_id: swapTx.swapId }, { skipCircuitBreaker: true });
       const status = String(swap?.data?.status || '').toLowerCase();
       if (['completed', 'done'].includes(status)) throw new BadRequestException('Vault swap already processed and cannot be cancelled');
-      await axios.post(`${process.env.QUIDAX_API_URL}/users/me/swap_transactions/${swapTx.swapId}/cancel`, {}, { headers: { Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } });
+      await axios.post(`${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/swap_transactions/${swapTx.swapId}/cancel`, {}, { headers: { Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}` } });
     }
 
      await this.prisma.$transaction(async (tx) => {
@@ -957,7 +1002,13 @@ export class VaultService {
          const bufferAmountMinor = BigInt(vault.bufferAmount.toFixed(0));
          const totalChargeMinor = principalMinor + bufferAmountMinor;
          await this.transactionService.releaseBalance(tx, userId, 'BTC', totalChargeMinor);
-         await this.companyLiquidityService.releaseLiquidity('USDT', principalMinor, tx as any);
+         if (swapTx?.toAmountOriginal) {
+           await this.companyLiquidityService.releaseLiquidity(
+             'USDT',
+             ConvertCurrency.toBase(String(swapTx.toAmountOriginal), 'USDT', 6),
+             tx as any,
+           );
+         }
        }
      });
 

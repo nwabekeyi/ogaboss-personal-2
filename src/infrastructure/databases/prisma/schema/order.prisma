@@ -24,6 +24,9 @@ model Order {
   currencyId            String?
 
   @@index([transactionId])
+  @@index([referenceNo])
+  @@index([referenceNo, status])
+  @@index([paymentReference])
   @@index([createdAt])
   @@index([status])
   @@index([userId])
