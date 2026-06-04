@@ -5,6 +5,7 @@ import { Cron} from '@nestjs/schedule';
 import { QuidaxWalletService } from '../../../infrastructure/providers/quidax';
 import { PrismaService, RedisService } from '../../../infrastructure';
 import { Prisma } from '../../../infrastructure/databases/prisma/generated/prisma/client';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 import {
   COMPANY_WALLETS_KEY,
   ConvertCurrency,
@@ -22,11 +23,13 @@ export class CompanyWalletScheduler implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
+    if (!isDedicatedSchedulerRuntime()) return;
     await this.syncCompanyWallets();
   }
 
    @Cron('* * * * *') // Run every minute
    async syncCompanyWalletsCron() {
+    if (!isDedicatedSchedulerRuntime()) return;
     await this.syncCompanyWallets();
   }
 

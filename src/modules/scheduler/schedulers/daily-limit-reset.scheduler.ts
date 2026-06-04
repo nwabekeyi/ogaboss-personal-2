@@ -4,6 +4,7 @@ import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { SchedulerExecutionStateService } from '../scheduler-execution-state.service';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 @Injectable()
 export class DailyLimitResetScheduler {
@@ -18,6 +19,7 @@ export class DailyLimitResetScheduler {
 
   @Cron('0 12 * * *')
   async resetDailyLimits() {
+    if (!isDedicatedSchedulerRuntime()) return;
     try {
       await this.queueService.add(QueueName.CLEANUP, this.JOB_NAME, {}, { jobId: `${this.JOB_NAME}-${new Date().toISOString().slice(0,16)}` });
       return;

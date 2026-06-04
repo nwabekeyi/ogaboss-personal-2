@@ -5,6 +5,7 @@ import { BASE_CURRENCY, ConvertCurrency, toBigInt } from '../../../shared';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { SchedulerExecutionStateService } from '../scheduler-execution-state.service';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 @Injectable()
 export class DailyPercentageScheduler {
@@ -20,6 +21,7 @@ export class DailyPercentageScheduler {
 
   @Cron('20 0 * * *') // Staggered: 00:20
   async calculateDailyPercentages() {
+    if (!isDedicatedSchedulerRuntime()) return;
     try {
       await this.queueService.add(
         QueueName.CLEANUP,

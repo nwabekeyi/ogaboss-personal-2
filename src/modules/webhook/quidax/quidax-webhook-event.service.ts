@@ -158,9 +158,13 @@ export class QuidaxWebhookService {
       }
     } catch (err: any) {
       if (Array.isArray(err) && err[0] instanceof ValidationError) {
-        this.logger.error(
-          `Webhook validation failed (${event} / ${data.id}): ${JSON.stringify(err)}`,
-        );
+        const reason = `Webhook validation failed (${event} / ${data.id})`;
+        this.logger.error(`${reason}: ${JSON.stringify(err)}`);
+        if (webhookId) {
+          await this.webhookIdempotencyService
+            .markFailed(webhookId, reason)
+            .catch(() => undefined);
+        }
         return; // Don't retry validation errors
       }
 

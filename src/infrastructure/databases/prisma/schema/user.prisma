@@ -47,6 +47,7 @@ model User {
   Vault                 Vault[]
   AutoStack             AutoStack[]
   BillPayment           BillPayment[]
+  walletMovements       WalletMovement[]
 
   @@index([email])
   @@index([quidaxAccountId])

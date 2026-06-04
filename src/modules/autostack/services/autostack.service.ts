@@ -143,10 +143,7 @@ export class AutoStackService {
           const lockedAmount = new Decimal(w.lockedAmount?.toString() || '0');
           const stackedAmount = new Decimal(w.stackedAmount?.toString() || '0');
           const reservedAmount = new Decimal(w.reservedBalance?.toString() || '0');
-          const availableAmount = totalAmount
-            .minus(lockedAmount)
-            .minus(stackedAmount)
-            .minus(reservedAmount);
+          const availableAmount = totalAmount.minus(reservedAmount);
           return {
             walletId: w.id,
             asset: w.cryptoCurrency.symbol,
@@ -713,16 +710,29 @@ export class AutoStackService {
               throw new Error(
                 `USDT wallet not found for autostack ${stack.id}`,
               );
-            const walletUpdateResult = await tx.$executeRaw`
+            const walletUpdateResult = await tx.$queryRaw<
+              { baseBalance: string }[]
+            >`
               UPDATE "wallets"
               SET "baseBalance" = "baseBalance" - ${sourceAmountBase.toString()}::decimal,
                   "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
               WHERE "id" = ${usdtWallet.id}
-                AND ("baseBalance" - "reservedBalance" - COALESCE("lockedAmount", 0)) >= ${sourceAmountBase.toString()}::decimal
+                AND ("baseBalance" - "reservedBalance") >= ${sourceAmountBase.toString()}::decimal
+              RETURNING "baseBalance"
             `;
-            if (walletUpdateResult === 0) {
+            if (walletUpdateResult.length === 0) {
               throw new Error('Insufficient USDT balance for autostack');
             }
+            const newOriginalBalance = ConvertCurrency.fromBase(
+              BigInt(String(walletUpdateResult[0].baseBalance)),
+              'USDT',
+              6,
+            );
+            await tx.$executeRaw`
+              UPDATE "wallets"
+              SET "originalBalance" = ${newOriginalBalance}
+              WHERE "id" = ${usdtWallet.id}
+            `;
             await tx.$executeRaw`
               UPDATE "company_liquidity"
               SET "totalAmountStacked" = "totalAmountStacked" + ${sourceAmountBase.toString()}::decimal
@@ -1056,9 +1066,32 @@ export class AutoStackService {
       orderBy: { createdAt: 'desc' },
     });
     const meta = (configTx?.paymentMetadata || {}) as any;
+    const paymentType =
+      meta.paymentType === PaymentType.CRYPTO_WALLET
+        ? PaymentType.CRYPTO_WALLET
+        : PaymentType.CARD;
+    const initiationStatus = String(
+      meta.autostackInitiationStatus || '',
+    ).toUpperCase();
+
+    if (
+      paymentType !== PaymentType.CRYPTO_WALLET &&
+      (['PROCESSING', 'SUBMITTED', 'COMPLETED'].includes(initiationStatus) ||
+        meta.quidaxOrderId ||
+        meta.quidaxOrderReference ||
+        meta.autostackBuyOrderSubmittedAt)
+    ) {
+      throw new BadRequestException(
+        'Autostack card payment is already in progress and cannot be cancelled',
+      );
+    }
+
     if (meta.autostackSwapId) {
       const swap = await this.quidaxSwapService.getSwapTransaction(
-        { user_id: 'me', swap_transaction_id: String(meta.autostackSwapId) },
+        {
+          user_id: QUIDAX_COMPANY_USERID,
+          swap_transaction_id: String(meta.autostackSwapId),
+        },
         { skipCircuitBreaker: true },
       );
       const status = String(swap?.data?.status || '').toLowerCase();
@@ -1067,7 +1100,7 @@ export class AutoStackService {
           'Autostack swap already processed and cannot be cancelled',
         );
       await axios.post(
-        `${process.env.QUIDAX_API_URL}/users/me/swap_transactions/${meta.autostackSwapId}/cancel`,
+        `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/swap_transactions/${meta.autostackSwapId}/cancel`,
         {},
         {
           headers: {
@@ -1078,7 +1111,10 @@ export class AutoStackService {
     }
     if (meta.quidaxOrderId) {
       const order = await this.quidaxOrderService.getOrderRecord(
-        { user_id: 'me', order_id: String(meta.quidaxOrderId) },
+        {
+          user_id: QUIDAX_COMPANY_USERID,
+          order_id: String(meta.quidaxOrderId),
+        },
         { skipCircuitBreaker: true },
       );
       const state = String(
@@ -1096,9 +1132,67 @@ export class AutoStackService {
         { skipCircuitBreaker: true },
       );
     }
-    await this.prisma.autoStack.update({
-      where: { id: stack.id },
-      data: { status: AutoStackStatus.TERMINATED as any, endedAt: new Date() },
+    await this.prisma.$transaction(async (tx) => {
+      if (
+        meta.liquidityReservationStatus === LiquidityReservationStatus.RESERVED &&
+        meta.liquidityReservationCurrency &&
+        meta.liquidityReservationAmount
+      ) {
+        await this.companyLiquidityService.releaseLiquidity(
+          String(meta.liquidityReservationCurrency),
+          BigInt(String(meta.liquidityReservationAmount)),
+          tx as any,
+        );
+      }
+
+      if (
+        meta.paymentType === PaymentType.CRYPTO_WALLET &&
+        meta.liquidityReservationStatus === LiquidityReservationStatus.RESERVED &&
+        meta.sourceAsset &&
+        meta.sourceAmountBase
+      ) {
+        await this.transactionService.releaseBalance(
+          tx as any,
+          userId,
+          String(meta.sourceAsset),
+          BigInt(String(meta.sourceAmountBase)),
+        );
+      }
+
+      if (configTx) {
+        await tx.transaction.update({
+          where: { id: configTx.id },
+          data: {
+            paymentMetadata: {
+              ...meta,
+              liquidityReservationStatus:
+                meta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? LiquidityReservationStatus.RELEASED
+                  : meta.liquidityReservationStatus,
+              liquidityReleasedAt:
+                meta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? new Date().toISOString()
+                  : meta.liquidityReleasedAt,
+              liquidityReleaseReason:
+                meta.liquidityReservationStatus ===
+                LiquidityReservationStatus.RESERVED
+                  ? 'autostack_cancelled'
+                  : meta.liquidityReleaseReason,
+              autostackInitiationStatus: 'CANCELLED',
+            } as Prisma.InputJsonValue,
+          },
+        });
+      }
+
+      await tx.autoStack.update({
+        where: { id: stack.id },
+        data: {
+          status: AutoStackStatus.ENDED as any,
+          endedAt: new Date(),
+        },
+      });
     });
     return {
       success: true,
@@ -1135,17 +1229,30 @@ export class AutoStackService {
         where: { userId, currency: 'USDT' },
       });
       if (!wallet) throw new NotFoundException('USDT wallet not found');
-      await tx.$executeRaw`
+      const [{ baseBalance: newBaseBalance }] = await tx.$queryRaw<
+        { baseBalance: string }[]
+      >`
         UPDATE "wallets"
         SET "baseBalance" = "baseBalance" + ${payout.toString()}::decimal,
             "stackedAmount" = GREATEST("stackedAmount" - ${principal.toString()}::decimal, 0),
             "totalStackedInterest" = GREATEST("totalStackedInterest" - ${accrued.toString()}::decimal, 0)
         WHERE "id" = ${wallet.id}
+        RETURNING "baseBalance"
+      `;
+      const newOriginalBalance = ConvertCurrency.fromBase(
+        BigInt(String(newBaseBalance)),
+        'USDT',
+        6,
+      );
+      await tx.$executeRaw`
+        UPDATE "wallets"
+        SET "originalBalance" = ${newOriginalBalance}
+        WHERE "id" = ${wallet.id}
       `;
       await tx.autoStack.update({
         where: { id: stack.id },
         data: {
-          status: AutoStackStatus.TERMINATED as any,
+          status: AutoStackStatus.ENDED as any,
           endedAt: new Date(),
         },
       });
@@ -1154,7 +1261,7 @@ export class AutoStackService {
         SET "totalAmountStacked" = GREATEST("totalAmountStacked" - ${principal.toString()}::decimal, 0),
             "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${accrued.toString()}::decimal, 0),
             "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${interestPaid.toString()}::decimal
-        WHERE "currency" = 'USDT'
+        WHERE LOWER("currency") = LOWER('USDT')
       `;
     });
 

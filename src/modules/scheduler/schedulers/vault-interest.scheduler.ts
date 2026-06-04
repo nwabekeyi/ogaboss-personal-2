@@ -2,10 +2,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { VaultStatus } from '../../../infrastructure/databases/prisma';
+import { ConvertCurrency, CryptoNetwork } from '../../../shared';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { TempStoreService } from '../../../infrastructure';
 import { SchedulerExecutionStateService } from '../scheduler-execution-state.service';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 @Injectable()
 export class VaultInterestScheduler {
@@ -22,6 +24,7 @@ export class VaultInterestScheduler {
 
 @Cron('35 */12 * * *') // Staggered: every 12h at :35
     async calculateVaultInterests() {
+      if (!isDedicatedSchedulerRuntime()) return;
       try {
         await this.queueService.add(
           QueueName.CLEANUP,
@@ -76,152 +79,155 @@ export class VaultInterestScheduler {
    }
 
    async executeShard(ids: string[], asOfIso: string) {
-    this.logger.log('Starting vault maturity/interest scheduler...');
+    this.logger.log('Starting vault maturity/interest scheduler shard...');
 
-    const today = new Date(asOfIso);
-    today.setHours(0, 0, 0, 0);
-    const todayTimestamp = today.getTime();
+    const asOf = new Date(asOfIso);
+    const vaults = await this.prisma.vault.findMany({
+      where: {
+        id: { in: ids },
+        status: VaultStatus.ACTIVE,
+        maturityDate: { lte: asOf },
+      },
+      select: { id: true },
+    });
 
-    try {
-      await this.prisma.$transaction(async (tx) => {
-        const vaults = await tx.vault.findMany({
-          where: { id: { in: ids }, status: VaultStatus.ACTIVE, maturityDate: { lte: today } },
-        });
+    this.logger.log(`Found ${vaults.length} vaults to process`);
+    if (vaults.length === 0) return;
 
-        this.logger.log(`Found ${vaults.length} vaults to process`);
+    for (const { id } of vaults) {
+      try {
+        const notification = await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`
+            SELECT "id" FROM "vaults"
+            WHERE "id" = ${id}
+            FOR UPDATE
+          `;
 
-        if (vaults.length === 0) {
-          this.logger.log('No active vaults to process');
-          return;
-        }
+          const vault = await tx.vault.findFirst({
+            where: {
+              id,
+              status: VaultStatus.ACTIVE,
+              maturityDate: { lte: asOf },
+            },
+          });
+          if (!vault) return null;
 
-        const uniqueCurrencyIds = Array.from(new Set(vaults.map((v) => v.currencyId)));
-        const cryptoRates = await tx.cryptoCurrencyRate.findMany({
-          where: { cryptoCurrencyId: { in: uniqueCurrencyIds } },
-        });
-        const cryptoRateMap = new Map<string, any>();
-        for (const rate of cryptoRates) {
-          cryptoRateMap.set(rate.cryptoCurrencyId, rate);
-        }
+          const cryptoRate = await tx.cryptoCurrencyRate.findFirst({
+            where: { cryptoCurrencyId: vault.currencyId },
+          });
+          const wallet = await tx.wallet.findFirst({
+            where: { userId: vault.userId, currencyId: vault.currencyId },
+          });
+          const crypto = await tx.cryptoCurrency.findUnique({
+            where: { id: vault.currencyId },
+          });
 
-        const uniqueUserCurrencyPairs = Array.from(
-          new Set(vaults.map((v) => `${v.userId}:${v.currencyId}`)),
-        ).map((pair) => {
-          const [userId, currencyId] = pair.split(':');
-          return { userId, currencyId };
-        });
-        const wallets = await tx.wallet.findMany({
-          where: {
-            userId: { in: uniqueUserCurrencyPairs.map((p) => p.userId) },
-            currencyId: { in: uniqueUserCurrencyPairs.map((p) => p.currencyId) },
-          },
-        });
-        const walletMap = new Map<string, any>();
-        for (const wallet of wallets) {
-          walletMap.set(`${wallet.userId}:${wallet.currencyId}`, wallet);
-        }
-
-        const cryptos = await tx.cryptoCurrency.findMany({
-          where: { id: { in: uniqueCurrencyIds } },
-        });
-        const cryptoMap = new Map<string, any>();
-        for (const crypto of cryptos) {
-          cryptoMap.set(crypto.id, crypto);
-        }
-
-        for (const vault of vaults) {
-          const maturityDate = new Date(vault.maturityDate);
-          maturityDate.setHours(0, 0, 0, 0);
-          const maturityTimestamp = maturityDate.getTime();
-          const isMaturityDay = todayTimestamp === maturityTimestamp;
-          const isMatured = todayTimestamp > maturityTimestamp;
-
-          const cryptoRate = cryptoRateMap.get(vault.currencyId);
-
-          if (!cryptoRate || cryptoRate.lockedFundsRatePercent.isZero()) {
-            this.logger.warn(`No interest rate configured for currency: ${vault.currencyId}`);
-            continue;
+          if (!wallet) {
+            this.logger.warn(`Wallet not found for vault: ${vault.id}`);
+            return null;
           }
 
           const amountLocked = BigInt(vault.amountLocked.toFixed(0));
           const totalGain = BigInt(vault.totalGain.toFixed(0));
           const amountToReceive = BigInt(vault.amountToReceive.toFixed(0));
+          const cryptoSymbol = crypto?.symbol?.toUpperCase() || vault.currencyId;
+          const netInterestPaid =
+            amountToReceive > amountLocked ? amountToReceive - amountLocked : 0n;
 
-          if (isMaturityDay || isMatured) {
-            const wallet = walletMap.get(`${vault.userId}:${vault.currencyId}`);
+          const [walletUpdate] = await tx.$queryRaw<{ baseBalance: string }[]>`
+            UPDATE "wallets"
+            SET "baseBalance" = "baseBalance" + ${amountToReceive.toString()}::decimal,
+                "lockedAmount" = GREATEST("lockedAmount" - ${amountLocked.toString()}::decimal, 0),
+                "totalLockedInterest" = GREATEST("totalLockedInterest" - ${totalGain.toString()}::decimal, 0)
+            WHERE "id" = ${wallet.id}
+            RETURNING "baseBalance"
+          `;
 
-            if (!wallet) {
-              this.logger.warn(`Wallet not found for vault: ${vault.id}`);
-              continue;
-            }
+          const decimalsOrNetwork =
+            cryptoSymbol === 'USDT' || cryptoSymbol === 'USDC'
+              ? 6
+              : (wallet.defaultNetwork as CryptoNetwork);
+          const newOriginalBalance = ConvertCurrency.fromBase(
+            BigInt(String(walletUpdate.baseBalance)),
+            cryptoSymbol,
+            decimalsOrNetwork,
+          );
+          await tx.$executeRaw`
+            UPDATE "wallets"
+            SET "originalBalance" = ${newOriginalBalance}
+            WHERE "id" = ${wallet.id}
+          `;
 
-            const totalAmount = amountToReceive;
-            const newBaseBalance = BigInt(wallet.baseBalance.toFixed(0)) + totalAmount;
-            const newLockedAmount = BigInt(wallet.lockedAmount?.toFixed(0) || 0) - amountLocked;
+          await tx.vault.update({
+            where: { id: vault.id },
+            data: {
+              totalGain: totalGain.toString(),
+              interestRatePerAnum:
+                cryptoRate?.lockedFundsRatePercent ?? vault.interestRatePerAnum,
+              status: VaultStatus.MATURED,
+            },
+          });
 
-            await tx.wallet.update({
-              where: { id: wallet.id },
-              data: {
-                baseBalance: newBaseBalance.toString(),
-                lockedAmount: newLockedAmount.toString(),
-              },
-            });
-
-            await tx.vault.update({
-              where: { id: vault.id },
-              data: {
-                totalGain: totalGain.toString(),
-                interestRatePerAnum: cryptoRate.lockedFundsRatePercent,
-                status: VaultStatus.MATURED,
-              },
-            });
-
-            const crypto = cryptoMap.get(vault.currencyId);
-            const companyCurrency = crypto?.symbol?.toUpperCase() === 'BTC' ? 'USDT' : crypto?.symbol?.toUpperCase();
-            if (companyCurrency === 'USDT' || companyCurrency === 'USDC') {
-              await tx.$executeRaw`
-                UPDATE "company_liquidity"
-                SET "totalLockedPrincipal" = "totalLockedPrincipal" - ${amountLocked.toString()}::decimal,
-                    "totalAccruedLockedInterest" = "totalAccruedLockedInterest" - ${totalGain.toString()}::decimal,
-                    "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${totalGain.toString()}::decimal
-                WHERE "currency" = ${companyCurrency}
-              `;
-            }
-
-            try {
-              const cryptoSymbol = crypto?.symbol?.toUpperCase() || vault.currencyId;
-              await this.queueService.sendPushNotification({
-                userId: vault.userId,
-                title: 'Vault Matured',
-                body: `Your ${cryptoSymbol} vault has matured. Amount received: ${(totalAmount / BigInt(10 ** 8)).toString()} ${cryptoSymbol}. Interest earned: ${(totalGain / BigInt(10 ** 8)).toString()} ${cryptoSymbol}.`,
-                data: {
-                  type: 'vault_matured',
-                  vaultId: vault.id,
-                  currency: cryptoSymbol,
-                  amountReceived: vault.amountToReceive.toFixed(0),
-                  interestEarned: vault.totalGain.toFixed(0),
-                },
-              });
-            } catch (err) {
-              this.logger.warn(`Failed to send vault maturity FCM notification: ${err}`);
-            }
-
-            this.logger.log(`Vault ${vault.id} matured (${isMatured ? 'past maturity' : 'today'}). Added ${totalAmount} to wallet`);
-          } else {
-            await tx.vault.update({
-              where: { id: vault.id },
-              data: {
-                totalGain: totalGain.toString(),
-                interestRatePerAnum: cryptoRate.lockedFundsRatePercent,
-              },
-            });
+          const companyCurrency = cryptoSymbol === 'BTC' ? 'USDT' : cryptoSymbol;
+          if (companyCurrency === 'USDT' || companyCurrency === 'USDC') {
+            await tx.$executeRaw`
+              UPDATE "company_liquidity"
+              SET "totalLockedPrincipal" = GREATEST("totalLockedPrincipal" - ${amountLocked.toString()}::decimal, 0),
+                  "totalAccruedLockedInterest" = GREATEST("totalAccruedLockedInterest" - ${totalGain.toString()}::decimal, 0),
+                  "totalLockedInterestPaid" = "totalLockedInterestPaid" + ${netInterestPaid.toString()}::decimal
+              WHERE LOWER("currency") = LOWER(${companyCurrency})
+            `;
           }
-        }
-      });
 
-      this.logger.log('Vault maturity/interest scheduler completed');
-    } catch (error) {
-      this.logger.error('Error calculating vault interests:', error);
+          return {
+            userId: vault.userId,
+            vaultId: vault.id,
+            cryptoSymbol,
+            amountToReceive: amountToReceive.toString(),
+            amountToReceiveHuman: ConvertCurrency.fromBase(
+              amountToReceive,
+              cryptoSymbol,
+              decimalsOrNetwork,
+            ),
+            totalAmount: amountToReceive,
+            netInterestPaid: netInterestPaid.toString(),
+            netInterestPaidHuman: ConvertCurrency.fromBase(
+              netInterestPaid,
+              cryptoSymbol,
+              decimalsOrNetwork,
+            ),
+          };
+        });
+
+        if (notification) {
+          await this.queueService
+            .sendPushNotification({
+              userId: notification.userId,
+              title: 'Vault Matured',
+              body: `Your ${notification.cryptoSymbol} vault has matured. Amount received: ${notification.amountToReceiveHuman} ${notification.cryptoSymbol}. Interest earned: ${notification.netInterestPaidHuman} ${notification.cryptoSymbol}.`,
+              data: {
+                type: 'vault_matured',
+                vaultId: notification.vaultId,
+                currency: notification.cryptoSymbol,
+                amountReceived: notification.amountToReceive,
+                interestEarned: notification.netInterestPaid,
+              },
+            })
+            .catch((err) =>
+              this.logger.warn(
+                `Failed to send vault maturity FCM notification: ${err}`,
+              ),
+            );
+
+          this.logger.log(
+            `Vault ${notification.vaultId} matured. Added ${notification.amountToReceive} to wallet`,
+          );
+        }
+      } catch (error) {
+        this.logger.error(`Error maturing vault ${id}:`, error as any);
+      }
     }
+
+    this.logger.log('Vault maturity/interest scheduler shard completed');
   }
 }

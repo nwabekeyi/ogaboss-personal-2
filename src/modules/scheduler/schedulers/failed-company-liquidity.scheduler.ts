@@ -4,6 +4,7 @@ import { FailedCompanyLiquidityService } from '../../transaction/services';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { SchedulerExecutionStateService } from '../scheduler-execution-state.service';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
 @Injectable()
 export class FailedCompanyLiquidityScheduler {
@@ -18,6 +19,7 @@ export class FailedCompanyLiquidityScheduler {
 
   @Cron('45 * * * *') // Staggered: every hour at :45
   async retryFailedCompanyTransactions() {
+    if (!isDedicatedSchedulerRuntime()) return;
     try {
       await this.queueService.add(QueueName.CLEANUP, 'scheduler.failed-company-liquidity', {}, { jobId: `scheduler.failed-company-liquidity-${new Date().toISOString().slice(0,13)}` });
       return;

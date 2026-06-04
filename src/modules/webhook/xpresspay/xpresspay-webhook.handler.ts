@@ -1,48 +1,310 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure';
+import {
+  ConvertCurrency,
+  LiquidityReservationStatus,
+  toBigInt,
+  toDecimal,
+} from '../../../shared';
+import {
+  CompanyLiquidityService,
+  TransactionService,
+} from '../../transaction/services';
+import { BASE_CURRENCY } from '../../../shared';
 
 @Injectable()
 export class XpresspayWebhookHandler {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly transactionService: TransactionService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
+  ) {}
+
+  private isTerminalFailure(payload: any): boolean {
+    const status = String(payload?.Status || '')
+      .trim()
+      .toUpperCase();
+    const terminalStatuses = new Set([
+      '99',
+      'FAILED',
+      'FAILURE',
+      'REVERSED',
+      'CANCELLED',
+      'CANCELED',
+      'DECLINED',
+      'ERROR',
+    ]);
+    return payload?.IsSuccessful === false && terminalStatuses.has(status);
+  }
 
   async process(payload: any): Promise<void> {
-    const transactionId = payload?.TransactionId;
-    if (!transactionId) return;
+    const providerReference =
+      payload?.TransactionReference || payload?.TransactionId || payload?.Id;
+    if (!providerReference) return;
 
     const tx = await this.prisma.transaction.findFirst({
-      where: { OR: [{ id: transactionId }, { transactionUniqueId: transactionId }] },
+      where: {
+        OR: [
+          { id: providerReference },
+          { transactionUniqueId: providerReference },
+        ],
+      },
       include: { billPayment: true },
     });
     if (!tx || !tx.billPayment) return;
 
     const ok = payload.IsSuccessful === true && payload.Status === '00';
-    const amountMinor = BigInt(tx.cryptoAmountBase?.toFixed(0) || '0');
+    const terminalFailure = this.isTerminalFailure(payload);
+    const totalSentBase = toBigInt(
+      tx.totalAmountSentBase ?? tx.cryptoAmountBase ?? 0n,
+    );
+    const billAmountBase = toBigInt(tx.fiatAmountBase ?? 0n);
 
     await this.prisma.$transaction(async (db) => {
-      const latest = await db.transaction.findUnique({ where: { id: tx.id }, select: { paymentMetadata: true, senderWalletId: true } });
+      await db.$queryRaw`
+        SELECT "id" FROM "transactions"
+        WHERE "id" = ${tx.id}
+        FOR UPDATE
+      `;
+      const latest = await db.transaction.findUnique({
+        where: { id: tx.id },
+        select: {
+          paymentMetadata: true,
+          senderWalletId: true,
+          status: true,
+          userId: true,
+          currency: true,
+        },
+      });
       if (!latest) return;
 
-      if (ok) {
-        const wallet = await db.wallet.findUnique({ where: { id: latest.senderWalletId! } });
-        if (!wallet) return;
-        const balance = BigInt(wallet.baseBalance.toFixed(0));
-        await db.wallet.update({ where: { id: wallet.id }, data: { baseBalance: (balance - amountMinor).toString() } });
+      const metadata = (latest.paymentMetadata || {}) as Record<string, any>;
+      if (
+        metadata.xpresspayWebhookStatus === 'COMPLETED' ||
+        (metadata.xpresspayWebhookStatus === 'FAILED' && terminalFailure)
+      ) {
+        return;
       }
+
+      if (ok) {
+        const reservationAlreadyReleased =
+          metadata.liquidityReservationStatus ===
+            LiquidityReservationStatus.RELEASED ||
+          metadata.xpresspayWebhookStatus === 'FAILED';
+
+        if (reservationAlreadyReleased) {
+          const reconciledMetadata = {
+            ...metadata,
+            xpresspayWebhook: payload,
+            xpresspayWebhookStatus: 'SUCCESS_AFTER_RELEASE',
+            billingStatus: 'MANUAL_RECONCILIATION_REQUIRED',
+            billingManualReviewRequired: true,
+            billingRequiresRetry: false,
+            billingReconciliationReason:
+              'xpresspay_success_after_reservation_released',
+            billingReconciliationAt: new Date().toISOString(),
+          };
+
+          await db.transaction.update({
+            where: { id: tx.id },
+            data: {
+              status: 'PENDING' as any,
+              isProcessed: false,
+              paymentMetadata: reconciledMetadata as any,
+            },
+          });
+
+          await db.billPayment.update({
+            where: { id: tx.billPayment!.id },
+            data: {
+              status: 'PROCESSING' as any,
+              providerResponse: payload,
+            },
+          });
+
+          await db.order.updateMany({
+            where: { transactionId: tx.id },
+            data: {
+              status: 'PROCESSING' as any,
+              paymentStatus: 'PAID' as any,
+              gatewayResponse: JSON.stringify(payload),
+            },
+          });
+          return;
+        }
+
+        if (!latest.senderWalletId || totalSentBase <= 0n) return;
+        await this.transactionService.releaseBalance(
+          db,
+          latest.userId,
+          latest.currency,
+          totalSentBase,
+        );
+        metadata.userBalanceReservationStatus =
+          LiquidityReservationStatus.CONSUMED;
+        metadata.userBalanceConsumedAt = new Date().toISOString();
+        metadata.userBalanceConsumeReason = 'bill_payment_completed';
+        const [{ baseBalance: newBaseStr }] = await db.$queryRaw<
+          { baseBalance: string }[]
+        >`
+          UPDATE "wallets"
+          SET "baseBalance" = GREATEST("baseBalance" - ${toDecimal(totalSentBase)}, 0)
+          WHERE "id" = ${latest.senderWalletId}
+          RETURNING "baseBalance"
+        `;
+        const newOriginalBalance = ConvertCurrency.fromBase(
+          BigInt(String(newBaseStr)),
+          latest.currency,
+          6,
+        );
+        await db.$executeRaw`
+          UPDATE "wallets"
+          SET "originalBalance" = ${newOriginalBalance}
+          WHERE "id" = ${latest.senderWalletId}
+        `;
+        const consumedLiquidity =
+          await this.companyLiquidityService.consumeReservedLiquidity(
+            BASE_CURRENCY,
+            billAmountBase,
+            db,
+          );
+        if (!consumedLiquidity) {
+          throw new Error('Unable to consume reserved bill payment liquidity');
+        }
+        await this.companyLiquidityService.updateInternalBalance(
+          latest.currency,
+          toDecimal(totalSentBase),
+          'subtract',
+          db,
+        );
+      }
+
+      let liquidityReleaseFailed = false;
+
+      if (
+        !ok &&
+        terminalFailure &&
+        metadata.xpresspayWebhookStatus !== 'FAILED'
+      ) {
+        if (
+          latest.senderWalletId &&
+          totalSentBase > 0n &&
+          metadata.userBalanceReservationStatus !==
+            LiquidityReservationStatus.RELEASED
+        ) {
+          try {
+            await this.transactionService.releaseBalance(
+              db,
+              latest.userId,
+              latest.currency,
+              totalSentBase,
+            );
+            metadata.userBalanceReservationStatus =
+              LiquidityReservationStatus.RELEASED;
+            metadata.userBalanceReleasedAt = new Date().toISOString();
+            metadata.userBalanceReleaseReason = 'bill_payment_failed';
+          } catch (releaseErr: any) {
+            metadata.userBalanceReleaseError =
+              releaseErr?.message || 'reserved balance release failed';
+            metadata.billingManualReviewRequired = true;
+          }
+        }
+
+        if (
+          metadata.liquidityReservationStatus ===
+          LiquidityReservationStatus.RESERVED
+        ) {
+          try {
+            await this.companyLiquidityService.releaseLiquidity(
+              BASE_CURRENCY,
+              billAmountBase,
+              db,
+            );
+          } catch (releaseErr: any) {
+            liquidityReleaseFailed = true;
+            metadata.liquidityReleaseError =
+              releaseErr?.message || 'company liquidity release failed';
+            metadata.billingManualReviewRequired = true;
+          }
+        }
+      }
+
+      const liquidityReleased =
+        metadata.liquidityReservationStatus ===
+          LiquidityReservationStatus.RESERVED && !liquidityReleaseFailed;
+      const settlementMetadata = ok
+        ? {
+            liquidityReservationStatus: LiquidityReservationStatus.CONSUMED,
+            liquidityConsumedAt: new Date().toISOString(),
+            liquidityConsumedReason: 'bill_payment_completed',
+          }
+        : terminalFailure
+          ? {
+              liquidityReservationStatus: liquidityReleased
+                ? LiquidityReservationStatus.RELEASED
+                : metadata.liquidityReservationStatus,
+              liquidityReleasedAt: liquidityReleased
+                ? new Date().toISOString()
+                : metadata.liquidityReleasedAt,
+              liquidityReleaseReason: liquidityReleased
+                ? 'bill_payment_failed'
+                : metadata.liquidityReleaseReason,
+            }
+          : {
+              liquidityReservationStatus: metadata.liquidityReservationStatus,
+              xpresspayPendingAt: new Date().toISOString(),
+            };
+
+      const nextStatus = ok
+        ? 'COMPLETED'
+        : terminalFailure
+          ? 'FAILED'
+          : 'PENDING';
+      const nextWebhookStatus = ok
+        ? 'COMPLETED'
+        : terminalFailure
+          ? 'FAILED'
+          : 'PENDING';
 
       await db.transaction.update({
         where: { id: tx.id },
         data: {
-          status: ok ? 'COMPLETED' as any : 'FAILED' as any,
+          status: nextStatus as any,
+          isProcessed: ok || terminalFailure,
           paymentMetadata: {
-            ...((latest.paymentMetadata || {}) as Record<string, any>),
+            ...metadata,
+            ...settlementMetadata,
             xpresspayWebhook: payload,
-            xpresspayWebhookStatus: ok ? 'COMPLETED' : 'FAILED',
-            billingStatus: ok ? 'COMPLETED' : 'FAILED',
+            xpresspayWebhookStatus: nextWebhookStatus,
+            billingStatus: nextStatus,
           } as any,
         },
       });
 
-      await db.billPayment.update({ where: { id: tx.billPayment!.id }, data: { status: ok ? 'COMPLETED' : 'FAILED', providerResponse: payload } });
+      await db.billPayment.update({
+        where: { id: tx.billPayment!.id },
+        data: {
+          status: nextStatus as any,
+          providerResponse: payload,
+        },
+      });
+
+      await db.order.updateMany({
+        where: { transactionId: tx.id },
+        data: {
+          status: (ok
+            ? 'COMPLETED'
+            : terminalFailure
+              ? 'FAILED'
+              : 'PROCESSING') as any,
+          paymentStatus: (ok
+            ? 'PAID'
+            : terminalFailure
+              ? 'FAILED'
+              : 'PENDING') as any,
+          gatewayResponse: JSON.stringify(payload),
+        },
+      });
     });
   }
 }

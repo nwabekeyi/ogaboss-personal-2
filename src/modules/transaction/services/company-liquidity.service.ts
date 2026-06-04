@@ -13,12 +13,15 @@ interface LiquidityCache {
   totalBalance: string;
   reservedBalance: string;
   internalBalance: string;
+  totalLockedPrincipal: string;
+  totalAccruedLockedInterest: string;
   updatedAt: string;
 }
 
 @Injectable()
 export class CompanyLiquidityService {
   private readonly logger = new Logger(CompanyLiquidityService.name);
+  private readonly CACHE_TTL_SECONDS = 60;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -42,7 +45,14 @@ export class CompanyLiquidityService {
 
   private async setCache(currency: string, data: LiquidityCache): Promise<void> {
     try {
-      await this.redisService.hSet(COMPANY_LIQUIDITY_KEY, currency.toUpperCase(), data);
+      await this.redisService.hSet(
+        COMPANY_LIQUIDITY_KEY,
+        currency.toUpperCase(),
+        data,
+      );
+      await this.redisService
+        .getClient()
+        .expire(COMPANY_LIQUIDITY_KEY, this.CACHE_TTL_SECONDS);
     } catch (error) {
       this.logger.error(`Failed to set cache for ${currency}: ${error.message}`);
     }
@@ -59,7 +69,25 @@ export class CompanyLiquidityService {
       select: { internalBalance: true },
     });
 
+    if (liquidity) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
     return liquidity ? toBigInt(liquidity.internalBalance) : 0n;
+  }
+
+  async syncCurrencyToCache(currency: string): Promise<void> {
+    const normalizedCurrency = this.verifyCurrency(currency);
+    const liquidity = await this.prisma.companyLiquidity.findFirst({
+      where: { currency: { equals: normalizedCurrency, mode: 'insensitive' } },
+    });
+    if (!liquidity) return;
+
+    await this.setCache(liquidity.currency, {
+      totalBalance: liquidity.totalBalance.toString(),
+      reservedBalance: liquidity.reservedBalance.toString(),
+      internalBalance: liquidity.internalBalance.toString(),
+      totalLockedPrincipal: liquidity.totalLockedPrincipal.toString(),
+      totalAccruedLockedInterest: liquidity.totalAccruedLockedInterest.toString(),
+      updatedAt: liquidity.updatedAt.toISOString(),
+    });
   }
 
   async syncAllToCache(): Promise<void> {
@@ -70,6 +98,8 @@ export class CompanyLiquidityService {
         totalBalance: item.totalBalance.toString(),
         reservedBalance: item.reservedBalance.toString(),
         internalBalance: item.internalBalance.toString(),
+        totalLockedPrincipal: item.totalLockedPrincipal.toString(),
+        totalAccruedLockedInterest: item.totalAccruedLockedInterest.toString(),
         updatedAt: item.updatedAt.toISOString(),
       });
     }
@@ -96,6 +126,8 @@ export class CompanyLiquidityService {
           totalBalance: liquidity.totalBalance.toString(),
           reservedBalance: liquidity.reservedBalance.toString(),
           internalBalance: liquidity.internalBalance.toString(),
+          totalLockedPrincipal: liquidity.totalLockedPrincipal.toString(),
+          totalAccruedLockedInterest: liquidity.totalAccruedLockedInterest.toString(),
           updatedAt: liquidity.updatedAt.toISOString(),
         };
       }
@@ -131,6 +163,7 @@ export class CompanyLiquidityService {
       this.logger.warn(`Insufficient company liquidity to reserve ${amount.toString()} ${normalizedCurrency}`);
     }
 
+    if (reserved && !tx) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
     return reserved;
   }
 
@@ -144,16 +177,32 @@ export class CompanyLiquidityService {
     }
     const dec = toDecimal(amountBigInt);
 
-    await client.$executeRaw`
+    const result = await client.$executeRaw`
       UPDATE "company_liquidity"
       SET "reservedBalance" = "reservedBalance" - ${dec}
       WHERE LOWER(currency) = LOWER(${normalizedCurrency})
       AND "reservedBalance" >= ${dec}
     `;
+    if (Number(result) === 0) {
+      throw new BadRequestException('Reserved company liquidity inconsistency');
+    }
+    if (!tx) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
   }
 
   async getAvailableLiquidity(currency: string, tx?: Prisma.TransactionClient): Promise<bigint> {
     const normalizedCurrency = this.verifyCurrency(currency);
+    if (!tx) {
+      const cached = await this.getCache(normalizedCurrency);
+      if (cached) {
+        return (
+          toBigInt(cached.totalBalance) -
+          toBigInt(cached.reservedBalance) -
+          toBigInt(cached.totalLockedPrincipal || 0) -
+          toBigInt(cached.totalAccruedLockedInterest || 0)
+        );
+      }
+    }
+
     const client = tx || this.prisma;
 
     const liquidity = await client.companyLiquidity.findFirst({
@@ -167,6 +216,7 @@ export class CompanyLiquidityService {
     });
 
     if (!liquidity) return 0n;
+    if (!tx) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
 
     return (
       toBigInt(liquidity.totalBalance) -
@@ -178,6 +228,10 @@ export class CompanyLiquidityService {
 
   async getTotalBalance(currency: string, tx?: Prisma.TransactionClient): Promise<bigint> {
     const normalizedCurrency = this.verifyCurrency(currency);
+    if (!tx) {
+      const cached = await this.getCache(normalizedCurrency);
+      if (cached) return toBigInt(cached.totalBalance);
+    }
     const client = tx || this.prisma;
 
     const liquidity = await client.companyLiquidity.findFirst({
@@ -185,6 +239,7 @@ export class CompanyLiquidityService {
       select: { totalBalance: true },
     });
 
+    if (liquidity && !tx) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
     return liquidity ? toBigInt(liquidity.totalBalance) : 0n;
   }
 
@@ -214,6 +269,7 @@ export class CompanyLiquidityService {
         "totalBalance" = "company_liquidity"."totalBalance" + ${dec},
         "updatedAt" = NOW()
     `;
+    if (!tx) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
   }
 
   async reduceLiquidity(currency: string, amount: bigint, tx?: Prisma.TransactionClient): Promise<boolean> {
@@ -228,7 +284,9 @@ export class CompanyLiquidityService {
       AND ("totalBalance" - "reservedBalance") >= ${dec}
     `;
 
-    return Number(result) > 0;
+    const reduced = Number(result) > 0;
+    if (reduced && !tx) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
+    return reduced;
   }
 
   async consumeReservedLiquidity(currency: string, amount: bigint, tx?: Prisma.TransactionClient): Promise<boolean> {
@@ -245,7 +303,9 @@ export class CompanyLiquidityService {
       AND "totalBalance" >= ${dec}
     `;
 
-    return Number(result) > 0;
+    const consumed = Number(result) > 0;
+    if (consumed && !tx) await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
+    return consumed;
   }
 
   async updateInternalBalance(
@@ -257,21 +317,28 @@ export class CompanyLiquidityService {
     const client = tx || this.prisma;
     const normalizedCurrency = this.verifyCurrency(currency);
 
-    if (operation === 'add') {
-      await client.$executeRaw`
-        UPDATE "company_liquidity"
-        SET "internalBalance" = "internalBalance" + ${amount}, "updatedAt" = NOW()
-        WHERE LOWER(currency) = LOWER(${normalizedCurrency})
-      `;
-    } else {
-      await client.$executeRaw`
-        UPDATE "company_liquidity"
-        SET "internalBalance" = "internalBalance" - ${amount}, "updatedAt" = NOW()
-        WHERE LOWER(currency) = LOWER(${normalizedCurrency})
-        AND "internalBalance" >= ${amount}
-      `;
+    const result =
+      operation === 'add'
+        ? await client.$executeRaw`
+            UPDATE "company_liquidity"
+            SET "internalBalance" = "internalBalance" + ${amount}, "updatedAt" = NOW()
+            WHERE LOWER(currency) = LOWER(${normalizedCurrency})
+          `
+        : await client.$executeRaw`
+            UPDATE "company_liquidity"
+            SET "internalBalance" = "internalBalance" - ${amount}, "updatedAt" = NOW()
+            WHERE LOWER(currency) = LOWER(${normalizedCurrency})
+            AND "internalBalance" >= ${amount}
+          `;
+
+    if (Number(result) === 0) {
+      throw new BadRequestException(
+        `Company ${normalizedCurrency} internal balance inconsistency`,
+      );
     }
 
-    await this.syncInternalBalanceToCache(normalizedCurrency, amount.toString(), operation);
+    if (!tx) {
+      await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
+    }
   }
 }

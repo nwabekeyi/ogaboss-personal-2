@@ -50,7 +50,7 @@ export class TransactionService {
       SET "reservedBalance" = "reservedBalance" + ${dec}
       WHERE "userId" = ${userId}
         AND LOWER("currency") = LOWER(${currency})
-        AND ("baseBalance" - "reservedBalance" - COALESCE("lockedAmount",0) - COALESCE("stackedAmount",0)) >= ${dec}
+        AND ("baseBalance" - "reservedBalance") >= ${dec}
     `;
 
     if (result === 0) {

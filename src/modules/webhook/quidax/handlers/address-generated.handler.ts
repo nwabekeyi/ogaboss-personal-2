@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../../infrastructure/databases/prisma';
 import { PaymentAddressStatus } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
 import { QuidaxWalletService } from '../../../../infrastructure/providers/quidax/wallet.service';
@@ -28,7 +28,8 @@ export class AddressGeneratedHandler {
     });
 
     if (!localUser) {
-      throw new NotFoundException(`User not found`);
+      this.logger.debug('Skipping address-generated webhook for unknown Quidax user');
+      return;
     }
 
     const wallet = await this.prisma.wallet.findFirst({
@@ -42,9 +43,10 @@ export class AddressGeneratedHandler {
     });
 
     if (!wallet) {
-      throw new NotFoundException(
-        `Wallet not found: ${currency.toUpperCase()} for user ${localUser.email}`,
+      this.logger.debug(
+        `Skipping address-generated webhook; wallet not found: ${currency.toUpperCase()} for user ${localUser.email}`,
       );
+      return;
     }
 
     // Re-query the confirmed payment address from Quidax

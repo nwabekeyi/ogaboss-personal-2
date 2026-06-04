@@ -3,6 +3,7 @@ import { Cron} from '@nestjs/schedule';
 import { PrismaService, RedisService } from '../../../infrastructure';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { ConvertCurrency } from '../../../shared';
+import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 import {
   BASE_CURRENCY,
   COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY,
@@ -21,12 +22,14 @@ export class CompanyPaystackScheduler implements OnModuleInit {
 
   /** Run once at startup */
   async onModuleInit() {
+    if (!isDedicatedSchedulerRuntime()) return;
     await this.syncPaystackLiquidity();
   }
 
    /** Run every minute */
    @Cron('* * * * *')
    async syncPaystackLiquidityCron() {
+    if (!isDedicatedSchedulerRuntime()) return;
     await this.syncPaystackLiquidity();
   }
 

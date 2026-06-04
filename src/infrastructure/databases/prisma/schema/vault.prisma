@@ -22,6 +22,7 @@ model Vault {
   @@index([userId])
   @@index([currencyId])
   @@index([status])
+  @@index([status, maturityDate, id])
   @@index([quoteId])
   @@map("vaults")
 }
