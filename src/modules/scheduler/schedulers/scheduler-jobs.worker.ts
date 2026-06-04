@@ -8,6 +8,7 @@ import { VaultInterestScheduler } from './vault-interest.scheduler';
 import { DailyPercentageScheduler } from './daily-percentage.scheduler';
 import { DailyLimitResetScheduler } from './daily-limit-reset.scheduler';
 import { CompanyWithdrawalRetryScheduler } from './company-withdrawal-retry.scheduler';
+import { BillPaymentRetryScheduler } from './bill-payment-retry.scheduler';
 
 @Injectable()
 @Processor(QueueName.CLEANUP, { concurrency: 10 })
@@ -21,6 +22,7 @@ export class SchedulerJobsWorker extends WorkerHost {
     private readonly dailyPercentageScheduler: DailyPercentageScheduler,
     private readonly dailyLimitResetScheduler: DailyLimitResetScheduler,
     private readonly companyWithdrawalRetryScheduler: CompanyWithdrawalRetryScheduler,
+    private readonly billPaymentRetryScheduler: BillPaymentRetryScheduler,
   ) {
     super();
   }
@@ -47,6 +49,8 @@ export class SchedulerJobsWorker extends WorkerHost {
         return this.dailyLimitResetScheduler.execute();
       case 'scheduler.company-withdrawal-retry':
         return this.companyWithdrawalRetryScheduler.execute();
+      case 'scheduler.bill-payment-retry':
+        return this.billPaymentRetryScheduler.execute();
       default:
         this.logger.debug(`Skipping unknown scheduler cleanup job: ${job.name}`);
         return null;

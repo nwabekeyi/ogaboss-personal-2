@@ -279,6 +279,10 @@ export class BillsService {
       },
     );
 
+    let providerReference: string | undefined;
+    let quidaxOrderId: string | undefined;
+    let quidaxOrderAccepted = false;
+
     try {
       const orderResponse = await this.quidaxOrderService.buyOrSellOrderRequest(
         QUIDAX_COMPANY_USERID,
@@ -291,8 +295,9 @@ export class BillsService {
       );
       if (orderResponse.status !== 'success')
         throw new BadRequestException('Something went wrong, try again later.');
-      const providerReference =
-        orderResponse.data.reference || orderResponse.data.id;
+      providerReference = orderResponse.data.reference || orderResponse.data.id;
+      quidaxOrderId = orderResponse.data.id;
+      quidaxOrderAccepted = true;
       await this.prisma.$transaction(async (tx) => {
         const current = await tx.transaction.findUnique({
           where: { id: transaction.id },
@@ -305,7 +310,7 @@ export class BillsService {
               ...((current?.paymentMetadata || {}) as Record<string, any>),
               billingStatus: 'PROCESSING',
               quidaxOrderReference: providerReference,
-              quidaxOrderId: orderResponse.data.id,
+              quidaxOrderId,
             } as any,
           },
         });
@@ -330,22 +335,65 @@ export class BillsService {
       };
     } catch (error) {
       await this.prisma.$transaction(async (tx) => {
+        const current = await tx.transaction.findUnique({
+          where: { id: transaction.id },
+          select: { paymentMetadata: true },
+        });
+        const currentMeta = (current?.paymentMetadata || {}) as Record<string, any>;
+
+        if (quidaxOrderAccepted) {
+          await tx.transaction.update({
+            where: { id: transaction.id },
+            data: {
+              status: 'PENDING' as any,
+              isProcessed: false,
+              paymentMetadata: {
+                ...currentMeta,
+                billingStatus: 'ORDER_REFERENCE_PERSIST_FAILED',
+                billingRequiresReconciliation: true,
+                billingReconciliationReason:
+                  'quidax_order_accepted_but_local_reference_persist_failed',
+                billingReconciliationAt: new Date().toISOString(),
+                ...(providerReference
+                  ? { quidaxOrderReference: providerReference }
+                  : {}),
+                ...(quidaxOrderId ? { quidaxOrderId } : {}),
+              } as any,
+            },
+          });
+          await tx.order.updateMany({
+            where: { transactionId: transaction.id },
+            data: {
+              ...(providerReference ? { referenceNo: providerReference } : {}),
+              status: 'PROCESSING' as any,
+              paymentStatus: 'PENDING' as any,
+              gatewayResponse: JSON.stringify({
+                error: (error as any)?.message || 'local_reference_persist_failed',
+                quidaxOrderReference: providerReference,
+                quidaxOrderId,
+                reconciliationRequired: true,
+              }),
+            },
+          });
+          await tx.billPayment.update({
+            where: { id: billPayment.id },
+            data: { status: 'PROCESSING' },
+          });
+          return;
+        }
+
         await this.transactionService
           .releaseBalance(tx, userId, 'USDT', totalMinor)
           .catch(() => undefined);
         await this.companyLiquidityService
           .releaseLiquidity(BASE_CURRENCY, netFiatBase, tx)
           .catch(() => undefined);
-        const current = await tx.transaction.findUnique({
-          where: { id: transaction.id },
-          select: { paymentMetadata: true },
-        });
         await tx.transaction.update({
           where: { id: transaction.id },
           data: {
             status: 'FAILED' as any,
             paymentMetadata: {
-              ...((current?.paymentMetadata || {}) as Record<string, any>),
+              ...currentMeta,
               liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
               liquidityReleasedAt: new Date().toISOString(),
               liquidityReleaseReason: 'quidax_order_submit_failed',
@@ -358,6 +406,19 @@ export class BillsService {
           data: { status: 'FAILED' },
         });
       });
+      if (quidaxOrderAccepted) {
+        await this.tempStore.del(`${BILL_QUOTE_KEY_PREFIX}${dto.quoteId}`);
+        return {
+          success: true,
+          message:
+            'Bill sell order submitted. Awaiting reconciliation and webhook processing.',
+          data: {
+            reference: transaction.transactionUniqueId,
+            reconciliationRequired: true,
+          },
+        };
+      }
+
       throw new BadRequestException(
         (error as any)?.response?.data || 'Bill payment failed',
       );
