@@ -9,6 +9,15 @@ import {
 import { XpresspayService } from '../../../infrastructure/providers/xpresspay/xpresspay.service';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
+import {
+  BASE_CURRENCY,
+  LiquidityReservationStatus,
+  toBigInt,
+} from '../../../shared';
+import {
+  CompanyLiquidityService,
+  TransactionService,
+} from '../../transaction/services';
 import { SchedulerExecutionStateService } from '../scheduler-execution-state.service';
 import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
@@ -29,6 +38,8 @@ export class BillPaymentRetryScheduler {
     private readonly xpresspayService: XpresspayService,
     private readonly queueService: QueueService,
     private readonly schedulerState: SchedulerExecutionStateService,
+    private readonly transactionService: TransactionService,
+    private readonly companyLiquidityService: CompanyLiquidityService,
   ) {}
 
   @Cron('*/15 * * * *')
@@ -250,6 +261,11 @@ export class BillPaymentRetryScheduler {
         id: transaction.id,
         retryCount,
         metadata: nextMetadata,
+        userId: transaction.userId,
+        currency: transaction.currency,
+        totalAmountSentBase: transaction.totalAmountSentBase,
+        cryptoAmountBase: transaction.cryptoAmountBase,
+        fiatAmountBase: transaction.fiatAmountBase,
       };
     });
 
@@ -289,54 +305,120 @@ export class BillPaymentRetryScheduler {
       const exhausted = nextAttempt >= this.MAX_ATTEMPTS;
       const delayMinutes = Math.min(60, 2 ** nextAttempt * 5);
       const nextRetryAt = new Date(Date.now() + delayMinutes * 60 * 1000);
-      const failureMetadata = {
-        ...claim.metadata,
-        billingStatus: exhausted
-          ? 'PROVIDER_SUBMIT_RETRY_EXHAUSTED'
-          : 'PROVIDER_SUBMIT_FAILED_RETRYABLE',
-        billingRequiresRetry: !exhausted,
-        billingManualReviewRequired: exhausted,
-        billingRetryCount: nextAttempt,
-        billingNextRetryAt: exhausted ? null : nextRetryAt.toISOString(),
-        billingFailureAt: new Date().toISOString(),
-        billingFailureReason: error?.message || 'unknown',
-      } as Prisma.InputJsonValue;
+      await this.prisma.$transaction(async (tx) => {
+        const failureMetadata = {
+          ...claim.metadata,
+          billingStatus: exhausted
+            ? 'PROVIDER_SUBMIT_RETRY_EXHAUSTED'
+            : 'PROVIDER_SUBMIT_FAILED_RETRYABLE',
+          billingRequiresRetry: !exhausted,
+          billingManualReviewRequired: exhausted,
+          billingRetryCount: nextAttempt,
+          billingNextRetryAt: exhausted ? null : nextRetryAt.toISOString(),
+          billingFailureAt: new Date().toISOString(),
+          billingFailureReason: error?.message || 'unknown',
+        } as Record<string, any>;
+        let releaseFailed = false;
 
-      await this.prisma.$transaction([
-        this.prisma.transaction.update({
+        if (exhausted) {
+          const userReservationAmount = toBigInt(
+            claim.metadata.totalSellAmountBase ||
+              claim.totalAmountSentBase ||
+              claim.cryptoAmountBase ||
+              0,
+          );
+          const liquidityReservationAmount = toBigInt(
+            claim.metadata.liquidityReservationAmount ||
+              claim.fiatAmountBase ||
+              0,
+          );
+
+          if (
+            userReservationAmount > 0n &&
+            failureMetadata.userBalanceReservationStatus !==
+              LiquidityReservationStatus.RELEASED
+          ) {
+            try {
+              await this.transactionService.releaseBalance(
+                tx,
+                claim.userId,
+                claim.currency,
+                userReservationAmount,
+              );
+              failureMetadata.userBalanceReservationStatus =
+                LiquidityReservationStatus.RELEASED;
+              failureMetadata.userBalanceReleasedAt = new Date().toISOString();
+              failureMetadata.userBalanceReleaseReason =
+                'bill_payment_provider_retry_exhausted';
+            } catch (releaseErr: any) {
+              failureMetadata.billingManualReviewRequired = true;
+              releaseFailed = true;
+              failureMetadata.userBalanceReleaseError =
+                releaseErr?.message || 'reserved balance release failed';
+            }
+          }
+
+          if (
+            liquidityReservationAmount > 0n &&
+            failureMetadata.liquidityReservationStatus ===
+              LiquidityReservationStatus.RESERVED
+          ) {
+            try {
+              await this.companyLiquidityService.releaseLiquidity(
+                BASE_CURRENCY,
+                liquidityReservationAmount,
+                tx,
+              );
+              failureMetadata.liquidityReservationStatus =
+                LiquidityReservationStatus.RELEASED;
+              failureMetadata.liquidityReleasedAt = new Date().toISOString();
+              failureMetadata.liquidityReleaseReason =
+                'bill_payment_provider_retry_exhausted';
+            } catch (releaseErr: any) {
+              failureMetadata.billingManualReviewRequired = true;
+              releaseFailed = true;
+              failureMetadata.liquidityReleaseError =
+                releaseErr?.message || 'company liquidity release failed';
+            }
+          }
+        }
+
+        await tx.transaction.update({
           where: { id: claim.id },
           data: {
-            status: TransactionStatus.PENDING,
-            isProcessed: false,
-            paymentMetadata: failureMetadata,
+            status:
+              exhausted && !releaseFailed
+                ? TransactionStatus.FAILED
+                : TransactionStatus.PENDING,
+            isProcessed: exhausted && !releaseFailed,
+            paymentMetadata: failureMetadata as Prisma.InputJsonValue,
           },
-        }),
-        ...(exhausted
-          ? [
-              this.prisma.billPayment.updateMany({
-                where: { transactionId: claim.id },
-                data: {
-                  status: 'FAILED' as any,
-                  providerResponse: {
-                    retryExhausted: true,
-                    error: error?.message || 'unknown',
-                  },
-                },
+        });
+
+        if (exhausted) {
+          await tx.billPayment.updateMany({
+            where: { transactionId: claim.id },
+            data: {
+              status: 'FAILED' as any,
+              providerResponse: {
+                retryExhausted: true,
+                error: error?.message || 'unknown',
+              },
+            },
+          });
+          await tx.order.updateMany({
+            where: { transactionId: claim.id },
+            data: {
+              status: 'FAILED' as any,
+              paymentStatus: 'FAILED' as any,
+              gatewayResponse: JSON.stringify({
+                retryExhausted: true,
+                error: error?.message || 'unknown',
               }),
-              this.prisma.order.updateMany({
-                where: { transactionId: claim.id },
-                data: {
-                  status: 'FAILED' as any,
-                  paymentStatus: 'FAILED' as any,
-                  gatewayResponse: JSON.stringify({
-                    retryExhausted: true,
-                    error: error?.message || 'unknown',
-                  }),
-                },
-              }),
-            ]
-          : []),
-      ]);
+            },
+          });
+        }
+      });
     }
   }
 }

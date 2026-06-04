@@ -140,6 +140,10 @@ export class XpresspayWebhookHandler {
           latest.currency,
           totalSentBase,
         );
+        metadata.userBalanceReservationStatus =
+          LiquidityReservationStatus.CONSUMED;
+        metadata.userBalanceConsumedAt = new Date().toISOString();
+        metadata.userBalanceConsumeReason = 'bill_payment_completed';
         const [{ baseBalance: newBaseStr }] = await db.$queryRaw<
           { baseBalance: string }[]
         >`
@@ -175,32 +179,59 @@ export class XpresspayWebhookHandler {
         );
       }
 
+      let liquidityReleaseFailed = false;
+
       if (
         !ok &&
         terminalFailure &&
         metadata.xpresspayWebhookStatus !== 'FAILED'
       ) {
-        if (latest.senderWalletId && totalSentBase > 0n) {
-          await this.transactionService.releaseBalance(
-            db,
-            latest.userId,
-            latest.currency,
-            totalSentBase,
-          );
+        if (
+          latest.senderWalletId &&
+          totalSentBase > 0n &&
+          metadata.userBalanceReservationStatus !==
+            LiquidityReservationStatus.RELEASED
+        ) {
+          try {
+            await this.transactionService.releaseBalance(
+              db,
+              latest.userId,
+              latest.currency,
+              totalSentBase,
+            );
+            metadata.userBalanceReservationStatus =
+              LiquidityReservationStatus.RELEASED;
+            metadata.userBalanceReleasedAt = new Date().toISOString();
+            metadata.userBalanceReleaseReason = 'bill_payment_failed';
+          } catch (releaseErr: any) {
+            metadata.userBalanceReleaseError =
+              releaseErr?.message || 'reserved balance release failed';
+            metadata.billingManualReviewRequired = true;
+          }
         }
 
         if (
           metadata.liquidityReservationStatus ===
           LiquidityReservationStatus.RESERVED
         ) {
-          await this.companyLiquidityService.releaseLiquidity(
-            BASE_CURRENCY,
-            billAmountBase,
-            db,
-          );
+          try {
+            await this.companyLiquidityService.releaseLiquidity(
+              BASE_CURRENCY,
+              billAmountBase,
+              db,
+            );
+          } catch (releaseErr: any) {
+            liquidityReleaseFailed = true;
+            metadata.liquidityReleaseError =
+              releaseErr?.message || 'company liquidity release failed';
+            metadata.billingManualReviewRequired = true;
+          }
         }
       }
 
+      const liquidityReleased =
+        metadata.liquidityReservationStatus ===
+          LiquidityReservationStatus.RESERVED && !liquidityReleaseFailed;
       const settlementMetadata = ok
         ? {
             liquidityReservationStatus: LiquidityReservationStatus.CONSUMED,
@@ -209,21 +240,15 @@ export class XpresspayWebhookHandler {
           }
         : terminalFailure
           ? {
-              liquidityReservationStatus:
-                metadata.liquidityReservationStatus ===
-                LiquidityReservationStatus.RESERVED
-                  ? LiquidityReservationStatus.RELEASED
-                  : metadata.liquidityReservationStatus,
-              liquidityReleasedAt:
-                metadata.liquidityReservationStatus ===
-                LiquidityReservationStatus.RESERVED
-                  ? new Date().toISOString()
-                  : metadata.liquidityReleasedAt,
-              liquidityReleaseReason:
-                metadata.liquidityReservationStatus ===
-                LiquidityReservationStatus.RESERVED
-                  ? 'bill_payment_failed'
-                  : metadata.liquidityReleaseReason,
+              liquidityReservationStatus: liquidityReleased
+                ? LiquidityReservationStatus.RELEASED
+                : metadata.liquidityReservationStatus,
+              liquidityReleasedAt: liquidityReleased
+                ? new Date().toISOString()
+                : metadata.liquidityReleasedAt,
+              liquidityReleaseReason: liquidityReleased
+                ? 'bill_payment_failed'
+                : metadata.liquidityReleaseReason,
             }
           : {
               liquidityReservationStatus: metadata.liquidityReservationStatus,
