@@ -56,10 +56,10 @@ export class OrderDoneHandler {
    */
   async process(data: any): Promise<void> {
     this.logger.log('Processing order.done webhook');
-    const quidaxReference = data.reference;
+    const quidaxReference = data.reference || data.id;
 
     if (!quidaxReference) {
-      this.logger.error('Missing reference in order.done payload');
+      this.logger.error('Missing reference/id in order.done payload');
       return;
     }
 

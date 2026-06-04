@@ -12,6 +12,11 @@ import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { SchedulerExecutionStateService } from '../scheduler-execution-state.service';
 import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
+type RetryCandidate = {
+  id: string;
+  paymentMetadata: Record<string, any> | null;
+};
+
 @Injectable()
 export class BillPaymentRetryScheduler {
   private readonly logger = new Logger(BillPaymentRetryScheduler.name);
@@ -48,29 +53,35 @@ export class BillPaymentRetryScheduler {
     const now = new Date();
     if (!(await this.schedulerState.isDue(this.JOB_NAME, now))) return;
 
-    const rows = await this.prisma.$queryRaw<{ id: string }[]>`
-      SELECT "id"
+    const rows = await this.prisma.$queryRaw<RetryCandidate[]>`
+      SELECT "id", "paymentMetadata"
       FROM "transactions"
       WHERE "transactionContext" = ${TransactionContext.BILL_PAYMENT}
         AND "status" = ${TransactionStatus.PENDING}
-        AND (
-          (
-            "paymentMetadata"->>'billingStatus' = 'PROVIDER_SUBMIT_FAILED_RETRYABLE'
-            AND COALESCE(("paymentMetadata"->>'billingNextRetryAt')::timestamptz, NOW()) <= NOW()
-          )
-          OR (
-            "paymentMetadata"->>'billingStatus' = 'PAYING_RETRY'
-            AND COALESCE(("paymentMetadata"->>'billingRetryLockedAt')::timestamptz, NOW() - INTERVAL '1 hour') <= NOW() - INTERVAL '15 minutes'
-          )
+        AND "paymentMetadata"->>'billingStatus' IN (
+          'ORDER_REFERENCE_PERSIST_FAILED',
+          'PROVIDER_SUBMIT_FAILED_RETRYABLE',
+          'PAYING_RETRY'
         )
       ORDER BY "updatedAt" ASC
-      LIMIT ${this.BATCH_SIZE}
+      LIMIT ${this.BATCH_SIZE * 4}
     `;
 
-    for (const row of rows) {
-      await this.retryOne(row.id).catch((error) => {
+    const dueRows = rows
+      .filter((row) => this.isDue(row, now))
+      .slice(0, this.BATCH_SIZE);
+
+    for (const row of dueRows) {
+      const metadata = (row.paymentMetadata || {}) as Record<string, any>;
+      const billingStatus = String(metadata.billingStatus || '').toUpperCase();
+      const action =
+        billingStatus === 'ORDER_REFERENCE_PERSIST_FAILED'
+          ? this.reconcileAcceptedOrder(row.id)
+          : this.retryOne(row.id);
+
+      await action.catch((error) => {
         this.logger.error(
-          `Bill payment retry failed for transaction ${row.id}: ${error?.message || error}`,
+          `Bill payment repair failed for transaction ${row.id}: ${error?.message || error}`,
           error?.stack,
         );
       });
@@ -81,6 +92,116 @@ export class BillPaymentRetryScheduler {
       now,
       new Date(now.getTime() + 15 * 60 * 1000),
     );
+  }
+
+  private isDue(row: RetryCandidate, now: Date): boolean {
+    const metadata = (row.paymentMetadata || {}) as Record<string, any>;
+    const billingStatus = String(metadata.billingStatus || '').toUpperCase();
+
+    if (billingStatus === 'ORDER_REFERENCE_PERSIST_FAILED') {
+      return metadata.billingRequiresReconciliation !== false;
+    }
+
+    if (billingStatus === 'PROVIDER_SUBMIT_FAILED_RETRYABLE') {
+      return this.safeDateDue(metadata.billingNextRetryAt, now, true);
+    }
+
+    if (billingStatus === 'PAYING_RETRY') {
+      const staleBefore = new Date(now.getTime() - 15 * 60 * 1000);
+      return this.safeDateDue(metadata.billingRetryLockedAt, staleBefore, true);
+    }
+
+    return false;
+  }
+
+  private safeDateDue(
+    value: unknown,
+    dueAt: Date,
+    missingIsDue: boolean,
+  ): boolean {
+    if (!value) return missingIsDue;
+    const timestamp = Date.parse(String(value));
+    if (!Number.isFinite(timestamp)) return true;
+    return timestamp <= dueAt.getTime();
+  }
+
+  private async reconcileAcceptedOrder(transactionId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "transactions"
+        WHERE "id" = ${transactionId}
+        FOR UPDATE
+      `;
+
+      const transaction = await tx.transaction.findUnique({
+        where: { id: transactionId },
+        include: { billPayment: true },
+      });
+      if (!transaction?.billPayment) return;
+
+      const metadata = (transaction.paymentMetadata || {}) as Record<
+        string,
+        any
+      >;
+      const billingStatus = String(metadata.billingStatus || '').toUpperCase();
+      if (
+        transaction.status !== TransactionStatus.PENDING ||
+        (billingStatus !== 'ORDER_REFERENCE_PERSIST_FAILED' &&
+          metadata.billingRequiresReconciliation !== true)
+      ) {
+        return;
+      }
+
+      const providerReference = String(
+        metadata.quidaxOrderReference || metadata.quidaxOrderId || '',
+      ).trim();
+
+      if (!providerReference) {
+        await tx.transaction.update({
+          where: { id: transaction.id },
+          data: {
+            paymentMetadata: {
+              ...metadata,
+              billingStatus: 'ORDER_REFERENCE_RECONCILIATION_FAILED',
+              billingManualReviewRequired: true,
+              billingRequiresReconciliation: true,
+              billingReconciliationReason: 'missing_quidax_order_reference',
+              billingReconciliationAttemptedAt: new Date().toISOString(),
+            } as Prisma.InputJsonValue,
+          },
+        });
+        return;
+      }
+
+      const reconciledAt = new Date().toISOString();
+      await tx.transaction.update({
+        where: { id: transaction.id },
+        data: {
+          paymentMetadata: {
+            ...metadata,
+            billingStatus: 'PROCESSING',
+            billingRequiresReconciliation: false,
+            billingManualReviewRequired: false,
+            billingReconciledAt: reconciledAt,
+            quidaxOrderReference: providerReference,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      await tx.order.updateMany({
+        where: { transactionId: transaction.id },
+        data: {
+          referenceNo: providerReference,
+          status: 'PROCESSING' as any,
+          paymentStatus: 'PENDING' as any,
+        },
+      });
+
+      await tx.billPayment.update({
+        where: { id: transaction.billPayment.id },
+        data: { status: 'PROCESSING' as any },
+      });
+    });
   }
 
   private async retryOne(transactionId: string): Promise<void> {
@@ -97,12 +218,17 @@ export class BillPaymentRetryScheduler {
       });
       if (!transaction?.billPayment) return null;
 
-      const metadata = (transaction.paymentMetadata || {}) as Record<string, any>;
+      const metadata = (transaction.paymentMetadata || {}) as Record<
+        string,
+        any
+      >;
       const retryCount = Number(metadata.billingRetryCount || 0);
       const retryStatus = String(metadata.billingStatus || '').toUpperCase();
       if (
         transaction.status !== TransactionStatus.PENDING ||
-        !['PROVIDER_SUBMIT_FAILED_RETRYABLE', 'PAYING_RETRY'].includes(retryStatus) ||
+        !['PROVIDER_SUBMIT_FAILED_RETRYABLE', 'PAYING_RETRY'].includes(
+          retryStatus,
+        ) ||
         retryCount >= this.MAX_ATTEMPTS
       ) {
         return null;
@@ -163,26 +289,54 @@ export class BillPaymentRetryScheduler {
       const exhausted = nextAttempt >= this.MAX_ATTEMPTS;
       const delayMinutes = Math.min(60, 2 ** nextAttempt * 5);
       const nextRetryAt = new Date(Date.now() + delayMinutes * 60 * 1000);
+      const failureMetadata = {
+        ...claim.metadata,
+        billingStatus: exhausted
+          ? 'PROVIDER_SUBMIT_RETRY_EXHAUSTED'
+          : 'PROVIDER_SUBMIT_FAILED_RETRYABLE',
+        billingRequiresRetry: !exhausted,
+        billingManualReviewRequired: exhausted,
+        billingRetryCount: nextAttempt,
+        billingNextRetryAt: exhausted ? null : nextRetryAt.toISOString(),
+        billingFailureAt: new Date().toISOString(),
+        billingFailureReason: error?.message || 'unknown',
+      } as Prisma.InputJsonValue;
 
-      await this.prisma.transaction.update({
-        where: { id: claim.id },
-        data: {
-          status: TransactionStatus.PENDING,
-          isProcessed: false,
-          paymentMetadata: {
-            ...claim.metadata,
-            billingStatus: exhausted
-              ? 'PROVIDER_SUBMIT_RETRY_EXHAUSTED'
-              : 'PROVIDER_SUBMIT_FAILED_RETRYABLE',
-            billingRequiresRetry: !exhausted,
-            billingManualReviewRequired: exhausted,
-            billingRetryCount: nextAttempt,
-            billingNextRetryAt: exhausted ? null : nextRetryAt.toISOString(),
-            billingFailureAt: new Date().toISOString(),
-            billingFailureReason: error?.message || 'unknown',
-          } as Prisma.InputJsonValue,
-        },
-      });
+      await this.prisma.$transaction([
+        this.prisma.transaction.update({
+          where: { id: claim.id },
+          data: {
+            status: TransactionStatus.PENDING,
+            isProcessed: false,
+            paymentMetadata: failureMetadata,
+          },
+        }),
+        ...(exhausted
+          ? [
+              this.prisma.billPayment.updateMany({
+                where: { transactionId: claim.id },
+                data: {
+                  status: 'FAILED' as any,
+                  providerResponse: {
+                    retryExhausted: true,
+                    error: error?.message || 'unknown',
+                  },
+                },
+              }),
+              this.prisma.order.updateMany({
+                where: { transactionId: claim.id },
+                data: {
+                  status: 'FAILED' as any,
+                  paymentStatus: 'FAILED' as any,
+                  gatewayResponse: JSON.stringify({
+                    retryExhausted: true,
+                    error: error?.message || 'unknown',
+                  }),
+                },
+              }),
+            ]
+          : []),
+      ]);
     }
   }
 }

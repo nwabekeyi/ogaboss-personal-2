@@ -21,7 +21,9 @@ export class XpresspayWebhookHandler {
   ) {}
 
   private isTerminalFailure(payload: any): boolean {
-    const status = String(payload?.Status || '').trim().toUpperCase();
+    const status = String(payload?.Status || '')
+      .trim()
+      .toUpperCase();
     const terminalStatuses = new Set([
       '99',
       'FAILED',
@@ -85,6 +87,52 @@ export class XpresspayWebhookHandler {
       }
 
       if (ok) {
+        const reservationAlreadyReleased =
+          metadata.liquidityReservationStatus ===
+            LiquidityReservationStatus.RELEASED ||
+          metadata.xpresspayWebhookStatus === 'FAILED';
+
+        if (reservationAlreadyReleased) {
+          const reconciledMetadata = {
+            ...metadata,
+            xpresspayWebhook: payload,
+            xpresspayWebhookStatus: 'SUCCESS_AFTER_RELEASE',
+            billingStatus: 'MANUAL_RECONCILIATION_REQUIRED',
+            billingManualReviewRequired: true,
+            billingRequiresRetry: false,
+            billingReconciliationReason:
+              'xpresspay_success_after_reservation_released',
+            billingReconciliationAt: new Date().toISOString(),
+          };
+
+          await db.transaction.update({
+            where: { id: tx.id },
+            data: {
+              status: 'PENDING' as any,
+              isProcessed: false,
+              paymentMetadata: reconciledMetadata as any,
+            },
+          });
+
+          await db.billPayment.update({
+            where: { id: tx.billPayment!.id },
+            data: {
+              status: 'PROCESSING' as any,
+              providerResponse: payload,
+            },
+          });
+
+          await db.order.updateMany({
+            where: { transactionId: tx.id },
+            data: {
+              status: 'PROCESSING' as any,
+              paymentStatus: 'PAID' as any,
+              gatewayResponse: JSON.stringify(payload),
+            },
+          });
+          return;
+        }
+
         if (!latest.senderWalletId || totalSentBase <= 0n) return;
         await this.transactionService.releaseBalance(
           db,
@@ -127,7 +175,11 @@ export class XpresspayWebhookHandler {
         );
       }
 
-      if (!ok && terminalFailure && metadata.xpresspayWebhookStatus !== 'FAILED') {
+      if (
+        !ok &&
+        terminalFailure &&
+        metadata.xpresspayWebhookStatus !== 'FAILED'
+      ) {
         if (latest.senderWalletId && totalSentBase > 0n) {
           await this.transactionService.releaseBalance(
             db,
@@ -178,7 +230,11 @@ export class XpresspayWebhookHandler {
               xpresspayPendingAt: new Date().toISOString(),
             };
 
-      const nextStatus = ok ? 'COMPLETED' : terminalFailure ? 'FAILED' : 'PENDING';
+      const nextStatus = ok
+        ? 'COMPLETED'
+        : terminalFailure
+          ? 'FAILED'
+          : 'PENDING';
       const nextWebhookStatus = ok
         ? 'COMPLETED'
         : terminalFailure
@@ -211,8 +267,16 @@ export class XpresspayWebhookHandler {
       await db.order.updateMany({
         where: { transactionId: tx.id },
         data: {
-          status: (ok ? 'COMPLETED' : terminalFailure ? 'FAILED' : 'PROCESSING') as any,
-          paymentStatus: (ok ? 'PAID' : terminalFailure ? 'FAILED' : 'PENDING') as any,
+          status: (ok
+            ? 'COMPLETED'
+            : terminalFailure
+              ? 'FAILED'
+              : 'PROCESSING') as any,
+          paymentStatus: (ok
+            ? 'PAID'
+            : terminalFailure
+              ? 'FAILED'
+              : 'PENDING') as any,
           gatewayResponse: JSON.stringify(payload),
         },
       });
