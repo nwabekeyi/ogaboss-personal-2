@@ -14,6 +14,7 @@ import { compareHash } from '../../../shared/services/hash';
 import { ConvertCurrency, LiquidityReservationStatus } from '../../../shared';
 import {
   AutoStackConfirmDto,
+  AutoStackFrequencyDto,
   AutoStackPaymentTypesDto,
   AutoStackPreviewDto,
   AutoStackQuoteDto,
@@ -66,6 +67,38 @@ export class AutoStackService {
       }
     }
     throw new NotFoundException('Quote not found or expired');
+  }
+
+  private normalizeFrequency(
+    frequency: AutoStackFrequencyDto,
+  ): 'DAILY' | 'WEEKLY' | 'MONTHLY' {
+    if (frequency === AutoStackFrequencyDto.DAILY) return 'DAILY';
+    if (frequency === AutoStackFrequencyDto.WEEKLY) return 'WEEKLY';
+    if (frequency === AutoStackFrequencyDto.MONTHLY) return 'MONTHLY';
+    throw new BadRequestException(
+      'Frequency must be 1 (daily), 2 (weekly), or 3 (monthly)',
+    );
+  }
+
+  private normalizeDayOfWeek(
+    frequency: 'DAILY' | 'WEEKLY' | 'MONTHLY',
+    dayOfWeek?: number,
+  ): string | undefined {
+    if (frequency === 'DAILY') return undefined;
+    if (!dayOfWeek) {
+      if (frequency === 'WEEKLY') {
+        throw new BadRequestException(
+          'dayOfWeek is required for weekly autostacks. Use 1-7 for Monday-Sunday.',
+        );
+      }
+      return undefined;
+    }
+    if (!Number.isInteger(dayOfWeek) || dayOfWeek < 1 || dayOfWeek > 7) {
+      throw new BadRequestException(
+        'dayOfWeek must be between 1 and 7, where 1 = Monday and 7 = Sunday.',
+      );
+    }
+    return String(dayOfWeek);
   }
 
   constructor(
@@ -191,6 +224,8 @@ export class AutoStackService {
     const quote = this.parseStoredAutoStackQuote(quoteJson);
 
     const amountInUsdt = new Decimal(quote.amountInUsdt || 0);
+    const frequency = this.normalizeFrequency(dto.frequency);
+    const dayOfWeek = this.normalizeDayOfWeek(frequency, dto.dayOfWeek);
     const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({
       where: {
         currency: 'USDT',
@@ -203,29 +238,34 @@ export class AutoStackService {
       ? txFee.div(amountInUsdt).mul(100).toString()
       : '0';
 
-    const setting = await this.prisma.autoStackingSettings.findFirst();
+    const setting = await this.prisma.autoStackingSettings.findFirst({
+      where: { currency: { equals: 'USDT', mode: 'insensitive' } },
+    });
     const dailyInterestRatePercent = new Decimal(
       setting?.dailyInterestRatePercent?.toString() || '0',
     );
     const periods = AUTOSTACK_FREQUENCY_PERIOD_DAYS[dto.frequency];
-    const interest = amountInUsdt
+    const expectedInterest = amountInUsdt
       .mul(dailyInterestRatePercent)
       .div(100)
       .mul(periods);
-    const estimatedOut = amountInUsdt.minus(txFee).plus(interest);
+    const expectedAmountAtEnd = amountInUsdt.plus(expectedInterest);
 
     const preview = {
       ...quote,
-      frequency: dto.frequency,
+      frequency,
+      frequencyValue: dto.frequency,
       paymentType: dto.paymentType,
       paymentCardId: (dto as any).paymentCardId,
       transactionFee: txFee.toString(),
       transactionFeePercentage: txFeePct,
       interestRate: dailyInterestRatePercent.toString(),
-      estimatedOut: estimatedOut.toString(),
+      expectedInterest: expectedInterest.toString(),
+      expectedAmountAtEnd: expectedAmountAtEnd.toString(),
+      estimatedOut: expectedAmountAtEnd.toString(),
       startDate: dto.startDate,
       timeOfDay: dto.timeOfDay,
-      dayOfWeek: dto.dayOfWeek,
+      dayOfWeek,
       dayOfMonth: dto.dayOfMonth,
     };
     await this.tempStore.set(
@@ -239,12 +279,15 @@ export class AutoStackService {
       data: {
         amount: amountInUsdt.toString(),
         frequency: dto.frequency,
+        frequencyLabel: frequency,
         paymentType: dto.paymentType,
         planName: quote.planName,
         rate: quote.rate,
         transactionFee: txFee.toString(),
         interestRate: dailyInterestRatePercent.toString(),
-        estimatedOut: estimatedOut.toString(),
+        expectedInterest: expectedInterest.toString(),
+        expectedAmountAtEnd: expectedAmountAtEnd.toString(),
+        estimatedOut: expectedAmountAtEnd.toString(),
         transactionFeePercentage: txFeePct,
       },
     };
