@@ -121,18 +121,19 @@ export class AutoStackService {
   async paymentTypes(userId: string, dto: AutoStackPaymentTypesDto) {
     const quote = await this.tempStore.get(`autostack:${dto.quoteId}`);
     if (!quote) throw new NotFoundException('Quote not found or expired');
-    const cards = await this.prisma.card.findMany({
-      where: { userId, isActive: true },
+    const cards = await this.prisma.paymentCard.findMany({
+      where: { userId },
       select: {
         id: true,
         cardType: true,
         last4: true,
         expMonth: true,
         expYear: true,
-      } as any,
+      },
+      orderBy: { createdAt: 'desc' },
     });
     const wallets = await this.prisma.wallet.findMany({
-      where: { userId },
+      where: { userId, isCrypto: true, currencyId: { not: null } },
       include: { cryptoCurrency: true },
     });
     return {
@@ -146,7 +147,7 @@ export class AutoStackService {
           const availableAmount = totalAmount.minus(reservedAmount);
           return {
             walletId: w.id,
-            asset: w.cryptoCurrency.symbol,
+            asset: w.cryptoCurrency?.symbol || w.currency,
             totalAmount: totalAmount.toString(),
             lockedAmount: lockedAmount.toString(),
             stackedAmount: stackedAmount.toString(),
