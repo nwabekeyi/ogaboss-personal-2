@@ -136,9 +136,18 @@ export class AutoStackService {
       where: { userId, isCrypto: true, currencyId: { not: null } },
       include: { cryptoCurrency: true },
     });
+    const hasSavedCards = cards.length > 0;
+
     return {
       success: true,
+      message: hasSavedCards
+        ? 'Payment types retrieved successfully'
+        : 'No saved cards found. Please add a card before using card payments for autostack.',
       data: {
+        requiresCardSetup: !hasSavedCards,
+        cardSetupMessage: hasSavedCards
+          ? null
+          : 'Add a payment card to use card payments for autostack.',
         wallets: wallets.map((w) => {
           const totalAmount = new Decimal(w.baseBalance?.toString() || '0');
           const lockedAmount = new Decimal(w.lockedAmount?.toString() || '0');
@@ -972,18 +981,34 @@ export class AutoStackService {
     }
   }
   async getHistory(userId: string, page = 1, limit = 10) {
+    return this.getAutoStacksByStatus(userId, page, limit);
+  }
+
+  async getActiveAutoStacks(userId: string, page = 1, limit = 10) {
+    return this.getAutoStacksByStatus(userId, page, limit, [AutoStackStatus.ACTIVE]);
+  }
+
+  private async getAutoStacksByStatus(
+    userId: string,
+    page = 1,
+    limit = 10,
+    statuses?: AutoStackStatus[],
+  ) {
     const safeLimit = Math.min(Math.max(limit || 10, 1), 20);
     const safePage = Math.max(page || 1, 1);
     const skip = (safePage - 1) * safeLimit;
+    const where: any = statuses?.length
+      ? { userId, status: { in: statuses } }
+      : { userId };
     const [items, total] = await Promise.all([
       this.prisma.autoStack.findMany({
-        where: { userId },
+        where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: safeLimit,
         include: { cryptoCurrency: true },
       }),
-      this.prisma.autoStack.count({ where: { userId } }),
+      this.prisma.autoStack.count({ where }),
     ]);
 
     let totalAmountNgn = new Decimal(0);
