@@ -54,6 +54,20 @@ export class AutoStackService {
     return ConvertCurrency.toBase(new Decimal(amount).toString(), 'NGN', 2);
   }
 
+  private parseStoredAutoStackQuote(value: unknown): Record<string, any> {
+    if (value && typeof value === 'object') return value as Record<string, any>;
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        throw new BadRequestException(
+          'Invalid quote data. Please request a new quote.',
+        );
+      }
+    }
+    throw new NotFoundException('Quote not found or expired');
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueService: QueueService,
@@ -174,7 +188,7 @@ export class AutoStackService {
     const quoteKey = `autostack:${dto.quoteId}`;
     const quoteJson = await this.tempStore.get(quoteKey);
     if (!quoteJson) throw new NotFoundException('Quote not found or expired');
-    const quote = JSON.parse(quoteJson);
+    const quote = this.parseStoredAutoStackQuote(quoteJson);
 
     const amountInUsdt = new Decimal(quote.amountInUsdt || 0);
     const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({
@@ -245,7 +259,7 @@ export class AutoStackService {
       throw new BadRequestException('Invalid pin');
     const quoteJson = await this.tempStore.get(`autostack:${dto.quoteId}`);
     if (!quoteJson) throw new NotFoundException('Quote not found or expired');
-    const preview = JSON.parse(quoteJson);
+    const preview = this.parseStoredAutoStackQuote(quoteJson);
 
     const usdt = await this.prisma.cryptoCurrency.findFirst({
       where: { symbol: 'USDT' },
