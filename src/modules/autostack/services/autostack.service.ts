@@ -1092,8 +1092,8 @@ export class AutoStackService {
         totalInterestNgn = totalInterestNgn.plus(interestNgn);
         return {
           ...item,
-          amountNgn: amountNgn.toFixed(20),
-          accruedInterestNgn: interestNgn.toFixed(20),
+          amountNgn: amountNgn.toFixed(2),
+          accruedInterestNgn: interestNgn.toFixed(2),
         };
       }),
     );
@@ -1103,8 +1103,8 @@ export class AutoStackService {
       data: {
         items: mapped,
         totals: {
-          totalAmountNgn: totalAmountNgn.toFixed(20),
-          totalInterestNgn: totalInterestNgn.toFixed(20),
+          totalAmountNgn: totalAmountNgn.toFixed(2),
+          totalInterestNgn: totalInterestNgn.toFixed(2),
         },
         pagination: {
           page: safePage,
@@ -1117,20 +1117,40 @@ export class AutoStackService {
   }
 
   async overview(userId: string) {
-    const rows = await this.prisma.autoStack.findMany({ where: { userId } });
-    const totalAmountLocked = rows.reduce(
-      (a, r) => a + BigInt(r.amount.toFixed(0)),
-      0n,
-    );
-    const totalInterestGained = rows.reduce(
-      (a, r) => a + BigInt(r.accruedInterest.toFixed(0)),
-      0n,
-    );
+    const rows = await this.prisma.autoStack.findMany({
+      where: { userId, status: AutoStackStatus.ACTIVE },
+      include: { cryptoCurrency: true },
+    });
+    let totalAmountLockedNgn = new Decimal(0);
+    let totalInterestGainedNgn = new Decimal(0);
+
+    for (const row of rows) {
+      const symbol = row.cryptoCurrency.symbol.toUpperCase();
+      const ngnRate =
+        symbol === 'NGN'
+          ? '1'
+          : (await this.tickerService.getPrice(
+              `${symbol.toLowerCase()}ngn`,
+            )) || '0';
+      const rate = new Decimal(ngnRate || '0');
+      const amountMajor = new Decimal(
+        ConvertCurrency.fromBase(row.amount, 'USDT', 6),
+      );
+      const interestMajor = new Decimal(
+        ConvertCurrency.fromBase(row.accruedInterest, 'USDT', 6),
+      );
+      totalAmountLockedNgn = totalAmountLockedNgn.plus(amountMajor.mul(rate));
+      totalInterestGainedNgn = totalInterestGainedNgn.plus(
+        interestMajor.mul(rate),
+      );
+    }
+
     return {
       success: true,
       data: {
-        totalAmountLocked: totalAmountLocked.toString(),
-        totalInterestGained: totalInterestGained.toString(),
+        totalAmountLocked: totalAmountLockedNgn.toFixed(2),
+        totalInterestGained: totalInterestGainedNgn.toFixed(2),
+        currency: 'NGN',
       },
     };
   }
