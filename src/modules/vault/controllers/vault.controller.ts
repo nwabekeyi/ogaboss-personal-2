@@ -63,9 +63,15 @@ export class VaultController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all user vaults' })
+  @ApiOperation({ summary: 'Get active and pending user vaults' })
   getVaults(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '10') {
     return this.vaultService.getUserVaults(req.user.id, Number(page), Number(limit));
+  }
+
+  @Get('all')
+  @ApiOperation({ summary: 'Get all user vaults irrespective of state' })
+  getAllVaults(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '10') {
+    return this.vaultService.getAllUserVaults(req.user.id, Number(page), Number(limit));
   }
 
   @Get(':id')
