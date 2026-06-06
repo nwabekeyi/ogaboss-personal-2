@@ -8,6 +8,7 @@ import {
   ConvertCurrency,
   CryptoNetwork,
   BASE_CURRENCY,
+  CRYPTO_DECIMALS,
 } from '../../../shared';
 
 const META_KEY = 'dashboard:stats:meta';
@@ -22,6 +23,21 @@ export class DashboardStatsService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
   ) {}
+
+  private fromCryptoBaseForDashboard(
+    amount: Parameters<typeof ConvertCurrency.fromBase>[0],
+    currency: string,
+    network?: string | null,
+  ): string {
+    const normalizedCurrency = String(currency || '').toLowerCase();
+    const decimalsOrNetwork = network || CRYPTO_DECIMALS[normalizedCurrency];
+
+    return ConvertCurrency.fromBase(
+      amount,
+      currency,
+      decimalsOrNetwork as CryptoNetwork | number | undefined,
+    );
+  }
 
   async onModuleInit() {
     await this.computeAndCacheStats();
@@ -283,10 +299,10 @@ export class DashboardStatsService implements OnModuleInit {
               date: t.createdAt,
               status: t.status,
               cryptoAmount: t.cryptoAmountBase
-                ? ConvertCurrency.fromBase(
+                ? this.fromCryptoBaseForDashboard(
                     t.cryptoAmountBase,
                     t.currency,
-                    t.network as CryptoNetwork,
+                    t.network,
                   )
                 : 'N/A',
               fiatAmount: t.fiatAmountBase

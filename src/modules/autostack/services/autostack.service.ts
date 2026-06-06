@@ -59,6 +59,71 @@ export class AutoStackService {
     return ConvertCurrency.toBase(new Decimal(amount).toString(), 'NGN', 2);
   }
 
+  private toBaseString(amount: unknown): string {
+    if (typeof amount === 'bigint') return amount.toString();
+    if (amount instanceof Prisma.Decimal) return amount.toFixed(0);
+    if (amount && typeof (amount as any).toFixed === 'function') {
+      return (amount as any).toFixed(0);
+    }
+    return String(amount || '0');
+  }
+
+  private fromUsdtBase(amount: unknown): string {
+    return ConvertCurrency.fromBase(this.toBaseString(amount), 'USDT', 6);
+  }
+
+  private fromWalletBase(
+    amount: unknown,
+    currency: string,
+    network?: string | null,
+  ): string {
+    return ConvertCurrency.fromBase(
+      this.toBaseString(amount),
+      currency,
+      network as any,
+    );
+  }
+
+  private fromAutoStackAmountBase(
+    amount: unknown,
+    currency: string,
+    network?: string | null,
+  ): string {
+    const baseAmount = BigInt(this.toBaseString(amount));
+    const defaultConverted = new Decimal(
+      ConvertCurrency.fromBase(baseAmount, currency, 6),
+    );
+
+    if (
+      currency.toUpperCase() === 'USDT' &&
+      network &&
+      defaultConverted.gte(1_000_000)
+    ) {
+      return ConvertCurrency.fromBase(baseAmount, currency, network as any);
+    }
+
+    return defaultConverted.toString();
+  }
+
+  private formatAutoStackRecord<T extends Record<string, any>>(
+    autoStack: T,
+    network?: string | null,
+  ): T {
+    const symbol = String(
+      autoStack.cryptoCurrency?.symbol || 'USDT',
+    ).toUpperCase();
+    return {
+      ...autoStack,
+      amount: this.fromAutoStackAmountBase(autoStack.amount, symbol, network),
+      transactionFee: this.fromUsdtBase(autoStack.transactionFee),
+      accruedInterest: this.fromAutoStackAmountBase(
+        autoStack.accruedInterest,
+        symbol,
+        network,
+      ),
+    };
+  }
+
   private parseStoredAutoStackQuote(value: unknown): Record<string, any> {
     if (value && typeof value === 'object') return value as Record<string, any>;
     if (typeof value === 'string') {
@@ -212,11 +277,20 @@ export class AutoStackService {
       throw new NotFoundException('Wallet not found for selected asset');
     }
     const hasSavedCards = cards.length > 0;
-    const totalAmount = new Decimal(wallet.baseBalance?.toString() || '0');
-    const lockedAmount = new Decimal(wallet.lockedAmount?.toString() || '0');
-    const stackedAmount = new Decimal(wallet.stackedAmount?.toString() || '0');
-    const reservedAmount = new Decimal(wallet.reservedBalance?.toString() || '0');
-    const availableAmount = totalAmount.minus(reservedAmount);
+    const totalAmountBase = new Decimal(wallet.baseBalance?.toString() || '0');
+    const lockedAmountBase = new Decimal(
+      wallet.lockedAmount?.toString() || '0',
+    );
+    const stackedAmountBase = new Decimal(
+      wallet.stackedAmount?.toString() || '0',
+    );
+    const reservedAmountBase = new Decimal(
+      wallet.reservedBalance?.toString() || '0',
+    );
+    const availableAmountBase = totalAmountBase.minus(reservedAmountBase);
+    const walletCurrency = String(
+      wallet.cryptoCurrency?.symbol || wallet.currency,
+    ).toUpperCase();
 
     return {
       success: true,
@@ -234,11 +308,31 @@ export class AutoStackService {
             assetId,
             asset: wallet.cryptoCurrency?.symbol || wallet.currency,
             paymentType: PaymentType.CRYPTO_WALLET,
-            totalAmount: totalAmount.toString(),
-            lockedAmount: lockedAmount.toString(),
-            stackedAmount: stackedAmount.toString(),
-            reservedAmount: reservedAmount.toString(),
-            availableAmount: availableAmount.toString(),
+            totalAmount: this.fromWalletBase(
+              totalAmountBase.toFixed(0),
+              walletCurrency,
+              wallet.defaultNetwork,
+            ),
+            lockedAmount: this.fromWalletBase(
+              lockedAmountBase.toFixed(0),
+              walletCurrency,
+              wallet.defaultNetwork,
+            ),
+            stackedAmount: this.fromWalletBase(
+              stackedAmountBase.toFixed(0),
+              walletCurrency,
+              wallet.defaultNetwork,
+            ),
+            reservedAmount: this.fromWalletBase(
+              reservedAmountBase.toFixed(0),
+              walletCurrency,
+              wallet.defaultNetwork,
+            ),
+            availableAmount: this.fromWalletBase(
+              availableAmountBase.toFixed(0),
+              walletCurrency,
+              wallet.defaultNetwork,
+            ),
           },
         ],
         cards: cards.map((card) => ({
@@ -375,9 +469,7 @@ export class AutoStackService {
     let sourceAmountOriginal = principalUsdtOriginal;
 
     if (paymentType === PaymentType.CRYPTO_WALLET) {
-      const sourceAssetId = String(
-        preview.assetId || preview.currencyId || '',
-      );
+      const sourceAssetId = String(preview.assetId || preview.currencyId || '');
       if (!sourceAssetId) {
         throw new BadRequestException(
           'Quote asset is missing. Please request a new quote.',
@@ -480,7 +572,7 @@ export class AutoStackService {
         success: true,
         message:
           'Autostack created and initiated for today. Execution price may differ from the quoted price.',
-        data: autoStack,
+        data: this.formatAutoStackRecord(autoStack),
       };
     }
 
@@ -497,7 +589,7 @@ export class AutoStackService {
       success: true,
       message:
         'Autostack created and will be initiated on the selected start date. Execution price may differ from the quoted price.',
-      data: autoStack,
+      data: this.formatAutoStackRecord(autoStack),
     };
   }
 
@@ -806,44 +898,44 @@ export class AutoStackService {
                   `Insufficient company ${sourceAsset} liquidity for autostack`,
                 );
             }
-await tx.transaction.update({
-               where: { id: configTx.id },
-               data: {
-                 cryptoAmountBase: sourceAmountBase.toString(),
-                 cryptoAmountOriginal: sourceAmountOriginal,
-                 fiatAmountBase: principalUsdtBase.toString(),
-                 fiatAmountOriginal: principalUsdtOriginal,
-                 paymentMetadata: {
-                   ...processingMetadata,
-                   liquidityReservationStatus:
-                     LiquidityReservationStatus.RESERVED,
-liquidityReservationCurrency: sourceAsset,
-                    liquidityReservationAmount: sourceAmountBase.toString(),
-                  } as Prisma.InputJsonValue,
-                },
-              });
+            await tx.transaction.update({
+              where: { id: configTx.id },
+              data: {
+                cryptoAmountBase: sourceAmountBase.toString(),
+                cryptoAmountOriginal: sourceAmountOriginal,
+                fiatAmountBase: principalUsdtBase.toString(),
+                fiatAmountOriginal: principalUsdtOriginal,
+                paymentMetadata: {
+                  ...processingMetadata,
+                  liquidityReservationStatus:
+                    LiquidityReservationStatus.RESERVED,
+                  liquidityReservationCurrency: sourceAsset,
+                  liquidityReservationAmount: sourceAmountBase.toString(),
+                } as Prisma.InputJsonValue,
+              },
             });
-          }
+          });
+        }
 
-          if (sourceAsset === 'USDT') {
-            await this.prisma.$transaction(async (tx) => {
-              const usdt = await tx.cryptoCurrency.findFirst({
-                where: { symbol: 'USDT' },
-              });
-              if (!usdt) throw new Error('USDT currency not found');
-              const usdtWallet = await tx.wallet.findFirst({
-                where: {
-                  userId: stack.userId,
-                  OR: [{ currencyId: usdt.id }, { currency: 'USDT' }],
-                },
-              });
-              if (!usdtWallet)
-                throw new Error(
-                  `USDT wallet not found for autostack ${stack.id}`,
-                );
-              const walletUpdateResult = await tx.$queryRaw<
-                { baseBalance: string }[]
-              >`
+        if (sourceAsset === 'USDT') {
+          await this.prisma.$transaction(async (tx) => {
+            const usdt = await tx.cryptoCurrency.findFirst({
+              where: { symbol: 'USDT' },
+            });
+            if (!usdt) throw new Error('USDT currency not found');
+            const usdtWallet = await tx.wallet.findFirst({
+              where: {
+                userId: stack.userId,
+                OR: [{ currencyId: usdt.id }, { currency: 'USDT' }],
+              },
+            });
+            if (!usdtWallet)
+              throw new Error(
+                `USDT wallet not found for autostack ${stack.id}`,
+              );
+            const walletUpdateResult = await tx.$queryRaw<
+              { baseBalance: string }[]
+            >`
                 UPDATE "wallets"
                 SET "baseBalance" = "baseBalance" - ${sourceAmountBase.toString()}::decimal,
                     "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
@@ -920,8 +1012,7 @@ liquidityReservationCurrency: sourceAsset,
           },
           { skipCircuitBreaker: true },
         );
-        const quotationId =
-          swapQuote?.data?.id || swapQuote?.data?.id;
+        const quotationId = swapQuote?.data?.id || swapQuote?.data?.id;
         if (!quotationId)
           throw new Error('Unable to create autostack swap quotation');
         const confirmedSwap = await this.quidaxSwapService.confirmInstantSwap(
@@ -1029,23 +1120,23 @@ liquidityReservationCurrency: sourceAsset,
         },
         { skipCircuitBreaker: true },
       );
-await this.prisma.transaction.update({
-         where: { id: configTx.id },
-         data: {
-           paymentMetadata: {
-             ...processingMetadata,
-             paymentType,
-             sourceAsset: 'USDT',
-             targetAsset: 'USDT',
-             autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
-             autostackInitiationStatus: 'SUBMITTED',
-             liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
-             liquidityReservationCurrency: 'NGN',
-             liquidityReservationAmount: ngnAmountBase.toString(),
-             usdtNgnRate,
-           } as Prisma.InputJsonValue,
-         },
-       });
+      await this.prisma.transaction.update({
+        where: { id: configTx.id },
+        data: {
+          paymentMetadata: {
+            ...processingMetadata,
+            paymentType,
+            sourceAsset: 'USDT',
+            targetAsset: 'USDT',
+            autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
+            autostackInitiationStatus: 'SUBMITTED',
+            liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
+            liquidityReservationCurrency: 'NGN',
+            liquidityReservationAmount: ngnAmountBase.toString(),
+            usdtNgnRate,
+          } as Prisma.InputJsonValue,
+        },
+      });
     } catch (error) {
       await this.prisma.$transaction(async (tx) => {
         const failedTx = await tx.transaction.findUnique({
@@ -1106,7 +1197,9 @@ await this.prisma.transaction.update({
   }
 
   async getActiveAutoStacks(userId: string, page = 1, limit = 10) {
-    return this.getAutoStacksByStatus(userId, page, limit, [AutoStackStatus.ACTIVE]);
+    return this.getAutoStacksByStatus(userId, page, limit, [
+      AutoStackStatus.ACTIVE,
+    ]);
   }
 
   private async getAutoStacksByStatus(
@@ -1132,6 +1225,17 @@ await this.prisma.transaction.update({
       this.prisma.autoStack.count({ where }),
     ]);
 
+    const wallets = await this.prisma.wallet.findMany({
+      where: {
+        userId,
+        currencyId: { in: [...new Set(items.map((item) => item.currencyId))] },
+      },
+      select: { currencyId: true, defaultNetwork: true },
+    });
+    const walletNetworkByCurrencyId = new Map(
+      wallets.map((wallet) => [wallet.currencyId, wallet.defaultNetwork]),
+    );
+
     let totalAmountNgn = new Decimal(0);
     let totalInterestNgn = new Decimal(0);
     const mapped = await Promise.all(
@@ -1144,20 +1248,19 @@ await this.prisma.transaction.update({
                 `${symbol.toLowerCase()}ngn`,
               )) || '0';
         const rate = new Decimal(ngnRate || '0');
+        const network = walletNetworkByCurrencyId.get(item.currencyId);
         const amountMajor = new Decimal(
-          ConvertCurrency.fromBase(item.amount, 'USDT', 6),
+          this.fromAutoStackAmountBase(item.amount, symbol, network),
         );
         const interestMajor = new Decimal(
-          ConvertCurrency.fromBase(item.accruedInterest, 'USDT', 6),
+          this.fromAutoStackAmountBase(item.accruedInterest, symbol, network),
         );
-const amountNgn = amountMajor.mul(rate);
+        const amountNgn = amountMajor.mul(rate);
         const interestNgn = interestMajor.mul(rate);
         totalAmountNgn = totalAmountNgn.plus(amountNgn);
         totalInterestNgn = totalInterestNgn.plus(interestNgn);
         return {
-          ...item,
-          amount: amountMajor.toString(),
-          accruedInterest: interestMajor.toString(),
+          ...this.formatAutoStackRecord(item, network),
           amountNgn: amountNgn.toFixed(2),
           accruedInterestNgn: interestNgn.toFixed(2),
         };
@@ -1187,6 +1290,16 @@ const amountNgn = amountMajor.mul(rate);
       where: { userId, status: AutoStackStatus.ACTIVE },
       include: { cryptoCurrency: true },
     });
+    const wallets = await this.prisma.wallet.findMany({
+      where: {
+        userId,
+        currencyId: { in: [...new Set(rows.map((row) => row.currencyId))] },
+      },
+      select: { currencyId: true, defaultNetwork: true },
+    });
+    const walletNetworkByCurrencyId = new Map(
+      wallets.map((wallet) => [wallet.currencyId, wallet.defaultNetwork]),
+    );
     let totalAmountLockedNgn = new Decimal(0);
     let totalInterestGainedNgn = new Decimal(0);
 
@@ -1195,15 +1308,15 @@ const amountNgn = amountMajor.mul(rate);
       const ngnRate =
         symbol === 'NGN'
           ? '1'
-          : (await this.tickerService.getPrice(
-              `${symbol.toLowerCase()}ngn`,
-            )) || '0';
+          : (await this.tickerService.getPrice(`${symbol.toLowerCase()}ngn`)) ||
+            '0';
       const rate = new Decimal(ngnRate || '0');
+      const network = walletNetworkByCurrencyId.get(row.currencyId);
       const amountMajor = new Decimal(
-        ConvertCurrency.fromBase(row.amount, 'USDT', 6),
+        this.fromAutoStackAmountBase(row.amount, symbol, network),
       );
       const interestMajor = new Decimal(
-        ConvertCurrency.fromBase(row.accruedInterest, 'USDT', 6),
+        this.fromAutoStackAmountBase(row.accruedInterest, symbol, network),
       );
       totalAmountLockedNgn = totalAmountLockedNgn.plus(amountMajor.mul(rate));
       totalInterestGainedNgn = totalInterestGainedNgn.plus(
@@ -1303,7 +1416,8 @@ const amountNgn = amountMajor.mul(rate);
     }
     await this.prisma.$transaction(async (tx) => {
       if (
-        meta.liquidityReservationStatus === LiquidityReservationStatus.RESERVED &&
+        meta.liquidityReservationStatus ===
+          LiquidityReservationStatus.RESERVED &&
         meta.liquidityReservationCurrency &&
         meta.liquidityReservationAmount
       ) {
@@ -1316,7 +1430,8 @@ const amountNgn = amountMajor.mul(rate);
 
       if (
         meta.paymentType === PaymentType.CRYPTO_WALLET &&
-        meta.liquidityReservationStatus === LiquidityReservationStatus.RESERVED &&
+        meta.liquidityReservationStatus ===
+          LiquidityReservationStatus.RESERVED &&
         meta.sourceAsset &&
         meta.sourceAmountBase
       ) {
@@ -1387,7 +1502,7 @@ const amountNgn = amountMajor.mul(rate);
       throw new BadRequestException('Invalid pin');
 
     const isEarly = new Date() < stack.nextInterestAt;
-const principal = BigInt(stack.amount.toFixed(0));
+    const principal = BigInt(stack.amount.toFixed(0));
     const accrued = BigInt(stack.accruedInterest.toFixed(0));
     const penalty = isEarly ? (principal * 5n) / 100n : 0n;
     const payout = isEarly ? principal - penalty : principal + accrued;
