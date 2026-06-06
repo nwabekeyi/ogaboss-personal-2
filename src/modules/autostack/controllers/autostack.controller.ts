@@ -28,6 +28,10 @@ export class AutoStackController {
   @ApiOperation({ summary: 'Create auto stack' })
   create(@Request() req: any, @Body() dto: AutoStackConfirmDto) { return this.service.confirm(req.user.id, dto); }
 
+  @Get('active')
+  @ApiOperation({ summary: 'Get active autostacks with pagination' })
+  active(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '20') { return this.service.getActiveAutoStacks(req.user.id, Number(page), Number(limit)); }
+
   @Get('history')
   history(@Request() req: any, @Query('page') page = '1', @Query('limit') limit = '20') { return this.service.getHistory(req.user.id, Number(page), Number(limit)); }
 

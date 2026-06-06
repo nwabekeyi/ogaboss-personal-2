@@ -100,7 +100,9 @@ export class AutoStackInterestScheduler {
       return this.autoStackService.initiateAutoStack(stack.id);
     }
 
-    const setting = await this.prisma.autoStackingSettings.findFirst();
+    const setting = await this.prisma.autoStackingSettings.findFirst({
+      where: { currency: { equals: 'USDT', mode: 'insensitive' } },
+    });
     const dailyRate = new Decimal(
       setting?.dailyInterestRatePercent?.toString() || '0',
     );

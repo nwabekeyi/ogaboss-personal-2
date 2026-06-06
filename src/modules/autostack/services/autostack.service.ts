@@ -14,6 +14,7 @@ import { compareHash } from '../../../shared/services/hash';
 import { ConvertCurrency, LiquidityReservationStatus } from '../../../shared';
 import {
   AutoStackConfirmDto,
+  AutoStackFrequencyDto,
   AutoStackPaymentTypesDto,
   AutoStackPreviewDto,
   AutoStackQuoteDto,
@@ -52,6 +53,52 @@ export class AutoStackService {
 
   private toNgnBase(amount: Decimal.Value): bigint {
     return ConvertCurrency.toBase(new Decimal(amount).toString(), 'NGN', 2);
+  }
+
+  private parseStoredAutoStackQuote(value: unknown): Record<string, any> {
+    if (value && typeof value === 'object') return value as Record<string, any>;
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        throw new BadRequestException(
+          'Invalid quote data. Please request a new quote.',
+        );
+      }
+    }
+    throw new NotFoundException('Quote not found or expired');
+  }
+
+  private normalizeFrequency(
+    frequency: AutoStackFrequencyDto,
+  ): 'DAILY' | 'WEEKLY' | 'MONTHLY' {
+    if (frequency === AutoStackFrequencyDto.DAILY) return 'DAILY';
+    if (frequency === AutoStackFrequencyDto.WEEKLY) return 'WEEKLY';
+    if (frequency === AutoStackFrequencyDto.MONTHLY) return 'MONTHLY';
+    throw new BadRequestException(
+      'Frequency must be 1 (daily), 2 (weekly), or 3 (monthly)',
+    );
+  }
+
+  private normalizeDayOfWeek(
+    frequency: 'DAILY' | 'WEEKLY' | 'MONTHLY',
+    dayOfWeek?: number,
+  ): string | undefined {
+    if (frequency === 'DAILY') return undefined;
+    if (!dayOfWeek) {
+      if (frequency === 'WEEKLY') {
+        throw new BadRequestException(
+          'dayOfWeek is required for weekly autostacks. Use 1-7 for Monday-Sunday.',
+        );
+      }
+      return undefined;
+    }
+    if (!Number.isInteger(dayOfWeek) || dayOfWeek < 1 || dayOfWeek > 7) {
+      throw new BadRequestException(
+        'dayOfWeek must be between 1 and 7, where 1 = Monday and 7 = Sunday.',
+      );
+    }
+    return String(dayOfWeek);
   }
 
   constructor(
@@ -121,23 +168,33 @@ export class AutoStackService {
   async paymentTypes(userId: string, dto: AutoStackPaymentTypesDto) {
     const quote = await this.tempStore.get(`autostack:${dto.quoteId}`);
     if (!quote) throw new NotFoundException('Quote not found or expired');
-    const cards = await this.prisma.card.findMany({
-      where: { userId, isActive: true },
+    const cards = await this.prisma.paymentCard.findMany({
+      where: { userId },
       select: {
         id: true,
         cardType: true,
         last4: true,
         expMonth: true,
         expYear: true,
-      } as any,
+      },
+      orderBy: { createdAt: 'desc' },
     });
     const wallets = await this.prisma.wallet.findMany({
-      where: { userId },
+      where: { userId, isCrypto: true, currencyId: { not: null } },
       include: { cryptoCurrency: true },
     });
+    const hasSavedCards = cards.length > 0;
+
     return {
       success: true,
+      message: hasSavedCards
+        ? 'Payment types retrieved successfully'
+        : 'No saved cards found. Please add a card before using card payments for autostack.',
       data: {
+        requiresCardSetup: !hasSavedCards,
+        cardSetupMessage: hasSavedCards
+          ? null
+          : 'Add a payment card to use card payments for autostack.',
         wallets: wallets.map((w) => {
           const totalAmount = new Decimal(w.baseBalance?.toString() || '0');
           const lockedAmount = new Decimal(w.lockedAmount?.toString() || '0');
@@ -146,7 +203,7 @@ export class AutoStackService {
           const availableAmount = totalAmount.minus(reservedAmount);
           return {
             walletId: w.id,
-            asset: w.cryptoCurrency.symbol,
+            asset: w.cryptoCurrency?.symbol || w.currency,
             totalAmount: totalAmount.toString(),
             lockedAmount: lockedAmount.toString(),
             stackedAmount: stackedAmount.toString(),
@@ -164,9 +221,11 @@ export class AutoStackService {
     const quoteKey = `autostack:${dto.quoteId}`;
     const quoteJson = await this.tempStore.get(quoteKey);
     if (!quoteJson) throw new NotFoundException('Quote not found or expired');
-    const quote = JSON.parse(quoteJson);
+    const quote = this.parseStoredAutoStackQuote(quoteJson);
 
     const amountInUsdt = new Decimal(quote.amountInUsdt || 0);
+    const frequency = this.normalizeFrequency(dto.frequency);
+    const dayOfWeek = this.normalizeDayOfWeek(frequency, dto.dayOfWeek);
     const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({
       where: {
         currency: 'USDT',
@@ -179,29 +238,34 @@ export class AutoStackService {
       ? txFee.div(amountInUsdt).mul(100).toString()
       : '0';
 
-    const setting = await this.prisma.autoStackingSettings.findFirst();
+    const setting = await this.prisma.autoStackingSettings.findFirst({
+      where: { currency: { equals: 'USDT', mode: 'insensitive' } },
+    });
     const dailyInterestRatePercent = new Decimal(
       setting?.dailyInterestRatePercent?.toString() || '0',
     );
     const periods = AUTOSTACK_FREQUENCY_PERIOD_DAYS[dto.frequency];
-    const interest = amountInUsdt
+    const expectedInterest = amountInUsdt
       .mul(dailyInterestRatePercent)
       .div(100)
       .mul(periods);
-    const estimatedOut = amountInUsdt.minus(txFee).plus(interest);
+    const expectedAmountAtEnd = amountInUsdt.plus(expectedInterest);
 
     const preview = {
       ...quote,
-      frequency: dto.frequency,
+      frequency,
+      frequencyValue: dto.frequency,
       paymentType: dto.paymentType,
       paymentCardId: (dto as any).paymentCardId,
       transactionFee: txFee.toString(),
       transactionFeePercentage: txFeePct,
       interestRate: dailyInterestRatePercent.toString(),
-      estimatedOut: estimatedOut.toString(),
+      expectedInterest: expectedInterest.toString(),
+      expectedAmountAtEnd: expectedAmountAtEnd.toString(),
+      estimatedOut: expectedAmountAtEnd.toString(),
       startDate: dto.startDate,
       timeOfDay: dto.timeOfDay,
-      dayOfWeek: dto.dayOfWeek,
+      dayOfWeek,
       dayOfMonth: dto.dayOfMonth,
     };
     await this.tempStore.set(
@@ -215,12 +279,15 @@ export class AutoStackService {
       data: {
         amount: amountInUsdt.toString(),
         frequency: dto.frequency,
+        frequencyLabel: frequency,
         paymentType: dto.paymentType,
         planName: quote.planName,
         rate: quote.rate,
         transactionFee: txFee.toString(),
         interestRate: dailyInterestRatePercent.toString(),
-        estimatedOut: estimatedOut.toString(),
+        expectedInterest: expectedInterest.toString(),
+        expectedAmountAtEnd: expectedAmountAtEnd.toString(),
+        estimatedOut: expectedAmountAtEnd.toString(),
         transactionFeePercentage: txFeePct,
       },
     };
@@ -235,7 +302,7 @@ export class AutoStackService {
       throw new BadRequestException('Invalid pin');
     const quoteJson = await this.tempStore.get(`autostack:${dto.quoteId}`);
     if (!quoteJson) throw new NotFoundException('Quote not found or expired');
-    const preview = JSON.parse(quoteJson);
+    const preview = this.parseStoredAutoStackQuote(quoteJson);
 
     const usdt = await this.prisma.cryptoCurrency.findFirst({
       where: { symbol: 'USDT' },
@@ -971,18 +1038,34 @@ export class AutoStackService {
     }
   }
   async getHistory(userId: string, page = 1, limit = 10) {
+    return this.getAutoStacksByStatus(userId, page, limit);
+  }
+
+  async getActiveAutoStacks(userId: string, page = 1, limit = 10) {
+    return this.getAutoStacksByStatus(userId, page, limit, [AutoStackStatus.ACTIVE]);
+  }
+
+  private async getAutoStacksByStatus(
+    userId: string,
+    page = 1,
+    limit = 10,
+    statuses?: AutoStackStatus[],
+  ) {
     const safeLimit = Math.min(Math.max(limit || 10, 1), 20);
     const safePage = Math.max(page || 1, 1);
     const skip = (safePage - 1) * safeLimit;
+    const where: any = statuses?.length
+      ? { userId, status: { in: statuses } }
+      : { userId };
     const [items, total] = await Promise.all([
       this.prisma.autoStack.findMany({
-        where: { userId },
+        where,
         orderBy: { createdAt: 'desc' },
         skip,
         take: safeLimit,
         include: { cryptoCurrency: true },
       }),
-      this.prisma.autoStack.count({ where: { userId } }),
+      this.prisma.autoStack.count({ where }),
     ]);
 
     let totalAmountNgn = new Decimal(0);
@@ -1009,8 +1092,8 @@ export class AutoStackService {
         totalInterestNgn = totalInterestNgn.plus(interestNgn);
         return {
           ...item,
-          amountNgn: amountNgn.toFixed(20),
-          accruedInterestNgn: interestNgn.toFixed(20),
+          amountNgn: amountNgn.toFixed(2),
+          accruedInterestNgn: interestNgn.toFixed(2),
         };
       }),
     );
@@ -1020,8 +1103,8 @@ export class AutoStackService {
       data: {
         items: mapped,
         totals: {
-          totalAmountNgn: totalAmountNgn.toFixed(20),
-          totalInterestNgn: totalInterestNgn.toFixed(20),
+          totalAmountNgn: totalAmountNgn.toFixed(2),
+          totalInterestNgn: totalInterestNgn.toFixed(2),
         },
         pagination: {
           page: safePage,
@@ -1034,20 +1117,40 @@ export class AutoStackService {
   }
 
   async overview(userId: string) {
-    const rows = await this.prisma.autoStack.findMany({ where: { userId } });
-    const totalAmountLocked = rows.reduce(
-      (a, r) => a + BigInt(r.amount.toFixed(0)),
-      0n,
-    );
-    const totalInterestGained = rows.reduce(
-      (a, r) => a + BigInt(r.accruedInterest.toFixed(0)),
-      0n,
-    );
+    const rows = await this.prisma.autoStack.findMany({
+      where: { userId, status: AutoStackStatus.ACTIVE },
+      include: { cryptoCurrency: true },
+    });
+    let totalAmountLockedNgn = new Decimal(0);
+    let totalInterestGainedNgn = new Decimal(0);
+
+    for (const row of rows) {
+      const symbol = row.cryptoCurrency.symbol.toUpperCase();
+      const ngnRate =
+        symbol === 'NGN'
+          ? '1'
+          : (await this.tickerService.getPrice(
+              `${symbol.toLowerCase()}ngn`,
+            )) || '0';
+      const rate = new Decimal(ngnRate || '0');
+      const amountMajor = new Decimal(
+        ConvertCurrency.fromBase(row.amount, 'USDT', 6),
+      );
+      const interestMajor = new Decimal(
+        ConvertCurrency.fromBase(row.accruedInterest, 'USDT', 6),
+      );
+      totalAmountLockedNgn = totalAmountLockedNgn.plus(amountMajor.mul(rate));
+      totalInterestGainedNgn = totalInterestGainedNgn.plus(
+        interestMajor.mul(rate),
+      );
+    }
+
     return {
       success: true,
       data: {
-        totalAmountLocked: totalAmountLocked.toString(),
-        totalInterestGained: totalInterestGained.toString(),
+        totalAmountLocked: totalAmountLockedNgn.toFixed(2),
+        totalInterestGained: totalInterestGainedNgn.toFixed(2),
+        currency: 'NGN',
       },
     };
   }

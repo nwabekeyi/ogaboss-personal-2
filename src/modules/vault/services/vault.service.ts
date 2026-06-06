@@ -768,18 +768,21 @@ export class VaultService {
     }
   }
 
-  async getUserVaults(userId: string, page = 1, limit = 10) {
+  async getUserVaults(userId: string, page = 1, limit = 10, includeAllStates = false) {
     const safeLimit = Math.min(Math.max(limit || 10, 1), 20);
     const safePage = Math.max(page || 1, 1);
     const skip = (safePage - 1) * safeLimit;
+    const where: any = includeAllStates
+      ? { userId }
+      : { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } };
     const vaults = await this.prisma.vault.findMany({
-      where: { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } },
+      where,
       include: { cryptoCurrency: true },
       orderBy: { createdAt: 'desc' },
       skip,
       take: safeLimit,
     });
-    const totalCount = await this.prisma.vault.count({ where: { userId, status: { in: [VaultStatus.PENDING, VaultStatus.ACTIVE] } } });
+    const totalCount = await this.prisma.vault.count({ where });
 
     if (vaults.length === 0) {
       return {
@@ -789,6 +792,12 @@ export class VaultService {
           vaults: [],
           totalLocked: '0.00',
           totalGain: '0.00',
+          pagination: {
+            page: safePage,
+            limit: safeLimit,
+            total: totalCount,
+            totalPages: Math.ceil(totalCount / safeLimit),
+          },
         },
       };
     }
@@ -906,6 +915,10 @@ export class VaultService {
         },
       },
     };
+  }
+
+  async getAllUserVaults(userId: string, page = 1, limit = 10) {
+    return this.getUserVaults(userId, page, limit, true);
   }
 
   async getVaultById(userId: string, vaultId: string) {
