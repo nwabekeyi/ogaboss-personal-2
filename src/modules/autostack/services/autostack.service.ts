@@ -1022,24 +1022,23 @@ export class AutoStackService {
         },
         { skipCircuitBreaker: true },
       );
-      await this.prisma.transaction.update({
-        where: { id: configTx.id },
-        data: {
-          paymentMetadata: {
-            ...processingMetadata,
-            paymentType,
-            sourceAsset:
-              paymentType === PaymentType.CRYPTO_WALLET ? sourceAsset : 'USDT',
-            targetAsset: 'USDT',
-            autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
-            autostackInitiationStatus: 'SUBMITTED',
-            liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
-            liquidityReservationCurrency: 'NGN',
-            liquidityReservationAmount: ngnAmountBase.toString(),
-            usdtNgnRate,
-          } as Prisma.InputJsonValue,
-        },
-      });
+await this.prisma.transaction.update({
+         where: { id: configTx.id },
+         data: {
+           paymentMetadata: {
+             ...processingMetadata,
+             paymentType,
+             sourceAsset: 'USDT',
+             targetAsset: 'USDT',
+             autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
+             autostackInitiationStatus: 'SUBMITTED',
+             liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
+             liquidityReservationCurrency: 'NGN',
+             liquidityReservationAmount: ngnAmountBase.toString(),
+             usdtNgnRate,
+           } as Prisma.InputJsonValue,
+         },
+       });
     } catch (error) {
       await this.prisma.$transaction(async (tx) => {
         const failedTx = await tx.transaction.findUnique({
