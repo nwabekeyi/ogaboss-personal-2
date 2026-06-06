@@ -116,13 +116,13 @@ export class AutoStackService {
   async quote(userId: string, dto: AutoStackQuoteDto) {
     void userId;
     const quoteId = crypto.randomUUID();
-    const assetSymbol = dto.asset.toUpperCase();
     const asset = await this.prisma.cryptoCurrency.findUnique({
-      where: { symbol: assetSymbol },
+      where: { id: dto.assetId },
       include: { rate: true },
     });
     if (!asset) throw new NotFoundException('Asset not found');
 
+    const assetSymbol = asset.symbol.toUpperCase();
     const pair = `${assetSymbol.toLowerCase()}usdt`;
     const tickerRate =
       assetSymbol === 'USDT' ? '1' : await this.tickerService.getPrice(pair);
@@ -140,6 +140,8 @@ export class AutoStackService {
 
     const payload = {
       quoteId,
+      assetId: asset.id,
+      currencyId: asset.id,
       asset: assetSymbol,
       amount: dto.amount,
       amountInUsdt: amountInUsdt.toString(),
@@ -158,6 +160,8 @@ export class AutoStackService {
       success: true,
       data: {
         quoteId,
+        assetId: asset.id,
+        asset: assetSymbol,
         rates: { assetToUsdt: payload.rate },
         expiresIn: AUTOSTACK_QUOTE_TTL_SECONDS,
         amountInUsdt: amountInUsdt.toString(),
@@ -166,8 +170,16 @@ export class AutoStackService {
   }
 
   async paymentTypes(userId: string, dto: AutoStackPaymentTypesDto) {
-    const quote = await this.tempStore.get(`autostack:${dto.quoteId}`);
-    if (!quote) throw new NotFoundException('Quote not found or expired');
+    const quoteValue = await this.tempStore.get(`autostack:${dto.quoteId}`);
+    if (!quoteValue) throw new NotFoundException('Quote not found or expired');
+    const quote = this.parseStoredAutoStackQuote(quoteValue);
+    const assetId = String(quote.assetId || quote.currencyId || '');
+    if (!assetId) {
+      throw new BadRequestException(
+        'Quote asset is missing. Please request a new quote.',
+      );
+    }
+
     const cards = await this.prisma.paymentCard.findMany({
       where: { userId },
       select: {
@@ -179,11 +191,19 @@ export class AutoStackService {
       },
       orderBy: { createdAt: 'desc' },
     });
-    const wallets = await this.prisma.wallet.findMany({
-      where: { userId, isCrypto: true, currencyId: { not: null } },
+    const wallet = await this.prisma.wallet.findFirst({
+      where: { userId, isCrypto: true, currencyId: assetId },
       include: { cryptoCurrency: true },
     });
+    if (!wallet) {
+      throw new NotFoundException('Wallet not found for selected asset');
+    }
     const hasSavedCards = cards.length > 0;
+    const totalAmount = new Decimal(wallet.baseBalance?.toString() || '0');
+    const lockedAmount = new Decimal(wallet.lockedAmount?.toString() || '0');
+    const stackedAmount = new Decimal(wallet.stackedAmount?.toString() || '0');
+    const reservedAmount = new Decimal(wallet.reservedBalance?.toString() || '0');
+    const availableAmount = totalAmount.minus(reservedAmount);
 
     return {
       success: true,
@@ -195,35 +215,54 @@ export class AutoStackService {
         cardSetupMessage: hasSavedCards
           ? null
           : 'Add a payment card to use card payments for autostack.',
-        wallets: wallets.map((w) => {
-          const totalAmount = new Decimal(w.baseBalance?.toString() || '0');
-          const lockedAmount = new Decimal(w.lockedAmount?.toString() || '0');
-          const stackedAmount = new Decimal(w.stackedAmount?.toString() || '0');
-          const reservedAmount = new Decimal(w.reservedBalance?.toString() || '0');
-          const availableAmount = totalAmount.minus(reservedAmount);
-          return {
-            walletId: w.id,
-            asset: w.cryptoCurrency?.symbol || w.currency,
+        wallets: [
+          {
+            walletId: wallet.id,
+            assetId,
+            asset: wallet.cryptoCurrency?.symbol || wallet.currency,
+            paymentType: PaymentType.CRYPTO_WALLET,
             totalAmount: totalAmount.toString(),
             lockedAmount: lockedAmount.toString(),
             stackedAmount: stackedAmount.toString(),
             reservedAmount: reservedAmount.toString(),
             availableAmount: availableAmount.toString(),
-          };
-        }),
-        cards,
+          },
+        ],
+        cards: cards.map((card) => ({
+          ...card,
+          paymentType: PaymentType.CARD,
+        })),
       },
     };
   }
 
   async preview(userId: string, dto: AutoStackPreviewDto) {
-    void userId;
     const quoteKey = `autostack:${dto.quoteId}`;
     const quoteJson = await this.tempStore.get(quoteKey);
     if (!quoteJson) throw new NotFoundException('Quote not found or expired');
     const quote = this.parseStoredAutoStackQuote(quoteJson);
 
     const amountInUsdt = new Decimal(quote.amountInUsdt || 0);
+    const paymentType = String(dto.paymentType || '').toUpperCase();
+    if (
+      ![PaymentType.CARD, PaymentType.CRYPTO_WALLET].includes(
+        paymentType as PaymentType,
+      )
+    ) {
+      throw new BadRequestException('paymentType must be CARD or CRYPTO_WALLET');
+    }
+    if (paymentType === PaymentType.CARD) {
+      if (!dto.paymentCardId) {
+        throw new BadRequestException(
+          'Payment card is required for card autostack',
+        );
+      }
+      const card = await this.prisma.paymentCard.findFirst({
+        where: { id: dto.paymentCardId, userId },
+        select: { id: true },
+      });
+      if (!card) throw new NotFoundException('Payment card not found');
+    }
     const frequency = this.normalizeFrequency(dto.frequency);
     const dayOfWeek = this.normalizeDayOfWeek(frequency, dto.dayOfWeek);
     const feeSetting = await this.prisma.autoStackingTransactionFee.findFirst({
@@ -255,8 +294,9 @@ export class AutoStackService {
       ...quote,
       frequency,
       frequencyValue: dto.frequency,
-      paymentType: dto.paymentType,
-      paymentCardId: (dto as any).paymentCardId,
+      paymentType,
+      paymentCardId:
+        paymentType === PaymentType.CARD ? dto.paymentCardId : null,
       transactionFee: txFee.toString(),
       transactionFeePercentage: txFeePct,
       interestRate: dailyInterestRatePercent.toString(),
@@ -280,7 +320,7 @@ export class AutoStackService {
         amount: amountInUsdt.toString(),
         frequency: dto.frequency,
         frequencyLabel: frequency,
-        paymentType: dto.paymentType,
+        paymentType,
         planName: quote.planName,
         rate: quote.rate,
         transactionFee: txFee.toString(),
@@ -329,8 +369,16 @@ export class AutoStackService {
     let sourceAmountOriginal = principalUsdtOriginal;
 
     if (paymentType === PaymentType.CRYPTO_WALLET) {
+      const sourceAssetId = String(
+        preview.assetId || preview.currencyId || '',
+      );
+      if (!sourceAssetId) {
+        throw new BadRequestException(
+          'Quote asset is missing. Please request a new quote.',
+        );
+      }
       sourceWallet = await this.prisma.wallet.findFirst({
-        where: { userId, currency: sourceAsset },
+        where: { userId, currencyId: sourceAssetId },
       });
       if (!sourceWallet)
         throw new NotFoundException(`${sourceAsset} wallet not found`);
@@ -401,7 +449,8 @@ export class AutoStackService {
             autoStackId: createdAutoStack.id,
             paymentType,
             paymentCardId: preview.paymentCardId || null,
-            sourceAsset,
+            sourceAsset:
+              paymentType === PaymentType.CRYPTO_WALLET ? sourceAsset : 'USDT',
             targetAsset: 'USDT',
             principalUsdtAmount: principalUsdtOriginal,
             principalUsdtAmountBase: principalUsdtMinor.toString(),
@@ -540,7 +589,9 @@ export class AutoStackService {
         ? PaymentType.CRYPTO_WALLET
         : PaymentType.CARD;
     const sourceAsset = String(
-      configMeta.sourceAsset || configTx.currency || 'USDT',
+      paymentType === PaymentType.CRYPTO_WALLET
+        ? configMeta.sourceAsset || configTx.currency || 'USDT'
+        : 'USDT',
     ).toUpperCase();
     const principalUsdtBase = String(
       configMeta.principalUsdtAmountBase ||
@@ -971,7 +1022,8 @@ export class AutoStackService {
           paymentMetadata: {
             ...processingMetadata,
             paymentType,
-            sourceAsset,
+            sourceAsset:
+              paymentType === PaymentType.CRYPTO_WALLET ? sourceAsset : 'USDT',
             targetAsset: 'USDT',
             autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
             autostackInitiationStatus: 'SUBMITTED',

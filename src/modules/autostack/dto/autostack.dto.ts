@@ -20,7 +20,13 @@ export enum AutoStackFrequencyDto {
 }
 
 export class AutoStackQuoteDto {
-  @ApiProperty() @IsString() @IsNotEmpty() asset: string;
+  @ApiProperty({
+    description: 'Crypto currency id selected by the user from the currencies table.',
+    example: 'cml6nkzxh0001g6fe6soo2taw',
+  })
+  @IsString()
+  @IsNotEmpty()
+  assetId: string;
   @ApiPropertyOptional() @IsOptional() @IsString() planName?: string;
   @ApiProperty() @IsNumber() @Min(0.000001) amount: number;
 }
@@ -31,8 +37,21 @@ export class AutoStackPaymentTypesDto {
 
 export class AutoStackPreviewDto {
   @ApiProperty() @IsString() @IsNotEmpty() quoteId: string;
-  @ApiProperty() @IsString() @IsNotEmpty() paymentType: string;
-  @ApiPropertyOptional() @IsOptional() @IsString() paymentCardId?: string;
+  @ApiProperty({
+    enum: ['CARD', 'CRYPTO_WALLET'],
+    description:
+      'Payment source type. Use CRYPTO_WALLET to charge the selected asset wallet; use CARD only when paying with a saved card.',
+    example: 'CRYPTO_WALLET',
+  })
+  @IsString()
+  @IsNotEmpty()
+  paymentType: string;
+  @ApiPropertyOptional({
+    description: 'Required only when paymentType is CARD. Not needed for CRYPTO_WALLET payments.',
+  })
+  @IsOptional()
+  @IsString()
+  paymentCardId?: string;
   @ApiProperty({
     enum: [1, 2, 3],
     description: 'Autostack frequency: 1 = daily, 2 = weekly, 3 = monthly.',
