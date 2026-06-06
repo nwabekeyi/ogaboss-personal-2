@@ -908,7 +908,7 @@ export class AutoStackService {
           { skipCircuitBreaker: true },
         );
         const quotationId =
-          swapQuote?.data?.id || swapQuote?.data?.swap_quotation?.id;
+          swapQuote?.data?.id || swapQuote?.data?.id;
         if (!quotationId)
           throw new Error('Unable to create autostack swap quotation');
         const confirmedSwap = await this.quidaxSwapService.confirmInstantSwap(
@@ -1004,7 +1004,7 @@ export class AutoStackService {
       await this.paystackService.chargeSavedCard(
         {
           paymentCardId: meta.paymentCardId,
-          amount: ngnAmountBase,
+          amount: ngnAmountBase.toString(),
           reference: chargeReference,
           metadata: {
             autoStackId: stack.id,
