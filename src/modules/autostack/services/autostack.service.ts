@@ -45,6 +45,10 @@ import {
   AUTOSTACK_QUOTE_TTL_SECONDS,
 } from '../constants/autostack.constants';
 
+type AutoStackPaymentSource =
+  | typeof PaymentType.CARD
+  | typeof PaymentType.CRYPTO_WALLET;
+
 @Injectable()
 export class AutoStackService {
   private toUsdtBase(amount: Decimal.Value): bigint {
@@ -99,6 +103,15 @@ export class AutoStackService {
       );
     }
     return String(dayOfWeek);
+  }
+
+  private normalizePaymentType(value: string): AutoStackPaymentSource {
+    const paymentType = String(value || '').toUpperCase();
+    if (paymentType === PaymentType.CARD) return PaymentType.CARD;
+    if (paymentType === PaymentType.CRYPTO_WALLET) {
+      return PaymentType.CRYPTO_WALLET;
+    }
+    throw new BadRequestException('paymentType must be CARD or CRYPTO_WALLET');
   }
 
   constructor(
@@ -243,14 +256,7 @@ export class AutoStackService {
     const quote = this.parseStoredAutoStackQuote(quoteJson);
 
     const amountInUsdt = new Decimal(quote.amountInUsdt || 0);
-    const paymentType = String(dto.paymentType || '').toUpperCase();
-    if (
-      ![PaymentType.CARD, PaymentType.CRYPTO_WALLET].includes(
-        paymentType as PaymentType,
-      )
-    ) {
-      throw new BadRequestException('paymentType must be CARD or CRYPTO_WALLET');
-    }
+    const paymentType = this.normalizePaymentType(dto.paymentType);
     if (paymentType === PaymentType.CARD) {
       if (!dto.paymentCardId) {
         throw new BadRequestException(
