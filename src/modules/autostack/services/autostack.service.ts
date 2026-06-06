@@ -806,44 +806,51 @@ export class AutoStackService {
                   `Insufficient company ${sourceAsset} liquidity for autostack`,
                 );
             }
-            await tx.transaction.update({
-              where: { id: configTx.id },
-              data: {
-                cryptoAmountBase: sourceAmountBase.toString(),
-                cryptoAmountOriginal: sourceAmountOriginal,
-                fiatAmountBase: principalUsdtBase.toString(),
-                fiatAmountOriginal: principalUsdtOriginal,
-                paymentMetadata: {
-                  ...processingMetadata,
-                  liquidityReservationStatus:
-                    LiquidityReservationStatus.RESERVED,
-                  liquidityReservationCurrency: sourceAsset,
-                  liquidityReservationAmount: sourceAmountBase.toString(),
-                } as Prisma.InputJsonValue,
-              },
+await tx.transaction.update({
+               where: { id: configTx.id },
+               data: {
+                 cryptoAmountBase: sourceAmountBase.toString(),
+                 cryptoAmountOriginal: sourceAmountOriginal,
+                 fiatAmountBase: principalUsdtBase.toString(),
+                 fiatAmountOriginal: principalUsdtOriginal,
+                 paymentMetadata: {
+                   ...processingMetadata,
+                   liquidityReservationStatus:
+                     LiquidityReservationStatus.RESERVED,
+liquidityReservationCurrency: sourceAsset,
+                    liquidityReservationAmount: sourceAmountBase.toString(),
+                  } as Prisma.InputJsonValue,
+                },
+              });
             });
-          });
-        }
+          }
 
-        if (sourceAsset === 'USDT') {
-          await this.prisma.$transaction(async (tx) => {
-            const usdtWallet = await tx.wallet.findFirst({
-              where: { userId: stack.userId, currency: 'USDT' },
-            });
-            if (!usdtWallet)
-              throw new Error(
-                `USDT wallet not found for autostack ${stack.id}`,
-              );
-            const walletUpdateResult = await tx.$queryRaw<
-              { baseBalance: string }[]
-            >`
-              UPDATE "wallets"
-              SET "baseBalance" = "baseBalance" - ${sourceAmountBase.toString()}::decimal,
-                  "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
-              WHERE "id" = ${usdtWallet.id}
-                AND ("baseBalance" - "reservedBalance") >= ${sourceAmountBase.toString()}::decimal
-              RETURNING "baseBalance"
-            `;
+          if (sourceAsset === 'USDT') {
+            await this.prisma.$transaction(async (tx) => {
+              const usdt = await tx.cryptoCurrency.findFirst({
+                where: { symbol: 'USDT' },
+              });
+              if (!usdt) throw new Error('USDT currency not found');
+              const usdtWallet = await tx.wallet.findFirst({
+                where: {
+                  userId: stack.userId,
+                  OR: [{ currencyId: usdt.id }, { currency: 'USDT' }],
+                },
+              });
+              if (!usdtWallet)
+                throw new Error(
+                  `USDT wallet not found for autostack ${stack.id}`,
+                );
+              const walletUpdateResult = await tx.$queryRaw<
+                { baseBalance: string }[]
+              >`
+                UPDATE "wallets"
+                SET "baseBalance" = "baseBalance" - ${sourceAmountBase.toString()}::decimal,
+                    "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
+                WHERE "id" = ${usdtWallet.id}
+                  AND ("baseBalance" - "reservedBalance") >= ${sourceAmountBase.toString()}::decimal
+                RETURNING "baseBalance"
+              `;
             if (walletUpdateResult.length === 0) {
               throw new Error('Insufficient USDT balance for autostack');
             }
@@ -1143,12 +1150,14 @@ await this.prisma.transaction.update({
         const interestMajor = new Decimal(
           ConvertCurrency.fromBase(item.accruedInterest, 'USDT', 6),
         );
-        const amountNgn = amountMajor.mul(rate);
+const amountNgn = amountMajor.mul(rate);
         const interestNgn = interestMajor.mul(rate);
         totalAmountNgn = totalAmountNgn.plus(amountNgn);
         totalInterestNgn = totalInterestNgn.plus(interestNgn);
         return {
           ...item,
+          amount: amountMajor.toString(),
+          accruedInterest: interestMajor.toString(),
           amountNgn: amountNgn.toFixed(2),
           accruedInterestNgn: interestNgn.toFixed(2),
         };
@@ -1378,15 +1387,19 @@ await this.prisma.transaction.update({
       throw new BadRequestException('Invalid pin');
 
     const isEarly = new Date() < stack.nextInterestAt;
-    const principal = BigInt(stack.amount.toFixed(0));
+const principal = BigInt(stack.amount.toFixed(0));
     const accrued = BigInt(stack.accruedInterest.toFixed(0));
     const penalty = isEarly ? (principal * 5n) / 100n : 0n;
     const payout = isEarly ? principal - penalty : principal + accrued;
     const interestPaid = isEarly ? 0n : accrued;
 
     await this.prisma.$transaction(async (tx) => {
+      const usdt = await tx.cryptoCurrency.findFirst({
+        where: { symbol: 'USDT' },
+      });
+      if (!usdt) throw new NotFoundException('USDT currency not found');
       const wallet = await tx.wallet.findFirst({
-        where: { userId, currency: 'USDT' },
+        where: { userId, OR: [{ currencyId: usdt.id }, { currency: 'USDT' }] },
       });
       if (!wallet) throw new NotFoundException('USDT wallet not found');
       const [{ baseBalance: newBaseBalance }] = await tx.$queryRaw<
