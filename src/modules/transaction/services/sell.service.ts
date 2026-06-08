@@ -1,45 +1,43 @@
 import {
-   Injectable,
-   NotFoundException,
-   UnauthorizedException,
-   BadRequestException,
-   BadGatewayException,
-   Logger,
- } from '@nestjs/common';
- import {
-   OrderStatus,
-   OrderType,
-   PaymentStatus,
-   PrismaService,
-   TransactionStatus as TxStatus,
- } from '../../../infrastructure/databases/prisma';
- import { RedisService } from '../../../infrastructure';
- import { QuotationService } from './quotation.service';
- import {
-   TradingPair,
- } from '../../../infrastructure/providers/quidax';
- import { PreviewSellDto } from '../dto';
- import {
-   TransactionType,
-   TransactionContext,
-   TransactionStatus,
- } from '../../../infrastructure/databases/prisma';
-  import {
-    BASE_CURRENCY,
-    COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY,
-   COMPANY_PAYSTACK_NGN_WALLET_ID,
-    ConvertCurrency,
-    CryptoNetwork,
-    LiquidityReservationStatus,
-   } from '../../../shared';
- import { TransactionService } from './transaction.service';
- import { CompanyLiquidityService } from './company-liquidity.service';
- import { ISellQuote } from './types';
- import { TransactionNotificationService } from './transaction-notification.service';
- import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
- import axios from 'axios';
- import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
- import { QueueName } from '../../../infrastructure/bullMQ/types';
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+  BadRequestException,
+  BadGatewayException,
+  Logger,
+} from '@nestjs/common';
+import {
+  OrderStatus,
+  OrderType,
+  PaymentStatus,
+  PrismaService,
+  TransactionStatus as TxStatus,
+} from '../../../infrastructure/databases/prisma';
+import { RedisService } from '../../../infrastructure';
+import { QuotationService } from './quotation.service';
+import { TradingPair } from '../../../infrastructure/providers/quidax';
+import { PreviewSellDto } from '../dto';
+import {
+  TransactionType,
+  TransactionContext,
+  TransactionStatus,
+} from '../../../infrastructure/databases/prisma';
+import {
+  BASE_CURRENCY,
+  COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY,
+  COMPANY_PAYSTACK_NGN_WALLET_ID,
+  ConvertCurrency,
+  CryptoNetwork,
+  LiquidityReservationStatus,
+} from '../../../shared';
+import { TransactionService } from './transaction.service';
+import { CompanyLiquidityService } from './company-liquidity.service';
+import { ISellQuote } from './types';
+import { TransactionNotificationService } from './transaction-notification.service';
+import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
+import axios from 'axios';
+import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
+import { QueueName } from '../../../infrastructure/bullMQ/types';
 
 @Injectable()
 export class SellService {
@@ -53,17 +51,21 @@ export class SellService {
     private readonly redisService: RedisService,
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly queueService: QueueService,
-
   ) {}
 
-  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+  private async notifySuperAdminLiquidityInsufficient(
+    payload: Record<string, any>,
+  ) {
     const to = process.env.SUPERADMIN_EMAIL?.trim();
     if (!to) return;
     await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
       to,
       subject: '[ALERT] Insufficient company liquidity',
       template: 'generic-notification',
-      context: { title: 'Insufficient company liquidity detected', data: payload },
+      context: {
+        title: 'Insufficient company liquidity detected',
+        data: payload,
+      },
     });
   }
 
@@ -147,36 +149,41 @@ export class SellService {
     };
   }
 
-    // ===================================================================
-    // CONFIRM SELL
-    // ===================================================================
-    async confirmSell(userId: string, previewId: string) {
-       await this.transactionService.enforceConfirmationCooldown(userId);
-       const quote: ISellQuote = await this.quotationService.getQuote(previewId);
-      if (!quote) throw new NotFoundException('Sell quote not found or expired');
-      if (quote.userId !== userId)
-        throw new UnauthorizedException('Not your quote');
-      if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
+  // ===================================================================
+  // CONFIRM SELL
+  // ===================================================================
+  async confirmSell(userId: string, previewId: string) {
+    await this.transactionService.enforceConfirmationCooldown(userId);
+    const quote: ISellQuote = await this.quotationService.getQuote(previewId);
+    if (!quote) throw new NotFoundException('Sell quote not found or expired');
+    if (quote.userId !== userId)
+      throw new UnauthorizedException('Not your quote');
+    if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
 
-      if (quote.crypto?.toUpperCase() === 'USDT') {
-        const minUsdtBase = ConvertCurrency.toBase(MIN_TRANSACTION_USDT.toString(), 'usdt');
-        if (BigInt(quote.exactCryptoMinor) < minUsdtBase) {
-          throw new BadRequestException(`Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`);
-        }
-      }
-
-      // Slippage protection: check current price against quoted buffered price
-      await this.transactionService.checkPriceSlippage(
-        quote.crypto,
-        quote.fiatCurrency,
-        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
-        false // isBuy (false for sell)
+    if (quote.crypto?.toUpperCase() === 'USDT') {
+      const minUsdtBase = ConvertCurrency.toBase(
+        MIN_TRANSACTION_USDT.toString(),
+        'usdt',
       );
+      if (BigInt(quote.exactCryptoMinor) < minUsdtBase) {
+        throw new BadRequestException(
+          `Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`,
+        );
+      }
+    }
 
-     const existingTransaction = await this.prisma.transaction.findFirst({
-       where: { transactionUniqueId: previewId },
-       select: { id: true, status: true },
-     });
+    // Slippage protection: check current price against quoted buffered price
+    await this.transactionService.checkPriceSlippage(
+      quote.crypto,
+      quote.fiatCurrency,
+      ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
+      false, // isBuy (false for sell)
+    );
+
+    const existingTransaction = await this.prisma.transaction.findFirst({
+      where: { transactionUniqueId: previewId },
+      select: { id: true, status: true },
+    });
     if (existingTransaction) {
       return {
         success: true,
@@ -215,9 +222,10 @@ export class SellService {
       throw new BadRequestException('No bank account found for payout');
     }
 
-    const userWallet = await this.prisma.wallet.findUnique({
+    const userWallet = await this.prisma.wallet.findFirst({
       where: {
-        userId_currency: { userId, currency: quote.crypto.toUpperCase() },
+        userId,
+        currency: { equals: quote.crypto, mode: 'insensitive' },
       },
       select: { quidaxWalletId: true },
     });
@@ -480,7 +488,8 @@ export class SellService {
             paymentMetadata: {
               ...((result.transaction.paymentMetadata as Record<string, any>) ||
                 {}),
-              liquidityReservationStatus: LiquidityReservationStatus.INSUFFICIENT,
+              liquidityReservationStatus:
+                LiquidityReservationStatus.INSUFFICIENT,
               providerLiquiditySource: 'paystack',
             },
           },
@@ -502,21 +511,23 @@ export class SellService {
     }
 
     // Place Quidax order immediately to minimize race condition window
-    const orderResponse = await axios.post(
-      `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/orders`,
-      {
-        market: marketPair,
-        side: 'sell',
-        ord_type: 'market',
-        volume: Number(cryptoOriginal.toString()),
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+    const orderResponse = await axios
+      .post(
+        `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/orders`,
+        {
+          market: marketPair,
+          side: 'sell',
+          ord_type: 'market',
+          volume: Number(cryptoOriginal.toString()),
         },
-      },
-    ).then((res) => res.data);
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          },
+        },
+      )
+      .then((res) => res.data);
 
     if (orderResponse.status !== 'success') {
       await this.prisma.$transaction(async (tx) => {
