@@ -247,21 +247,23 @@ export class WithdrawalWebhookHandler {
             const deductionDec = toDecimal(totalAmountSentBase);
 
             // Atomic baseBalance deduction with underflow protection
-            const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
+            const walletUpdates = await tx.$queryRaw<
               { baseBalance: string }[]
             >`
               UPDATE "wallets"
-              SET "baseBalance" = GREATEST("baseBalance" - ${deductionDec}, 0)
+              SET "baseBalance" = "baseBalance" - ${deductionDec},
+                  "reservedBalance" = "reservedBalance" - ${deductionDec}
               WHERE "id" = ${wallet.id}
+                AND "baseBalance" >= ${deductionDec}
+                AND "reservedBalance" >= ${deductionDec}
               RETURNING "baseBalance"
             `;
-
-            // Atomic reservedBalance release
-            await tx.$executeRaw`
-              UPDATE "wallets"
-              SET "reservedBalance" = GREATEST("reservedBalance" - ${deductionDec}, 0)
-              WHERE "id" = ${wallet.id}
-            `;
+            if (walletUpdates.length === 0) {
+              throw new Error(
+                `Withdrawal ${reference}: insufficient reserved ${currency} balance to finalize`,
+              );
+            }
+            const [{ baseBalance: newBaseStr }] = walletUpdates;
 
             // Update originalBalance from the actual post-update baseBalance
             const newOriginalBalance = ConvertCurrency.fromBase(
@@ -317,12 +319,12 @@ export class WithdrawalWebhookHandler {
 
           } else {
             // REJECTED: release the reserved balance back to available
-            const reservedDec = toDecimal(totalAmountSentBase);
-            await tx.$executeRaw`
-              UPDATE "wallets"
-              SET "reservedBalance" = GREATEST("reservedBalance" - ${reservedDec}, 0)
-              WHERE "id" = ${wallet.id}
-            `;
+            await this.transactionService.releaseBalance(
+              tx,
+              userId,
+              currency,
+              totalAmountSentBase,
+            );
 
             // Release company liquidity reservation
             await this.companyLiquidityService.releaseLiquidity(

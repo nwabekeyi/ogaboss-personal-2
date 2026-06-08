@@ -449,7 +449,9 @@ export class PaystackWebhookHandler {
     orderError: any,
   ): Promise<void> {
     const metadata = (transaction.paymentMetadata || {}) as Record<string, any>;
-    const reservedAmount = toBigInt(transaction.fiatAmountBase);
+    const reservedAmount = metadata.liquidityReservationAmount
+      ? toBigInt(metadata.liquidityReservationAmount)
+      : toBigInt(transaction.fiatAmountBase);
 
     await this.prisma.$transaction(async (tx) => {
       if (
@@ -654,7 +656,9 @@ export class PaystackWebhookHandler {
       const isReleased =
         metadata.liquidityReservationStatus ===
         LiquidityReservationStatus.RELEASED;
-      const reservedAmount = toBigInt(transaction.fiatAmountBase);
+      const reservedAmount = metadata.liquidityReservationAmount
+        ? toBigInt(metadata.liquidityReservationAmount)
+        : toBigInt(transaction.fiatAmountBase);
 
       // Only release liquidity for buy transactions that reserved it
       if (
@@ -724,6 +728,7 @@ export class PaystackWebhookHandler {
         userId: true,
         currency: true,
         cryptoAmountBase: true,
+        cryptoAmountOriginal: true,
         fiatAmountBase: true,
         platformFeeBase: true,
         totalAmountSentBase: true,
@@ -738,9 +743,10 @@ export class PaystackWebhookHandler {
     const metadata = (transaction.paymentMetadata || {}) as Record<string, any>;
     if (metadata.payoutStatus === 'success') return;
 
-    // Use totalAmountSentBase (crypto + platform fee) if available,
-    // otherwise fall back to cryptoAmountBase
-    const totalSentBase = toBigInt(transaction.totalAmountSentBase);
+    // User wallet balance reserves only the crypto principal for sell.
+    const totalSentBase = toBigInt(
+      transaction.totalAmountSentBase ?? transaction.cryptoAmountBase,
+    );
 
     if (totalSentBase <= 0n) {
       this.logger.error(
@@ -767,14 +773,31 @@ export class PaystackWebhookHandler {
       );
 
       const totalSentDec = toDecimal(totalSentBase);
-      const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
+      const walletUpdates = await tx.$queryRaw<
         { baseBalance: string }[]
       >`
         UPDATE "wallets"
-        SET "baseBalance" = GREATEST("baseBalance" - ${totalSentDec}, 0)
+        SET "baseBalance" = "baseBalance" - ${totalSentDec}
         WHERE "userId" = ${transaction.userId}
           AND "currency" = ${transaction.currency}
+          AND "baseBalance" >= ${totalSentDec}
         RETURNING "baseBalance"
+      `;
+      if (walletUpdates.length === 0) {
+        throw new Error(
+          `Sell payout ${transaction.id}: insufficient ${transaction.currency} balance to finalize`,
+        );
+      }
+      const [{ baseBalance: newBaseStr }] = walletUpdates;
+      const newOriginalBalance = ConvertCurrency.fromBase(
+        BigInt(String(newBaseStr)),
+        transaction.currency,
+      );
+      await tx.$executeRaw`
+        UPDATE "wallets"
+        SET "originalBalance" = ${newOriginalBalance}
+        WHERE "userId" = ${transaction.userId}
+          AND "currency" = ${transaction.currency}
       `;
 
       // amountSold stores NGN kobo - compute from current market price
@@ -783,7 +806,9 @@ export class PaystackWebhookHandler {
       );
       let sellNgnBaseDec = toDecimal(0n);
       if (sellNgnPrice && new Decimal(sellNgnPrice).gt(0)) {
-        const cryptoAmountStr = transaction.cryptoAmountBase?.toString() || '0';
+        const cryptoAmountStr =
+          transaction.cryptoAmountOriginal ||
+          ConvertCurrency.fromBase(totalSentBase, transaction.currency);
         const sellNgnValue = new Decimal(sellNgnPrice).mul(
           new Decimal(cryptoAmountStr),
         );
@@ -856,10 +881,9 @@ export class PaystackWebhookHandler {
       }
     });
 
-    // Queue dashboard stats for sell — executed value + platform fee
-    const grossNairaBase =
-      toBigInt(transaction.fiatAmountBase) +
-      toBigInt(transaction.platformFeeBase ?? 0n);
+    // Queue dashboard stats for sell using the fiat payout value. The platform
+    // fee is deducted from the user's crypto wallet, not from NGN liquidity.
+    const grossNairaBase = toBigInt(transaction.fiatAmountBase);
     try {
       await this.dashboardStatsQueueService.queueTransactionUpdate({
         id: transaction.id,
@@ -909,6 +933,7 @@ export class PaystackWebhookHandler {
         userId: true,
         currency: true,
         cryptoAmountBase: true,
+        cryptoAmountOriginal: true,
         fiatAmountBase: true,
         paymentMetadata: true,
       },
@@ -920,29 +945,10 @@ export class PaystackWebhookHandler {
     if (metadata.payoutStatus === 'failed') return;
 
     await this.prisma.$transaction(async (tx) => {
-      if (
-        metadata.liquidityReservationStatus ===
-        LiquidityReservationStatus.RESERVED
-      ) {
-        const reservedAmount = toBigInt(transaction.fiatAmountBase);
-        await this.companyLiquidityService.releaseLiquidity(
-          this.baseCurrency.toLowerCase(),
-          reservedAmount,
-          tx,
-        );
-      }
-
-      await this.transactionService.releaseBalance(
-        tx,
-        transaction.userId,
-        transaction.currency,
-        toBigInt(transaction.cryptoAmountBase),
-      );
-
       await tx.order.update({
         where: { id: order.id },
         data: {
-          status: OrderStatus.FAILED,
+          status: OrderStatus.PROCESSING,
           paymentStatus: PaymentStatus.FAILED,
           gatewayResponse: JSON.stringify(data),
         },
@@ -951,23 +957,16 @@ export class PaystackWebhookHandler {
       await tx.transaction.update({
         where: { id: transaction.id },
         data: {
-          status: TransactionStatus.FAILED,
-          isProcessed: true,
+          status: TransactionStatus.PENDING,
+          isProcessed: false,
           paymentMetadata: {
             ...metadata,
-            payoutStatus: 'failed',
+            payoutStatus: 'failed_retry_required',
             payoutFailedAt: new Date().toISOString(),
             payoutFailureEvent: event,
-            liquidityReservationStatus:
-              metadata.liquidityReservationStatus ===
-              LiquidityReservationStatus.RESERVED
-                ? LiquidityReservationStatus.RELEASED
-                : metadata.liquidityReservationStatus,
-            liquidityReleaseReason:
-              metadata.liquidityReservationStatus ===
-              LiquidityReservationStatus.RESERVED
-                ? 'sell_payout_failed'
-                : metadata.liquidityReleaseReason,
+            liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
+            payoutFailureNote:
+              'Paystack payout failed; crypto and payout liquidity remain reserved for retry/manual payout',
           } as Prisma.InputJsonValue,
         },
       });

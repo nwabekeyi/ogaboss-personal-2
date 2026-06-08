@@ -349,16 +349,22 @@ export class SwapTransactionHandler {
           : 0n;
 
         // === BTC Wallet: final deduction with atomic RETURNING update ===
-        const [{ baseBalance: newBtcBaseStr }] = await tx.$queryRaw<
+        const btcWalletUpdates = await tx.$queryRaw<
           { baseBalance: string }[]
         >`
           UPDATE "wallets"
           SET
-            "baseBalance" = GREATEST("baseBalance" - ${toDecimal(totalBtcChargeMinor)}, 0),
-            "reservedBalance" = GREATEST("reservedBalance" - ${toDecimal(totalBtcChargeMinor)}, 0)
+            "baseBalance" = "baseBalance" - ${toDecimal(totalBtcChargeMinor)},
+            "reservedBalance" = "reservedBalance" - ${toDecimal(totalBtcChargeMinor)}
           WHERE "id" = ${btcWallet.id}
+            AND "baseBalance" >= ${toDecimal(totalBtcChargeMinor)}
+            AND "reservedBalance" >= ${toDecimal(totalBtcChargeMinor)}
           RETURNING "baseBalance"
         `;
+        if (btcWalletUpdates.length === 0) {
+          throw new Error(`Vault swap ${swapId}: insufficient reserved BTC balance to finalize`);
+        }
+        const [{ baseBalance: newBtcBaseStr }] = btcWalletUpdates;
         const newBtcOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(newBtcBaseStr)),
           'BTC',
@@ -733,15 +739,21 @@ export class SwapTransactionHandler {
         }
 
         // FROM wallet: deduct full reserved amount and reconcile originalBalance
-        const [{ baseBalance: newFromBaseStr }] = await tx.$queryRaw<
+        const fromWalletUpdates = await tx.$queryRaw<
           { baseBalance: string }[]
         >`
           UPDATE "wallets"
-          SET "baseBalance" = GREATEST("baseBalance" - ${reservedDec}, 0),
-              "reservedBalance" = GREATEST("reservedBalance" - ${reservedDec}, 0)
+          SET "baseBalance" = "baseBalance" - ${reservedDec},
+              "reservedBalance" = "reservedBalance" - ${reservedDec}
           WHERE "id" = ${fromWallet.id}
+            AND "baseBalance" >= ${reservedDec}
+            AND "reservedBalance" >= ${reservedDec}
           RETURNING "baseBalance"
         `;
+        if (fromWalletUpdates.length === 0) {
+          throw new Error(`Swap ${swapId}: insufficient reserved ${fromCurrency} balance to finalize`);
+        }
+        const [{ baseBalance: newFromBaseStr }] = fromWalletUpdates;
         const newFromOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(newFromBaseStr)),
           fromCurrency,

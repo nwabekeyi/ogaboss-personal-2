@@ -290,10 +290,10 @@ export class QuotationService {
        new Decimal(1).add(bufferFactor),
      );
      const bufferSpreadDec = bufferedPriceDec.sub(marketPriceDec);
-     const platformFeeDec = marketPriceDec.mul(PLATFORM_SPREAD);
 
      // baseFiat: value of crypto at buffered price (before platform fee)
      const baseFiatDec = new Decimal(amount).mul(bufferedPriceDec);
+     const platformFeeDec = baseFiatDec.mul(PLATFORM_SPREAD);
      // totalFiat: full cost to user = baseFiat + platformFee
      const totalFiatDec = baseFiatDec.add(platformFeeDec);
 
@@ -402,8 +402,8 @@ export class QuotationService {
      );
      const bufferSpreadDec = marketPriceDec.sub(bufferedPriceDec);
      const grossFiatDec = new Decimal(amount).mul(bufferedPriceDec);
-     const platformFeeDec = grossFiatDec.mul(PLATFORM_SPREAD);
-     const netFiatDec = grossFiatDec.sub(platformFeeDec);
+     const platformFeeCryptoDec = new Decimal(amount).mul(PLATFORM_SPREAD);
+     const netFiatDec = grossFiatDec;
 
      // Validate the gross transaction amount (before platform fee deduction)
      await this.validateMinimumAmount(grossFiatDec, symbol, new Decimal(amount));
@@ -412,7 +412,11 @@ export class QuotationService {
     const bufferedPriceMinor = this.toMinorString(bufferedPriceDec, fiat.code);
     const bufferSpreadMinor = this.toMinorString(bufferSpreadDec, fiat.code);
     const grossFiatMinor = this.toMinorString(grossFiatDec, fiat.code);
-    const platformFeeMinor = this.toMinorString(platformFeeDec, fiat.code);
+    const platformFeeMinor = ConvertCurrency.toBase(
+      platformFeeCryptoDec.toFixed(cryptoDecimals),
+      symbol,
+      network as CryptoNetwork,
+    ).toString();
     const netFiatMinor = this.toMinorString(netFiatDec, fiat.code);
 
     const quoteId = uuidv4();
@@ -461,7 +465,11 @@ export class QuotationService {
         bufferedRate: ConvertCurrency.fromBase(bufferedPriceMinor, fiat.code),
         bufferSpread: ConvertCurrency.fromBase(bufferSpreadMinor, fiat.code),
         grossFiat: ConvertCurrency.fromBase(grossFiatMinor, fiat.code),
-        transactionFee: ConvertCurrency.fromBase(platformFeeMinor, fiat.code),
+        transactionFee: ConvertCurrency.fromBase(
+          platformFeeMinor,
+          symbol,
+          network as CryptoNetwork,
+        ),
         estimatedFiat: ConvertCurrency.fromBase(netFiatMinor, fiat.code),
         bufferPercent: bufferFactor.mul(100).toFixed(2),
         expiresIn: `${QUOTE_TTL_SECONDS}s`,

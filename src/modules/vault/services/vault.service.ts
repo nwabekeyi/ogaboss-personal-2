@@ -632,10 +632,23 @@ export class VaultService {
       }
 
       const result = await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT "id" FROM "vaults"
+          WHERE "id" = ${vault.id}
+          FOR UPDATE
+        `;
+        const lockedVault = await tx.vault.findFirst({
+          where: { id: vault.id, userId, status: VaultStatus.ACTIVE },
+          include: { cryptoCurrency: true },
+        });
+        if (!lockedVault) {
+          throw new BadRequestException('Vault already processed');
+        }
+
         const wallet = await tx.wallet.findFirst({
           where: {
             userId,
-            currencyId: vault.currencyId,
+            currencyId: lockedVault.currencyId,
           },
         });
 
@@ -643,8 +656,8 @@ export class VaultService {
           throw new NotFoundException('Wallet not found for this currency');
         }
 
-        const amountLocked = BigInt(vault.amountLocked.toFixed(0));
-        const totalGain = BigInt(vault.totalGain.toFixed(0));
+        const amountLocked = BigInt(lockedVault.amountLocked.toFixed(0));
+        const totalGain = BigInt(lockedVault.totalGain.toFixed(0));
 
         let newBaseBalance: bigint;
         let newLockedAmount: bigint;
@@ -665,7 +678,7 @@ export class VaultService {
           returnedAmount = amountAfterPenalty;
           interestReceived = 0n;
         } else {
-          const amountToReceive = BigInt(vault.amountToReceive.toFixed(0));
+          const amountToReceive = BigInt(lockedVault.amountToReceive.toFixed(0));
           newBaseBalance = BigInt(wallet.baseBalance.toFixed(0)) + amountToReceive;
           newLockedAmount = BigInt(wallet.lockedAmount?.toFixed(0) || 0) > amountLocked
               ? BigInt(wallet.lockedAmount?.toFixed(0) || 0) - amountLocked
@@ -683,18 +696,18 @@ export class VaultService {
             totalLockedInterest: { decrement: totalGain.toString() },
             originalBalance: ConvertCurrency.fromBase(
               newBaseBalance.toString(),
-              vault.cryptoCurrency.symbol,
+              lockedVault.cryptoCurrency.symbol,
               wallet.defaultNetwork as CryptoNetwork,
             ),
           },
         });
 
         await tx.vault.update({
-          where: { id: vault.id },
+          where: { id: lockedVault.id },
           data: { status: newStatus },
         });
 
-        const normalizedCurrency = vault.cryptoCurrency.symbol.toUpperCase();
+        const normalizedCurrency = lockedVault.cryptoCurrency.symbol.toUpperCase();
         if (normalizedCurrency === 'USDT' || normalizedCurrency === 'USDC') {
           await tx.$executeRaw`
             UPDATE "company_liquidity"

@@ -552,6 +552,8 @@ export class AutoStackService {
             targetAsset: 'USDT',
             principalUsdtAmount: principalUsdtOriginal,
             principalUsdtAmountBase: principalUsdtMinor.toString(),
+            transactionFeeBase: transactionFeeMinor.toString(),
+            transactionFee: ConvertCurrency.fromBase(transactionFeeMinor, 'USDT', 6),
             sourceAmount: sourceAmountOriginal,
             sourceAmountBase: sourceAmountMinor.toString(),
             autostackInitiationStatus: 'PENDING',
@@ -858,6 +860,7 @@ export class AutoStackService {
         configTx.cryptoAmountOriginal ||
         ConvertCurrency.fromBase(principalUsdtBase, 'USDT', 6),
     );
+    const transactionFeeBase = BigInt(String(meta.transactionFeeBase || 0));
     const sourceAmountBase = BigInt(
       String(
         meta.sourceAmountBase || configTx.cryptoAmountBase || principalUsdtBase,
@@ -868,6 +871,12 @@ export class AutoStackService {
         configTx.cryptoAmountOriginal ||
         principalUsdtOriginal,
     );
+    const sourceFeeBase =
+      paymentType === PaymentType.CRYPTO_WALLET && principalUsdtBase > 0n
+        ? (sourceAmountBase * transactionFeeBase + principalUsdtBase - 1n) /
+          principalUsdtBase
+        : 0n;
+    const totalSourceWalletDeductionBase = sourceAmountBase + sourceFeeBase;
     const processingMetadata = meta;
 
     try {
@@ -885,7 +894,7 @@ export class AutoStackService {
                 tx as any,
                 stack.userId,
                 sourceAsset,
-                sourceAmountBase,
+                totalSourceWalletDeductionBase,
               );
               const reservedLiquidity =
                 await this.companyLiquidityService.reserveLiquidity(
@@ -903,6 +912,16 @@ export class AutoStackService {
               data: {
                 cryptoAmountBase: sourceAmountBase.toString(),
                 cryptoAmountOriginal: sourceAmountOriginal,
+                platformFeeBase: sourceFeeBase.toString(),
+                platformFeeOriginal: ConvertCurrency.fromBase(
+                  sourceFeeBase,
+                  sourceAsset,
+                ),
+                totalAmountSentBase: totalSourceWalletDeductionBase.toString(),
+                totalAmountSentOriginal: ConvertCurrency.fromBase(
+                  totalSourceWalletDeductionBase,
+                  sourceAsset,
+                ),
                 fiatAmountBase: principalUsdtBase.toString(),
                 fiatAmountOriginal: principalUsdtOriginal,
                 paymentMetadata: {
@@ -911,6 +930,9 @@ export class AutoStackService {
                     LiquidityReservationStatus.RESERVED,
                   liquidityReservationCurrency: sourceAsset,
                   liquidityReservationAmount: sourceAmountBase.toString(),
+                  sourceFeeAmountBase: sourceFeeBase.toString(),
+                  totalSourceWalletDeductionBase:
+                    totalSourceWalletDeductionBase.toString(),
                 } as Prisma.InputJsonValue,
               },
             });
@@ -933,14 +955,15 @@ export class AutoStackService {
               throw new Error(
                 `USDT wallet not found for autostack ${stack.id}`,
               );
+            const totalWalletDeductionBase = sourceAmountBase + transactionFeeBase;
             const walletUpdateResult = await tx.$queryRaw<
               { baseBalance: string }[]
             >`
                 UPDATE "wallets"
-                SET "baseBalance" = "baseBalance" - ${sourceAmountBase.toString()}::decimal,
+                SET "baseBalance" = "baseBalance" - ${totalWalletDeductionBase.toString()}::decimal,
                     "stackedAmount" = "stackedAmount" + ${sourceAmountBase.toString()}::decimal
                 WHERE "id" = ${usdtWallet.id}
-                  AND ("baseBalance" - "reservedBalance") >= ${sourceAmountBase.toString()}::decimal
+                  AND ("baseBalance" - "reservedBalance") >= ${totalWalletDeductionBase.toString()}::decimal
                 RETURNING "baseBalance"
               `;
             if (walletUpdateResult.length === 0) {
@@ -980,6 +1003,18 @@ export class AutoStackService {
                 status: TransactionStatus.COMPLETED,
                 isProcessed: true,
                 executedAt: now,
+                platformFeeBase: transactionFeeBase.toString(),
+                platformFeeOriginal: ConvertCurrency.fromBase(
+                  transactionFeeBase,
+                  'USDT',
+                  6,
+                ),
+                totalAmountSentBase: totalWalletDeductionBase.toString(),
+                totalAmountSentOriginal: ConvertCurrency.fromBase(
+                  totalWalletDeductionBase,
+                  'USDT',
+                  6,
+                ),
                 paymentMetadata: {
                   ...processingMetadata,
                   actualReceivedAmountBase: sourceAmountBase.toString(),
@@ -994,6 +1029,9 @@ export class AutoStackService {
                     'USDT',
                     6,
                   ),
+                  sourceFeeAmountBase: transactionFeeBase.toString(),
+                  totalSourceWalletDeductionBase:
+                    totalWalletDeductionBase.toString(),
                   autostackInitiationStatus: 'COMPLETED',
                   autostackSettlement: 'wallet_completed',
                 } as Prisma.InputJsonValue,
@@ -1058,7 +1096,12 @@ export class AutoStackService {
       const usdtNgnRate = await this.tickerService.getPrice('usdtngn');
       if (!usdtNgnRate)
         throw new Error('Unable to fetch USDT/NGN rate for autostack');
-      const ngnAmount = new Decimal(principalUsdtOriginal).mul(usdtNgnRate);
+      const totalUsdtChargeOriginal = new Decimal(principalUsdtOriginal).add(
+        ConvertCurrency.fromBase(transactionFeeBase, 'USDT', 6),
+      );
+      const principalNgnAmount = new Decimal(principalUsdtOriginal).mul(usdtNgnRate);
+      const ngnAmount = totalUsdtChargeOriginal.mul(usdtNgnRate);
+      const companyLiquidityAmountBase = this.toNgnBase(principalNgnAmount);
       const ngnAmountBase = this.toNgnBase(ngnAmount);
       const ngnAmountOriginal = ConvertCurrency.fromBase(ngnAmountBase, 'NGN');
       const chargeReference = configTx.transactionUniqueId;
@@ -1069,12 +1112,12 @@ export class AutoStackService {
             LiquidityReservationStatus.RESERVED &&
           meta.liquidityReservationCurrency === 'NGN' &&
           String(meta.liquidityReservationAmount || '') ===
-            ngnAmountBase.toString();
+            companyLiquidityAmountBase.toString();
         if (!alreadyReserved) {
           const reservedLiquidity =
             await this.companyLiquidityService.reserveLiquidity(
               'NGN',
-              ngnAmountBase,
+              companyLiquidityAmountBase,
               tx as any,
             );
           if (!reservedLiquidity)
@@ -1098,8 +1141,10 @@ export class AutoStackService {
               autostackFlow: 'PAYSTACK_CARD_TO_BUY_ORDER',
               liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
               liquidityReservationCurrency: 'NGN',
-              liquidityReservationAmount: ngnAmountBase.toString(),
+              liquidityReservationAmount: companyLiquidityAmountBase.toString(),
+              chargedAmountBase: ngnAmountBase.toString(),
               usdtNgnRate,
+              totalUsdtCharge: totalUsdtChargeOriginal.toString(),
             } as Prisma.InputJsonValue,
           },
         });
@@ -1132,8 +1177,10 @@ export class AutoStackService {
             autostackInitiationStatus: 'SUBMITTED',
             liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
             liquidityReservationCurrency: 'NGN',
-            liquidityReservationAmount: ngnAmountBase.toString(),
+            liquidityReservationAmount: companyLiquidityAmountBase.toString(),
+            chargedAmountBase: ngnAmountBase.toString(),
             usdtNgnRate,
+            totalUsdtCharge: totalUsdtChargeOriginal.toString(),
           } as Prisma.InputJsonValue,
         },
       });
@@ -1167,7 +1214,7 @@ export class AutoStackService {
               tx as any,
               stack.userId,
               sourceAsset,
-              sourceAmountBase,
+              totalSourceWalletDeductionBase,
             )
             .catch(() => undefined);
         }
