@@ -110,7 +110,8 @@ export class SellService {
         ),
         platformFee: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
-          quote.fiatCurrency,
+          quote.crypto,
+          quote.cryptoDecimals,
         ),
         bufferSpread: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
@@ -190,6 +191,7 @@ export class SellService {
     const cryptoAmountBase = BigInt(quote.exactCryptoMinor);
     const netFiatBase = BigInt(quote.netFiatMinor);
     const platformFeeBase = BigInt(quote.platformFeeMinor);
+    const totalUserDebitBase = cryptoAmountBase + platformFeeBase;
     const bufferSpreadBase = BigInt(quote.bufferSpreadMinor);
 
     const cryptoOriginal = ConvertCurrency.fromBase(
@@ -246,7 +248,7 @@ export class SellService {
         tx,
         userId,
         quote.crypto,
-        cryptoAmountBase + platformFeeBase,
+        totalUserDebitBase,
       );
 
       const availableLiquidity =
@@ -270,16 +272,19 @@ export class SellService {
         platformFeeBase: platformFeeBase,
         platformFeeOriginal: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
-          quote.fiatCurrency,
+          quote.crypto,
+          quote.network !== 'N/A'
+            ? (quote.network as CryptoNetwork)
+            : undefined,
         ),
         bufferAmountBase: bufferSpreadBase,
         bufferAmountOriginal: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.fiatCurrency,
         ),
-        totalAmountSentBase: cryptoAmountBase + platformFeeBase,
+        totalAmountSentBase: totalUserDebitBase,
         totalAmountSentOriginal: ConvertCurrency.fromBase(
-          cryptoAmountBase + platformFeeBase,
+          totalUserDebitBase,
           quote.crypto,
           quote.network !== 'N/A'
             ? (quote.network as CryptoNetwork)
@@ -519,7 +524,7 @@ export class SellService {
           tx,
           userId,
           quote.crypto,
-          cryptoAmountBase + platformFeeBase,
+          totalUserDebitBase,
         );
         await this.companyLiquidityService.releaseLiquidity(
           BASE_CURRENCY,

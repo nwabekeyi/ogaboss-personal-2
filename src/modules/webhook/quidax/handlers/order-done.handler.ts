@@ -110,11 +110,13 @@ export class OrderDoneHandler {
       return;
     }
 
-    const reservedLiquidityAmount = toBigInt(transaction.fiatAmountBase);
     const paymentMetadata = (transaction.paymentMetadata || {}) as Record<
       string,
       any
     >;
+    const reservedLiquidityAmount = paymentMetadata.liquidityReservationAmount
+      ? toBigInt(paymentMetadata.liquidityReservationAmount)
+      : toBigInt(transaction.fiatAmountBase);
     const liquidityReservationStatus =
       paymentMetadata.liquidityReservationStatus ||
       LiquidityReservationStatus.RESERVED;
@@ -163,9 +165,10 @@ export class OrderDoneHandler {
           });
 
           if (!isBuy && transaction.cryptoAmountBase != null) {
-            const totalSent =
-              toBigInt(transaction.cryptoAmountBase) +
-              toBigInt(transaction.platformFeeBase ?? 0n);
+            const totalSent = transaction.totalAmountSentBase
+              ? toBigInt(transaction.totalAmountSentBase)
+              : toBigInt(transaction.cryptoAmountBase) +
+                toBigInt(transaction.platformFeeBase ?? 0n);
             await this.transactionService
               .releaseBalance(tx, transaction.userId, crypto, totalSent)
               .catch(() => undefined);
@@ -746,7 +749,10 @@ export class OrderDoneHandler {
                 tx,
                 transaction.userId,
                 crypto,
-                transaction.cryptoAmountBase,
+                transaction.totalAmountSentBase
+                  ? toBigInt(transaction.totalAmountSentBase)
+                  : toBigInt(transaction.cryptoAmountBase) +
+                    toBigInt(transaction.platformFeeBase ?? 0n),
               )
               .catch(() => undefined);
           }
@@ -913,36 +919,11 @@ export class OrderDoneHandler {
         );
 
         await this.prisma.$transaction(async (tx) => {
-          // Release reserved balance (un-locks the crypto amount)
-          if (transaction.cryptoAmountBase != null) {
-            const totalSent =
-              toBigInt(transaction.cryptoAmountBase) +
-              toBigInt(transaction.platformFeeBase ?? 0n);
-            await this.transactionService.releaseBalance(
-              tx,
-              transaction.userId,
-              crypto,
-              totalSent,
-            );
-          }
-
-          // Release company liquidity reservation
-          if (
-            reservedLiquidityAmount > 0n &&
-            liquidityReservationStatus === LiquidityReservationStatus.RESERVED
-          ) {
-            await this.companyLiquidityService.releaseLiquidity(
-              fiat,
-              reservedLiquidityAmount,
-              tx,
-            );
-          }
-
           await tx.order.update({
             where: { id: order.id },
             data: {
-              status: OrderStatus.FAILED,
-              paymentStatus: PaymentStatus.FAILED,
+              status: OrderStatus.PROCESSING,
+              paymentStatus: PaymentStatus.PENDING,
               gatewayResponse: JSON.stringify({
                 quidax: data,
                 payoutError: payoutError?.message ?? 'unknown',
@@ -953,19 +934,17 @@ export class OrderDoneHandler {
           await tx.transaction.update({
             where: { id: transaction.id },
             data: {
-              status: TransactionStatus.FAILED,
-              isProcessed: true,
+              status: TransactionStatus.PENDING,
+              isProcessed: false,
               paymentMetadata: {
                 ...sellPaymentMetadata,
                 sellOrderStatus: 'filled',
-                payoutStatus: 'failed',
+                payoutStatus: 'failed_retry_required',
                 payoutFailureReason: payoutError?.message ?? 'unknown',
                 payoutRetryCount: retryCount,
-                liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
-                liquidityReleasedAt: new Date().toISOString(),
-                liquidityReleaseReason: 'sell_payout_retries_exhausted',
+                liquidityReservationStatus: LiquidityReservationStatus.RESERVED,
                 partialSuccessNote:
-                  'Quidax sell order succeeded but Paystack payout failed after retries',
+                  'Quidax sell order succeeded but Paystack payout failed; crypto and payout liquidity remain reserved for retry/manual payout',
               } as Prisma.InputJsonValue,
             },
           });

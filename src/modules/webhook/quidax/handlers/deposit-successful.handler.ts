@@ -158,6 +158,7 @@ export class DepositSuccessfulHandler {
     let createdTransactionId: string;
     let withdrawalCompanyReference: string;
     let ngnAmountBase = 0n;
+    let processedNewDeposit = false;
 
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -192,8 +193,52 @@ export class DepositSuccessfulHandler {
           },
         });
 
-        // Atomic wallet balance update — no stale read
         const amountDec = toDecimal(amountBase);
+
+        const createdTx = await tx.transaction
+          .create({
+            data: {
+              userId: user.id,
+              receiverWalletId: wallet.id,
+              transactionUniqueId: providerDepositId,
+              network,
+              currency,
+              cryptoAmountBase: amountDec,
+              cryptoAmountOriginal: amountStr,
+              fiatAmountBase: toDecimal(0n),
+              fiatAmountOriginal: '0',
+              description: `Deposit received: ${amountStr} ${currency}`,
+              status: TransactionStatus.COMPLETED,
+              transactionType: TransactionType.CREDIT,
+              transactionContext: TransactionContext.DEPOSIT,
+              paymentMetadata: {
+                txid: txHash,
+                quidaxEventId: providerDepositId,
+                confirmations: data.payment_transaction?.confirmations,
+                depositAddress: data.wallet.deposit_address,
+                destinationTag: data.payment_address?.destination_tag,
+              },
+              isProcessed: true,
+            },
+          })
+          .catch(async (error: any) => {
+            if (error.code === 'P2002') {
+              this.logger.warn(
+                `Deposit transaction already exists (race condition): ${providerDepositId}`,
+              );
+              return null;
+            }
+            throw error;
+          });
+
+        if (!createdTx) {
+          return;
+        }
+
+        createdTransactionId = createdTx.id;
+        processedNewDeposit = true;
+
+        // Atomic wallet balance update — no stale read
         const [{ baseBalance: newBaseStr }] = await tx.$queryRaw<
           { baseBalance: string }[]
         >`
@@ -224,46 +269,6 @@ export class DepositSuccessfulHandler {
           'add',
           tx,
         );
-
-        const createdTx = await tx.transaction
-          .create({
-            data: {
-              userId: user.id,
-              receiverWalletId: wallet.id,
-              transactionUniqueId: providerDepositId,
-              network,
-              currency,
-              cryptoAmountBase: amountDec,
-              cryptoAmountOriginal: amountStr,
-              fiatAmountBase: toDecimal(0n),
-              fiatAmountOriginal: '0',
-              description: `Deposit received: ${amountStr} ${currency}`,
-              status: TransactionStatus.COMPLETED,
-              transactionType: TransactionType.CREDIT,
-              transactionContext: TransactionContext.DEPOSIT,
-              paymentMetadata: {
-                txid: txHash,
-                quidaxEventId: providerDepositId,
-                confirmations: data.payment_transaction?.confirmations,
-                depositAddress: data.wallet.deposit_address,
-                destinationTag: data.payment_address?.destination_tag,
-              },
-              isProcessed: true,
-            },
-          })
-          .catch((error: any) => {
-            if (error.code === 'P2002') {
-              this.logger.warn(
-                `Deposit transaction already exists (race condition): ${providerDepositId}`,
-              );
-              return tx.transaction.findUniqueOrThrow({
-                where: { transactionUniqueId: providerDepositId },
-              });
-            }
-            throw error;
-          });
-
-        createdTransactionId = createdTx.id;
 
         // Convert crypto amount to NGN kobo for amountReceived
         const cryptoNgnPrice = await this.tickerService.getPrice(
@@ -308,6 +313,11 @@ export class DepositSuccessfulHandler {
         error?.stack,
       );
       throw error; // Mark webhook as failed, not silently swallowed
+    }
+
+    if (!processedNewDeposit || !createdTransactionId) {
+      this.logger.warn(`Deposit already processed: ${providerDepositId}`);
+      return;
     }
 
     const completedTransaction = await this.prisma.transaction.findUnique({

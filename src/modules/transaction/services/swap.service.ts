@@ -237,6 +237,8 @@ export class SwapService {
          cryptoAmountOriginal: fromAmountHuman,
          platformFeeBase: platformFeeMinor,
          platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
+         totalAmountSentBase: reservedAmount,
+         totalAmountSentOriginal: ConvertCurrency.fromBase(reservedAmount, q.from, fromNet),
          fiatAmountBase: 0n,
          fiatAmountOriginal: '0',
          transactionType: TransactionType.DEBIT,

@@ -266,6 +266,7 @@ export class BuyService {
     const platformFeeMinor = BigInt(quote.platformFeeMinor);
     const bufferSpreadMinor = BigInt(quote.bufferSpreadMinor);
     const volumeCryptoMinor = BigInt(quote.volumeCryptoMinor);
+    const companyLiquidityAmount = totalFiatMinor - platformFeeMinor;
 
     const fiatOriginal = ConvertCurrency.fromBase(
       quote.totalFiatMinor,
@@ -297,7 +298,7 @@ export class BuyService {
 
       const reserved = await this.companyLiquidityService.reserveLiquidity(
         BASE_CURRENCY,
-        totalFiatMinor,
+        companyLiquidityAmount,
         tx,
       );
 
@@ -313,6 +314,8 @@ export class BuyService {
         paymentMetadata: {
           companyDepositReference,
           liquidityReservationStatus,
+          liquidityReservationAmount: companyLiquidityAmount.toString(),
+          liquidityReservationCurrency: BASE_CURRENCY,
           paymentMethodId: quote.paymentMethodId,
           cardId: quote.cardId ?? null,
         },
@@ -345,7 +348,7 @@ export class BuyService {
           data: {
             transactionId: transactionRecord.id,
             currency: BASE_CURRENCY,
-            amountBase: totalFiatMinor.toString(),
+            amountBase: companyLiquidityAmount.toString(),
             providerResponse: {
               reason: 'Insufficient company NGN liquidity for buy processing',
               paymentType: paymentMethod.type,
@@ -357,7 +360,7 @@ export class BuyService {
           transactionId: transactionRecord.id,
           userId,
           currency: BASE_CURRENCY,
-          amountBase: totalFiatMinor.toString(),
+          amountBase: companyLiquidityAmount.toString(),
         });
       }
     });
@@ -428,7 +431,7 @@ export class BuyService {
       if (!chargeResponse?.status) {
         await this.companyLiquidityService.releaseLiquidity(
           BASE_CURRENCY,
-          totalFiatMinor,
+          companyLiquidityAmount,
         );
         await this.prisma.transaction.update({
           where: { id: transactionRecord.id },
@@ -479,7 +482,7 @@ export class BuyService {
       if (!initializeResponse?.status) {
         await this.companyLiquidityService.releaseLiquidity(
           BASE_CURRENCY,
-          totalFiatMinor,
+          companyLiquidityAmount,
         );
         await this.prisma.transaction.update({
           where: { id: transactionRecord.id },
