@@ -17,6 +17,8 @@ import {
 import {
   BASE_CURRENCY,
   ConvertCurrency,
+  CryptoNetwork,
+  getCurrencyDecimals,
   LiquidityReservationStatus,
 } from '../../../shared';
 import { MIN_TRANSACTION_USDT } from '../constants';
@@ -43,7 +45,9 @@ export class BuyService {
     private readonly queueService: QueueService,
   ) {}
 
-  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+  private async notifySuperAdminLiquidityInsufficient(
+    payload: Record<string, any>,
+  ) {
     const to = process.env.SUPERADMIN_EMAIL?.trim();
     if (!to) return;
     await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
@@ -189,52 +193,68 @@ export class BuyService {
     };
   }
 
-    async confirmBuy(userId: string, previewId: string) {
-      await this.transactionService.enforceConfirmationCooldown(userId);
-      const quoteKey = `buy:${previewId}`;
-      const quoteRaw = await this.tempStore.get(quoteKey);
-      if (!quoteRaw)
-        throw new NotFoundException('Buy quote not found or expired');
+  async confirmBuy(userId: string, previewId: string) {
+    await this.transactionService.enforceConfirmationCooldown(userId);
+    const quoteKey = `buy:${previewId}`;
+    const quoteRaw = await this.tempStore.get(quoteKey);
+    if (!quoteRaw)
+      throw new NotFoundException('Buy quote not found or expired');
 
-      const quote: IBuyQuote =
-        typeof quoteRaw === 'string' ? JSON.parse(quoteRaw) : quoteRaw;
+    const quote: IBuyQuote =
+      typeof quoteRaw === 'string' ? JSON.parse(quoteRaw) : quoteRaw;
 
-      if (quote.userId !== userId)
-        throw new UnauthorizedException('Not your quote');
-      if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
-       if (Date.now() > quote.expiresAt) {
-        await this.tempStore.del(quoteKey);
-        throw new BadRequestException('Quote expired. Please request a new one.');
-      }
+    if (quote.userId !== userId)
+      throw new UnauthorizedException('Not your quote');
+    if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
+    if (Date.now() > quote.expiresAt) {
+      await this.tempStore.del(quoteKey);
+      throw new BadRequestException('Quote expired. Please request a new one.');
+    }
 
-      if (quote.crypto?.toUpperCase() === 'USDT') {
-        const minUsdtBase = ConvertCurrency.toBase(MIN_TRANSACTION_USDT.toString(), 'usdt');
-        if (BigInt(quote.volumeCryptoMinor) < minUsdtBase) {
-          throw new BadRequestException(`Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`);
-        }
-      }
+    const normalizedCrypto = quote.crypto.toUpperCase();
+    const quoteNetwork =
+      quote.network && quote.network !== 'N/A'
+        ? (quote.network as CryptoNetwork)
+        : undefined;
+    const cryptoDecimals =
+      typeof quote.cryptoDecimals === 'number'
+        ? quote.cryptoDecimals
+        : getCurrencyDecimals(normalizedCrypto, quoteNetwork);
 
-      // Slippage protection: check current price against quoted buffered price
-      await this.transactionService.checkPriceSlippage(
-        quote.crypto,
-        quote.fiatCurrency,
-        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
-        true // isBuy
+    if (normalizedCrypto === 'USDT') {
+      const minUsdtBase = ConvertCurrency.toBase(
+        MIN_TRANSACTION_USDT.toString(),
+        normalizedCrypto,
+        cryptoDecimals,
       );
-
-      const existingTransaction = await this.prisma.transaction.findFirst({
-        where: { transactionUniqueId: previewId },
-        select: { id: true, status: true },
-      });
-      if (existingTransaction) {
-        return {
-          message: 'Buy already submitted',
-          data: {
-            transactionId: existingTransaction.id,
-            status: existingTransaction.status,
-          },
-        };
+      if (BigInt(quote.volumeCryptoMinor) < minUsdtBase) {
+        throw new BadRequestException(
+          `Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`,
+        );
       }
+    }
+
+    // Slippage protection: check current price against quoted buffered price
+    await this.transactionService.checkPriceSlippage(
+      normalizedCrypto,
+      quote.fiatCurrency,
+      ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
+      true, // isBuy
+    );
+
+    const existingTransaction = await this.prisma.transaction.findFirst({
+      where: { transactionUniqueId: previewId },
+      select: { id: true, status: true },
+    });
+    if (existingTransaction) {
+      return {
+        message: 'Buy already submitted',
+        data: {
+          transactionId: existingTransaction.id,
+          status: existingTransaction.status,
+        },
+      };
+    }
 
     const paymentMethod = this.getPaymentMethods().find(
       (m) => m.id === quote.paymentMethodId,
@@ -248,12 +268,10 @@ export class BuyService {
     });
     if (!user) throw new NotFoundException('User not found');
 
-    const userCryptoWallet = await this.prisma.wallet.findUnique({
+    const userCryptoWallet = await this.prisma.wallet.findFirst({
       where: {
-        userId_currency: {
-          userId,
-          currency: quote.crypto.toUpperCase(),
-        },
+        userId,
+        currency: { equals: normalizedCrypto, mode: 'insensitive' },
       },
       select: { quidaxWalletId: true },
     });
@@ -274,8 +292,8 @@ export class BuyService {
     );
     const cryptoOriginal = ConvertCurrency.fromBase(
       quote.volumeCryptoMinor,
-      quote.crypto,
-      quote.cryptoDecimals,
+      normalizedCrypto,
+      cryptoDecimals,
     );
     const companyDepositReference = `company-deposit-${previewId}`;
 
@@ -322,7 +340,7 @@ export class BuyService {
         platformWalletAddress: null,
         transactionUniqueId: previewId,
         network: quote.network,
-        currency: quote.crypto,
+        currency: normalizedCrypto,
         cryptoAmountBase: volumeCryptoMinor,
         fiatAmountBase: totalFiatMinor,
         cryptoAmountOriginal: cryptoOriginal,

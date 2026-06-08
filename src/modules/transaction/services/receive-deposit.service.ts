@@ -1,5 +1,9 @@
 // src/transactions/deposit.service.ts
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { TransactionService } from './transaction.service';
 import { DepositAddressDto } from '../dto';
@@ -22,10 +26,17 @@ export class DepositService {
     const currencyUpper = currency.toUpperCase();
     const networkUpper = network ? network.toUpperCase() : undefined;
 
-    await this.transactionService.validateNetworkExists(userId, currencyUpper, networkUpper);
+    await this.transactionService.validateNetworkExists(
+      userId,
+      currencyUpper,
+      networkUpper,
+    );
 
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { userId_currency: { userId, currency: currencyUpper } },
+    const wallet = await this.prisma.wallet.findFirst({
+      where: {
+        userId,
+        currency: { equals: currencyUpper, mode: 'insensitive' },
+      },
       include: { paymentAddresses: true },
     });
 

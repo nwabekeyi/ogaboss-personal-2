@@ -52,23 +52,28 @@ export class WithdrawalService {
     private readonly queueService: QueueService,
   ) {}
 
-  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
+  private async notifySuperAdminLiquidityInsufficient(
+    payload: Record<string, any>,
+  ) {
     const to = process.env.SUPERADMIN_EMAIL?.trim();
     if (!to) return;
     await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
       to,
       subject: '[ALERT] Insufficient company liquidity',
       template: 'generic-notification',
-      context: { title: 'Insufficient company liquidity detected', data: payload },
+      context: {
+        title: 'Insufficient company liquidity detected',
+        data: payload,
+      },
     });
   }
 
-   async previewSend(userId: string, dto: CreateSendPreviewDto) {
-     const { currency, amount, toAddress, network, destinationTag } = dto;
-     const normalizedCurrency = currency.toUpperCase();
-     const normalizedNetwork = network?.toUpperCase();
-     const currencyKey = normalizedCurrency.toLowerCase();
-     const networkKey = normalizedNetwork?.toLowerCase();
+  async previewSend(userId: string, dto: CreateSendPreviewDto) {
+    const { currency, amount, toAddress, network, destinationTag } = dto;
+    const normalizedCurrency = currency.toUpperCase();
+    const normalizedNetwork = network?.toUpperCase();
+    const currencyKey = normalizedCurrency.toLowerCase();
+    const networkKey = normalizedNetwork?.toLowerCase();
     await this.transactionService.validateNetworkExists(
       userId,
       normalizedCurrency,
@@ -77,9 +82,7 @@ export class WithdrawalService {
 
     // ── EARLY CURRENCY & NETWORK VALIDATION (BEFORE QUIDAX CALL) ──────────────
     // Validate that the currency is supported for withdrawals
-    if (
-      !CURRENCY_PRECISION[currencyKey as keyof typeof CURRENCY_PRECISION]
-    ) {
+    if (!CURRENCY_PRECISION[currencyKey as keyof typeof CURRENCY_PRECISION]) {
       this.logger.warn(`Withdrawal preview rejected: unsupported currency`, {
         userId,
         currency: normalizedCurrency,
@@ -114,22 +117,24 @@ export class WithdrawalService {
 
     const decimals = getCurrencyDecimals(
       normalizedCurrency,
-networkKey as CryptoNetwork,
+      networkKey as CryptoNetwork,
     );
 
     const requestedAmountBase = ConvertCurrency.toBase(
       amount.toString(),
       normalizedCurrency,
-networkKey as CryptoNetwork,
+      networkKey as CryptoNetwork,
     );
 
-    const feeRes = await axios.get(`${process.env.QUIDAX_API_URL}/fee`, {
-      params: { currency: currencyKey, network: networkKey },
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
-      },
-    }).then((res) => res.data);
+    const feeRes = await axios
+      .get(`${process.env.QUIDAX_API_URL}/fee`, {
+        params: { currency: currencyKey, network: networkKey },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+        },
+      })
+      .then((res) => res.data);
 
     if (!feeRes || feeRes.status !== 'success') {
       throw new BadRequestException(
@@ -161,7 +166,7 @@ networkKey as CryptoNetwork,
     const networkFeeBase = ConvertCurrency.toBase(
       networkFeeHuman,
       normalizedCurrency,
-networkKey as CryptoNetwork,
+      networkKey as CryptoNetwork,
     );
 
     const platformFeeBase = BigInt(
@@ -191,13 +196,13 @@ networkKey as CryptoNetwork,
       platformFee: ConvertCurrency.fromBase(
         platformFeeBase.toString(),
         normalizedCurrency,
-  networkKey as CryptoNetwork,
+        networkKey as CryptoNetwork,
       ),
       platformFeeBase: platformFeeBase.toString(),
       totalDeduction: ConvertCurrency.fromBase(
         totalDeductionBase.toString(),
         normalizedCurrency,
-  networkKey as CryptoNetwork,
+        networkKey as CryptoNetwork,
       ),
       totalDeductionBase: totalDeductionBase.toString(),
       pinVerified: false,
@@ -225,23 +230,22 @@ networkKey as CryptoNetwork,
     };
   }
 
-   async confirmSend(userId: string, dto: ConfirmSendDto) {
-     await this.transactionService.enforceConfirmationCooldown(userId);
-     const { previewId } = dto;
-  
+  async confirmSend(userId: string, dto: ConfirmSendDto) {
+    await this.transactionService.enforceConfirmationCooldown(userId);
+    const { previewId } = dto;
+
     const rawPreview = await this.tempStore.get(`send:${previewId}`);
     if (!rawPreview)
       throw new NotFoundException('Preview not found or expired');
-  
+
     const preview =
       typeof rawPreview === 'string' ? JSON.parse(rawPreview) : rawPreview;
-  
+
     if (preview.userId !== userId)
       throw new UnauthorizedException('Unauthorized to confirm this preview');
-  
-    if (!preview.pinVerified)
-      throw new BadRequestException('PIN not verified');
-  
+
+    if (!preview.pinVerified) throw new BadRequestException('PIN not verified');
+
     if (Date.now() > preview.expiresAt) {
       await this.tempStore.del(`send:${previewId}`);
       throw new BadRequestException(
@@ -254,16 +258,22 @@ networkKey as CryptoNetwork,
     const networkFeeBase = BigInt(preview.networkFeeBase);
     const platformFeeBase = BigInt(preview.platformFeeBase);
     const totalDeductionBase = BigInt(preview.totalDeductionBase);
-  
+
     if (preview.currency?.toUpperCase() === 'USDT') {
-      const minUsdtBase = ConvertCurrency.toBase(MIN_TRANSACTION_USDT.toString(), 'usdt', preview.network as CryptoNetwork);
+      const minUsdtBase = ConvertCurrency.toBase(
+        MIN_TRANSACTION_USDT.toString(),
+        'usdt',
+        preview.network as CryptoNetwork,
+      );
       if (requestedAmountBase < minUsdtBase) {
-        throw new BadRequestException(`Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`);
+        throw new BadRequestException(
+          `Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`,
+        );
       }
     }
 
     const isXRP = preview.currency?.toUpperCase() === 'XRP';
-  
+
     // SINGLE TRANSACTION BLOCK
     const { transaction, withdrawal, companyLiquidityReserved } =
       await this.prisma.$transaction(async (tx) => {
@@ -287,15 +297,16 @@ networkKey as CryptoNetwork,
           preview.currency,
           totalDeductionBase,
         );
-  
-        const wallet = await tx.wallet.findUnique({
+
+        const wallet = await tx.wallet.findFirst({
           where: {
-            userId_currency: { userId, currency: preview.currency },
+            userId,
+            currency: { equals: preview.currency, mode: 'insensitive' },
           },
         });
-  
+
         if (!wallet) throw new NotFoundException('Wallet not found');
-  
+
         const transaction = await tx.transaction.create({
           data: {
             userId,
@@ -319,14 +330,14 @@ networkKey as CryptoNetwork,
             isProcessed: false,
           },
         });
-  
+
         const companyLiquidityReserved =
           await this.companyLiquidityService.reserveLiquidity(
             preview.currency,
             totalDeductionBase,
             tx,
           );
-  
+
         const withdrawal = await tx.withdrawal.create({
           data: {
             userId,
@@ -346,7 +357,7 @@ networkKey as CryptoNetwork,
             transactionId: transaction.id,
           },
         });
-  
+
         if (!companyLiquidityReserved) {
           await tx.failedCompanyLiquidityTransaction.create({
             data: {
@@ -376,10 +387,10 @@ networkKey as CryptoNetwork,
             amountOriginal: preview.totalDeduction,
           });
         }
-  
+
         return { transaction, withdrawal, companyLiquidityReserved };
       });
-  
+
     // Notification
     const transactionWithUser = await this.prisma.transaction.findUnique({
       where: { id: transaction.id },
@@ -393,7 +404,7 @@ networkKey as CryptoNetwork,
         paymentMetadata: true,
       },
     });
-  
+
     if (transactionWithUser) {
       try {
         this.transactionNotificationService.sendTransactionInitiatedNotification(
@@ -406,7 +417,7 @@ networkKey as CryptoNetwork,
         );
       }
     }
-  
+
     // Liquidity fallback
     if (!companyLiquidityReserved) {
       return {
@@ -418,31 +429,33 @@ networkKey as CryptoNetwork,
         message: 'Withdrawal queued. You will be notified.',
       };
     }
-  
+
     let providerWithdrawalId: string;
-  
+
     try {
-      const response = await axios.post(
-        `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`,
-        {
-          user_id: QUIDAX_COMPANY_USERID,
-          currency: preview.currency,
-          amount: preview.requestedAmount,
-          fund_uid: preview.toAddress,
-          fund_uid2: isXRP ? preview.destinationTag : undefined,
-          network: preview.network,
-          reference: previewId,
-          transaction_note: 'External crypto withdrawal',
-          narration: `Send to ${preview.toAddress.slice(0, 8)}...`,
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+      const response = await axios
+        .post(
+          `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`,
+          {
+            user_id: QUIDAX_COMPANY_USERID,
+            currency: preview.currency,
+            amount: preview.requestedAmount,
+            fund_uid: preview.toAddress,
+            fund_uid2: isXRP ? preview.destinationTag : undefined,
+            network: preview.network,
+            reference: previewId,
+            transaction_note: 'External crypto withdrawal',
+            narration: `Send to ${preview.toAddress.slice(0, 8)}...`,
           },
-        },
-      ).then((res) => res.data);
-  
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+            },
+          },
+        )
+        .then((res) => res.data);
+
       if (response.status !== 'success' || !response.data?.id) {
         await this.compensateFailedWithdrawal(
           transaction.id,
@@ -452,16 +465,16 @@ networkKey as CryptoNetwork,
           totalDeductionBase,
           response.message || 'Provider rejected the withdrawal request',
         );
-  
+
         throw new BadRequestException(
           `Withdrawal initiation failed: ${response.message || 'Unknown error'}`,
         );
       }
-  
+
       providerWithdrawalId = response.data.id;
     } catch (error: any) {
       if (error instanceof BadRequestException) throw error;
-  
+
       await this.compensateFailedWithdrawal(
         transaction.id,
         withdrawal.id,
@@ -470,26 +483,26 @@ networkKey as CryptoNetwork,
         totalDeductionBase,
         `Provider API error: ${error.message}`,
       );
-  
+
       throw new BadRequestException(
         'Could not reach the withdrawal provider. Please try again shortly.',
       );
     }
-  
+
     await this.prisma.$transaction(async (tx) => {
       await tx.transaction.update({
         where: { id: transaction.id },
         data: { transactionUniqueId: providerWithdrawalId },
       });
-  
+
       await tx.withdrawal.update({
         where: { id: withdrawal.id },
         data: { providerWithdrawalId },
       });
     });
-  
+
     await this.tempStore.del(`send:${previewId}`);
-  
+
     return {
       success: true,
       transactionId: transaction.id,
@@ -578,16 +591,18 @@ networkKey as CryptoNetwork,
     }
 
     // PROCESSING: provider was called — we must tell Quidax to cancel first
-    const response = await axios.post(
-      `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
-      { user_id: 'me', withdrawal_id: withdrawal.providerWithdrawalId },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+    const response = await axios
+      .post(
+        `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
+        { user_id: 'me', withdrawal_id: withdrawal.providerWithdrawalId },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          },
         },
-      },
-    ).then((res) => res.data);
+      )
+      .then((res) => res.data);
 
     if (response.status !== 'success') {
       throw new BadRequestException(
