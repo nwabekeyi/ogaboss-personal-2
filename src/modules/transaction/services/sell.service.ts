@@ -28,6 +28,7 @@ import {
   COMPANY_PAYSTACK_NGN_WALLET_ID,
   ConvertCurrency,
   CryptoNetwork,
+  getCurrencyDecimals,
   LiquidityReservationStatus,
 } from '../../../shared';
 import { TransactionService } from './transaction.service';
@@ -160,10 +161,21 @@ export class SellService {
       throw new UnauthorizedException('Not your quote');
     if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
 
-    if (quote.crypto?.toUpperCase() === 'USDT') {
+    const normalizedCrypto = quote.crypto.toUpperCase();
+    const quoteNetwork =
+      quote.network && quote.network !== 'N/A'
+        ? (quote.network as CryptoNetwork)
+        : undefined;
+    const cryptoDecimals =
+      typeof quote.cryptoDecimals === 'number'
+        ? quote.cryptoDecimals
+        : getCurrencyDecimals(normalizedCrypto, quoteNetwork);
+
+    if (normalizedCrypto === 'USDT') {
       const minUsdtBase = ConvertCurrency.toBase(
         MIN_TRANSACTION_USDT.toString(),
-        'usdt',
+        normalizedCrypto,
+        cryptoDecimals,
       );
       if (BigInt(quote.exactCryptoMinor) < minUsdtBase) {
         throw new BadRequestException(
@@ -174,7 +186,7 @@ export class SellService {
 
     // Slippage protection: check current price against quoted buffered price
     await this.transactionService.checkPriceSlippage(
-      quote.crypto,
+      normalizedCrypto,
       quote.fiatCurrency,
       ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
       false, // isBuy (false for sell)
@@ -203,8 +215,8 @@ export class SellService {
 
     const cryptoOriginal = ConvertCurrency.fromBase(
       quote.exactCryptoMinor,
-      quote.crypto,
-      quote.cryptoDecimals,
+      normalizedCrypto,
+      cryptoDecimals,
     );
     const estimatedNgn = ConvertCurrency.fromBase(
       quote.netFiatMinor,
@@ -225,7 +237,7 @@ export class SellService {
     const userWallet = await this.prisma.wallet.findFirst({
       where: {
         userId,
-        currency: { equals: quote.crypto, mode: 'insensitive' },
+        currency: { equals: normalizedCrypto, mode: 'insensitive' },
       },
       select: { quidaxWalletId: true },
     });
@@ -272,7 +284,7 @@ export class SellService {
         receiverWalletAddress: null,
         transactionUniqueId: previewId,
         network: quote.network !== 'N/A' ? quote.network : null,
-        currency: quote.crypto,
+        currency: normalizedCrypto,
         cryptoAmountBase: cryptoAmountBase,
         fiatAmountBase: netFiatBase,
         cryptoAmountOriginal: cryptoOriginal,
@@ -280,10 +292,8 @@ export class SellService {
         platformFeeBase: platformFeeBase,
         platformFeeOriginal: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
-          quote.crypto,
-          quote.network !== 'N/A'
-            ? (quote.network as CryptoNetwork)
-            : undefined,
+          normalizedCrypto,
+          cryptoDecimals,
         ),
         bufferAmountBase: bufferSpreadBase,
         bufferAmountOriginal: ConvertCurrency.fromBase(
@@ -293,10 +303,8 @@ export class SellService {
         totalAmountSentBase: totalUserDebitBase,
         totalAmountSentOriginal: ConvertCurrency.fromBase(
           totalUserDebitBase,
-          quote.crypto,
-          quote.network !== 'N/A'
-            ? (quote.network as CryptoNetwork)
-            : undefined,
+          normalizedCrypto,
+          cryptoDecimals,
         ),
         transactionType: TransactionType.DEBIT,
         transactionContext: TransactionContext.SELL,
