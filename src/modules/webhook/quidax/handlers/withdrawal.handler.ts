@@ -176,6 +176,21 @@ export class WithdrawalWebhookHandler {
       ? ConvertCurrency.toBase(confirmed.fee, currency, network)
       : 0n;
 
+    const confirmedPayload = confirmed as any;
+    const confirmedRecipientAddress =
+      confirmedPayload.recipient?.details?.address ??
+      confirmedPayload.recipient?.address ??
+      confirmedPayload.recipient_address ??
+      confirmedPayload.address ??
+      withdrawal.recipientAddress ??
+      transaction.receiverWalletAddress ??
+      null;
+    const confirmedDestinationTag =
+      confirmedPayload.recipient?.details?.destination_tag ??
+      confirmedPayload.destination_tag ??
+      withdrawal.destinationTag ??
+      null;
+
     try {
       await this.prisma.$transaction(async (tx) => {
         if (isCompany) {
@@ -237,6 +252,8 @@ export class WithdrawalWebhookHandler {
               transactionNote:
                 confirmed.transaction_note ?? withdrawal.transactionNote,
               narration: confirmed.narration ?? withdrawal.narration,
+              recipientAddress: confirmedRecipientAddress ?? undefined,
+              destinationTag: confirmedDestinationTag ?? undefined,
             },
           });
 
@@ -247,9 +264,7 @@ export class WithdrawalWebhookHandler {
             const deductionDec = toDecimal(totalAmountSentBase);
 
             // Atomic baseBalance deduction with underflow protection
-            const walletUpdates = await tx.$queryRaw<
-              { baseBalance: string }[]
-            >`
+            const walletUpdates = await tx.$queryRaw<{ baseBalance: string }[]>`
               UPDATE "wallets"
               SET "baseBalance" = "baseBalance" - ${deductionDec},
                   "reservedBalance" = "reservedBalance" - ${deductionDec}
@@ -316,7 +331,6 @@ export class WithdrawalWebhookHandler {
                 tx,
               );
             }
-
           } else {
             // REJECTED: release the reserved balance back to available
             await this.transactionService.releaseBalance(
@@ -348,6 +362,7 @@ export class WithdrawalWebhookHandler {
                 networkFeeBase: toDecimal(feeBase),
                 networkFeeOriginal: confirmed.fee,
                 executedCryptoAmountBase: toDecimal(amountBase),
+                receiverWalletAddress: confirmedRecipientAddress ?? undefined,
                 executionPrice: confirmed.amount,
                 executedAt: confirmed.done_at
                   ? new Date(confirmed.done_at)
@@ -495,7 +510,7 @@ export class WithdrawalWebhookHandler {
           transactionType: TransactionType.DEBIT,
           transactionContext: TransactionContext.WITHDRAWAL,
           senderWalletAddress: null,
-          receiverWalletAddress: transaction?.senderWalletAddress,
+          receiverWalletAddress: confirmedRecipientAddress,
           network,
         });
       } catch (error: any) {

@@ -33,7 +33,8 @@
     "delete:all-users": "ts-node src/scripts/delete-all-users.ts",
     "test:quidax-webhook": "ts-node src/scripts/test-quidax-webhook.ts",
     "formatDB": "npx prisma format",
-    "prisma:reset": "prisma migrate reset --force"
+    "prisma:reset": "prisma migrate reset --force",
+    "test:confirm:no-api": "ts-node src/scripts/tests/webhook-tests/confirm-flows-no-provider-api.ts"
   },
   "keywords": [],
   "author": "",

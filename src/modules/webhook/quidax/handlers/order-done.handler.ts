@@ -117,9 +117,10 @@ export class OrderDoneHandler {
     const reservedLiquidityAmount = paymentMetadata.liquidityReservationAmount
       ? toBigInt(paymentMetadata.liquidityReservationAmount)
       : toBigInt(transaction.fiatAmountBase);
-    const liquidityReservationStatus =
+    const liquidityReservationStatus = String(
       paymentMetadata.liquidityReservationStatus ||
-      LiquidityReservationStatus.RESERVED;
+        LiquidityReservationStatus.RESERVED,
+    ).toLowerCase();
 
     const status = data.status?.toLowerCase();
     const isFailure = ['cancelled', 'rejected', 'failed'].includes(status);
@@ -393,7 +394,7 @@ export class OrderDoneHandler {
             wallet = await tx.wallet.findFirst({
               where: {
                 userId: transaction.userId,
-                currency: crypto,
+                currency: { equals: crypto, mode: 'insensitive' },
               },
             });
           }
@@ -752,7 +753,7 @@ export class OrderDoneHandler {
                 transaction.totalAmountSentBase
                   ? toBigInt(transaction.totalAmountSentBase)
                   : toBigInt(transaction.cryptoAmountBase) +
-                    toBigInt(transaction.platformFeeBase ?? 0n),
+                      toBigInt(transaction.platformFeeBase ?? 0n),
               )
               .catch(() => undefined);
           }
