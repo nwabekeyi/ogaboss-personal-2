@@ -52,7 +52,7 @@ runTest(async ({ app, prisma, logger }) => {
     paymentType: 'CRYPTO_WALLET',
     senderWalletAddress: wallet.id,
     paymentMetadata: {
-      liquidityReservationStatus: 'RESERVED',
+      liquidityReservationStatus: 'reserved',
       payoutAccountNumber: '1234567890',
       payoutBankCode: '058',
       payoutAccountName: 'Test WebhookUser',

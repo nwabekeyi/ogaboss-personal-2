@@ -117,9 +117,10 @@ export class OrderDoneHandler {
     const reservedLiquidityAmount = paymentMetadata.liquidityReservationAmount
       ? toBigInt(paymentMetadata.liquidityReservationAmount)
       : toBigInt(transaction.fiatAmountBase);
-    const liquidityReservationStatus =
+    const liquidityReservationStatus = String(
       paymentMetadata.liquidityReservationStatus ||
-      LiquidityReservationStatus.RESERVED;
+        LiquidityReservationStatus.RESERVED,
+    ).toLowerCase();
 
     const status = data.status?.toLowerCase();
     const isFailure = ['cancelled', 'rejected', 'failed'].includes(status);

@@ -47,7 +47,7 @@ runTest(async ({ app, prisma, logger }) => {
     bufferAmountBase: '10000',
     network: 'btc',
     paymentType: 'CRYPTO_WALLET',
-    paymentMetadata: { liquidityReservationStatus: 'RESERVED' },
+    paymentMetadata: { liquidityReservationStatus: 'reserved' },
   });
   await seedOrder(prisma, {
     transactionId: transaction.id,

@@ -56,7 +56,7 @@ runTest(async ({ app, prisma, logger }) => {
       sellOrderStatus: 'filled',
       payoutStatus: 'initiated',
       payoutReference: TRANSFER_REF,
-      liquidityReservationStatus: 'RESERVED',
+      liquidityReservationStatus: 'reserved',
     },
   });
 
