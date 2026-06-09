@@ -195,47 +195,56 @@ export class DepositSuccessfulHandler {
 
         const amountDec = toDecimal(amountBase);
 
-        const createdTx = await tx.transaction
-          .create({
-            data: {
-              userId: user.id,
-              receiverWalletId: wallet.id,
-              transactionUniqueId: providerDepositId,
-              network,
-              currency,
-              cryptoAmountBase: amountDec,
-              cryptoAmountOriginal: amountStr,
-              fiatAmountBase: toDecimal(0n),
-              fiatAmountOriginal: '0',
-              description: `Deposit received: ${amountStr} ${currency}`,
-              status: TransactionStatus.COMPLETED,
-              transactionType: TransactionType.CREDIT,
-              transactionContext: TransactionContext.DEPOSIT,
-              paymentMetadata: {
-                txid: txHash,
-                quidaxEventId: providerDepositId,
-                confirmations: data.payment_transaction?.confirmations,
-                depositAddress: data.wallet.deposit_address,
-                destinationTag: data.payment_address?.destination_tag,
-              },
-              isProcessed: true,
+        const depositTx = await tx.transaction.upsert({
+          where: { transactionUniqueId: providerDepositId },
+          create: {
+            userId: user.id,
+            receiverWalletId: wallet.id,
+            transactionUniqueId: providerDepositId,
+            network,
+            currency,
+            cryptoAmountBase: amountDec,
+            cryptoAmountOriginal: amountStr,
+            fiatAmountBase: toDecimal(0n),
+            fiatAmountOriginal: '0',
+            description: `Deposit received: ${amountStr} ${currency}`,
+            status: TransactionStatus.COMPLETED,
+            transactionType: TransactionType.CREDIT,
+            transactionContext: TransactionContext.DEPOSIT,
+            paymentMetadata: {
+              txid: txHash,
+              quidaxEventId: providerDepositId,
+              confirmations: data.payment_transaction?.confirmations,
+              depositAddress: data.wallet.deposit_address,
+              destinationTag: data.payment_address?.destination_tag,
             },
-          })
-          .catch(async (error: any) => {
-            if (error.code === 'P2002') {
-              this.logger.warn(
-                `Deposit transaction already exists (race condition): ${providerDepositId}`,
-              );
-              return null;
-            }
-            throw error;
-          });
+            isProcessed: true,
+          },
+          update: {
+            userId: user.id,
+            receiverWalletId: wallet.id,
+            network,
+            currency,
+            cryptoAmountBase: amountDec,
+            cryptoAmountOriginal: amountStr,
+            fiatAmountBase: toDecimal(0n),
+            fiatAmountOriginal: '0',
+            description: `Deposit received: ${amountStr} ${currency}`,
+            status: TransactionStatus.COMPLETED,
+            transactionType: TransactionType.CREDIT,
+            transactionContext: TransactionContext.DEPOSIT,
+            paymentMetadata: {
+              txid: txHash,
+              quidaxEventId: providerDepositId,
+              confirmations: data.payment_transaction?.confirmations,
+              depositAddress: data.wallet.deposit_address,
+              destinationTag: data.payment_address?.destination_tag,
+            },
+            isProcessed: true,
+          },
+        });
 
-        if (!createdTx) {
-          return;
-        }
-
-        createdTransactionId = createdTx.id;
+        createdTransactionId = depositTx.id;
         processedNewDeposit = true;
 
         // Atomic wallet balance update — no stale read
