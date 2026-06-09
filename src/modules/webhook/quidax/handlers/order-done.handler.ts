@@ -393,7 +393,7 @@ export class OrderDoneHandler {
             wallet = await tx.wallet.findFirst({
               where: {
                 userId: transaction.userId,
-                currency: crypto,
+                currency: { equals: crypto, mode: 'insensitive' },
               },
             });
           }
@@ -752,7 +752,7 @@ export class OrderDoneHandler {
                 transaction.totalAmountSentBase
                   ? toBigInt(transaction.totalAmountSentBase)
                   : toBigInt(transaction.cryptoAmountBase) +
-                    toBigInt(transaction.platformFeeBase ?? 0n),
+                      toBigInt(transaction.platformFeeBase ?? 0n),
               )
               .catch(() => undefined);
           }
