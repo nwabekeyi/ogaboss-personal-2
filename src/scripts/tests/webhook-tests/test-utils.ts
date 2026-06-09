@@ -30,9 +30,9 @@ export async function bootstrap() {
   app.setGlobalPrefix('api');
   app.enableVersioning({ type: VersioningType.URI });
 
-  patchWebhookQueues(app);
-
   await app.init();
+
+  patchWebhookQueues(app);
 
   const prisma = app.get(PrismaService);
   await prisma.$connect();
@@ -45,9 +45,13 @@ export async function bootstrap() {
 function patchWebhookQueues(app: INestApplication) {
   const quidaxWebhookService = app.get(QuidaxWebhookService);
   const paystackWebhookHandler = app.get(PaystackWebhookHandler);
-  const queueService = app.get(QueueService);
 
-  (queueService as any).add = async (
+  // Patch the prototype instead of a single injected instance because QueueService
+  // is provided by more than one module in this app. The webhook controller may
+  // receive a different QueueService instance than app.get(QueueService), so an
+  // instance-only patch can still enqueue to BullMQ and leave the test waiting on
+  // async workers.
+  (QueueService.prototype as any).add = async (
     queue: QueueName,
     name: string,
     job: { payload?: any; webhookId?: string },

@@ -3,6 +3,7 @@ import {
   seedUser,
   seedWallet,
   seedCompanyLiquidity,
+  seedTransaction,
   TEST_USER_ID,
   QUIDAX_ACCOUNT_ID,
   captureMathSnapshot,
@@ -33,6 +34,24 @@ runTest(async ({ app, prisma, logger }) => {
   });
   await seedCompanyLiquidity(prisma, CURRENCY, '1000000000', '0');
   await seedCompanyLiquidity(prisma, 'ngn', '5000000000000', '0');
+
+  await seedTransaction(prisma, {
+    transactionUniqueId: DEPOSIT_ID,
+    currency: CURRENCY,
+    transactionType: 'CREDIT',
+    transactionContext: 'DEPOSIT',
+    status: 'PENDING',
+    cryptoAmountBase: DEPOSIT_AMOUNT_BASE.toString(),
+    cryptoAmountOriginal: DEPOSIT_AMOUNT,
+    fiatAmountBase: '0',
+    fiatAmountOriginal: '0',
+    network: 'btc',
+    paymentMetadata: {
+      quidaxEventId: DEPOSIT_ID,
+      depositAddress: 'bc1qtestdeposit123',
+    },
+    isProcessed: false,
+  });
 
   await prisma.paymentAddress.create({
     data: {
