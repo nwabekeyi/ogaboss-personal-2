@@ -192,16 +192,22 @@ export async function captureMathSnapshot(
         },
       ]),
     ),
-    liquidity: Object.fromEntries(
-      liquidity.map((item) => [
-        item.currency.toLowerCase(),
-        {
-          totalBalance: toBaseUnit(item.totalBalance),
-          reservedBalance: toBaseUnit(item.reservedBalance),
-          internalBalance: toBaseUnit(item.internalBalance),
-        },
-      ]),
-    ),
+    liquidity: liquidity.reduce<Record<string, BalanceFields>>((acc, item) => {
+      const key = item.currency.toLowerCase();
+      const values = {
+        totalBalance: toBaseUnit(item.totalBalance),
+        reservedBalance: toBaseUnit(item.reservedBalance),
+        internalBalance: toBaseUnit(item.internalBalance),
+      };
+
+      // Some local databases have historical case variants such as "NGN" and
+      // "ngn". The webhook scripts seed lower-case currencies, so prefer the
+      // exact lower-case test row when duplicates exist; otherwise use whichever
+      // row is available.
+      if (!acc[key] || item.currency === key) acc[key] = values;
+
+      return acc;
+    }, {}),
     user: {
       amountBought: toBaseUnit(user?.amountBought),
       amountReceived: toBaseUnit(user?.amountReceived),
@@ -420,9 +426,15 @@ export async function seedCompanyLiquidity(
   totalBalance: string,
   reservedBalance: string = '0',
 ) {
+  const normalizedCurrency = currency.toLowerCase();
+
   return prisma.companyLiquidity.upsert({
-    where: { currency },
-    create: { currency, totalBalance, reservedBalance },
+    where: { currency: normalizedCurrency },
+    create: {
+      currency: normalizedCurrency,
+      totalBalance,
+      reservedBalance,
+    },
     update: { totalBalance, reservedBalance },
   });
 }
