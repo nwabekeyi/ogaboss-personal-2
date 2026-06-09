@@ -258,6 +258,41 @@ export function logMathExpectations(
   }
 }
 
+export function logMathObservations(
+  logger: Logger,
+  scenario: string,
+  before: MathSnapshot,
+  after: MathSnapshot,
+  observations: Array<{
+    label: string;
+    scope: 'wallets' | 'liquidity' | 'user';
+    key: string;
+    field?: string;
+  }>,
+) {
+  logger.log(`--- ${scenario} observed values ---`);
+
+  for (const observation of observations) {
+    const start = snapshotValue(
+      before,
+      observation.scope,
+      observation.key,
+      observation.field,
+    );
+    const end = snapshotValue(
+      after,
+      observation.scope,
+      observation.key,
+      observation.field,
+    );
+    const actualDelta = end - start;
+
+    logger.log(
+      `ℹ️ ${observation.label}: start=${start.toString()}, end=${end.toString()}, actualDelta=${actualDelta.toString()}`,
+    );
+  }
+}
+
 export async function cleanup(prisma: PrismaService, userId: string) {
   const logger = new Logger('Cleanup');
   logger.log(`Cleaning up test data for user ${userId}...`);
