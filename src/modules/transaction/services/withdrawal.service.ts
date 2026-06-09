@@ -312,6 +312,7 @@ export class WithdrawalService {
             userId,
             senderWalletId: wallet.id,
             senderWalletAddress: wallet.quidaxWalletId || null,
+            receiverWalletAddress: preview.toAddress,
             transactionType: TransactionType.DEBIT,
             transactionContext: TransactionContext.WITHDRAWAL,
             transactionUniqueId: previewId,

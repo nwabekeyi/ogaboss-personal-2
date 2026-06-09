@@ -19,6 +19,7 @@ const PROVIDER_WITHDRAWAL_ID = `pwdr_${Date.now()}`;
 const TOTAL_SENT_BASE = 5010000n;
 const PROVIDER_SENT_BASE = 5000000n;
 const FIAT_AMOUNT_BASE = 5000000000n;
+const RECIPIENT_ADDRESS = '0xrecipient123456';
 
 runTest(async ({ app, prisma, logger }) => {
   logger.log('Seeding data for withdrawal route test...');
@@ -82,6 +83,12 @@ runTest(async ({ app, prisma, logger }) => {
       done_at: new Date().toISOString(),
       transaction_note: 'User withdrawal',
       narration: 'Withdrawal to external wallet',
+      recipient: {
+        details: {
+          address: RECIPIENT_ADDRESS,
+          destination_tag: null,
+        },
+      },
     },
   });
 
@@ -107,7 +114,7 @@ runTest(async ({ app, prisma, logger }) => {
     recipient: {
       type: 'coin_address',
       details: {
-        address: '0xrecipient123456',
+        address: RECIPIENT_ADDRESS,
         destination_tag: null,
         name: null,
       },
@@ -201,10 +208,19 @@ runTest(async ({ app, prisma, logger }) => {
   logger.log(`Withdrawal status: ${withdrawal?.status}`);
   logger.log(`Transaction status: ${updatedTx?.status}`);
   logger.log(
+    `Transaction receiver address: ${updatedTx?.receiverWalletAddress}`,
+  );
+  logger.log(`Withdrawal recipient address: ${withdrawal?.recipientAddress}`);
+  logger.log(
     `Wallet balance: ${updatedWallet?.baseBalance}, reserved: ${updatedWallet?.reservedBalance}`,
   );
 
-  if (withdrawal?.status === 'SUCCESS' && updatedTx?.status === 'COMPLETED') {
+  if (
+    withdrawal?.status === 'SUCCESS' &&
+    updatedTx?.status === 'COMPLETED' &&
+    updatedTx?.receiverWalletAddress === RECIPIENT_ADDRESS &&
+    withdrawal?.recipientAddress === RECIPIENT_ADDRESS
+  ) {
     logger.log('✅ withdrawal route test PASSED');
   } else {
     logger.error('❌ withdrawal route test FAILED');
