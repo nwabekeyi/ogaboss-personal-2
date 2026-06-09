@@ -76,6 +76,7 @@ runTest(async ({ app, prisma, logger }) => {
     cryptoAmountBase: FROM_AMOUNT_BASE.toString(),
     cryptoAmountOriginal: FROM_AMOUNT,
     platformFeeBase: '0',
+    network: 'trc20',
   });
 
   const swapService = app.get(QuidaxSwapService);

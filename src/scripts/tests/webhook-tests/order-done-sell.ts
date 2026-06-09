@@ -68,12 +68,14 @@ runTest(async ({ app, prisma, logger }) => {
     fiatAmountBase: EXECUTED_FIAT_BASE.toString(),
   });
 
-  const paystackService = app.get(PaystackService);
-  (paystackService as any).createTransferRecipient = async () => ({
+  // Patch the prototype because route processing can resolve a different
+  // PaystackService instance than app.get(PaystackService). This keeps the sell
+  // webhook route test from calling the real Paystack transfer-recipient API.
+  (PaystackService.prototype as any).createTransferRecipient = async () => ({
     status: true,
     data: { recipient_code: `RCP_test_${Date.now()}` },
   });
-  (paystackService as any).initiateTransfer = async () => ({
+  (PaystackService.prototype as any).initiateTransfer = async () => ({
     status: true,
     data: {
       reference: PAYSTACK_TRANSFER_REF,
