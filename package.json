@@ -34,7 +34,7 @@
     "test:quidax-webhook": "ts-node src/scripts/test-quidax-webhook.ts",
     "formatDB": "npx prisma format",
     "prisma:reset": "prisma migrate reset --force",
-    "test:webhook:routes": "ts-node src/scripts/tests/webhook-tests/route-send-buy-receive-sell-buy.ts"
+    "test:confirm:no-api": "ts-node src/scripts/tests/webhook-tests/confirm-flows-no-provider-api.ts"
   },
   "keywords": [],
   "author": "",

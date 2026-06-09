@@ -307,6 +307,9 @@ export async function cleanup(prisma: PrismaService, userId: string) {
     .deleteMany({ where: { Transaction: { userId } } })
     .catch(() => {});
   await prisma.withdrawal.deleteMany({ where: { userId } }).catch(() => {});
+  await prisma.userBankAccount
+    .deleteMany({ where: { userId } })
+    .catch(() => {});
   await prisma.deposit.deleteMany({ where: { userId } }).catch(() => {});
   await prisma.swapTransaction
     .deleteMany({ where: { userId } })
