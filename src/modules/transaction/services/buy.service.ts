@@ -212,10 +212,22 @@ export class BuyService {
     }
 
     const normalizedCrypto = quote.crypto.toUpperCase();
+    const userCryptoWallet = await this.prisma.wallet.findFirst({
+      where: {
+        userId,
+        currency: { equals: normalizedCrypto, mode: 'insensitive' },
+      },
+      select: { quidaxWalletId: true, defaultNetwork: true },
+    });
+
+    if (!userCryptoWallet?.quidaxWalletId) {
+      throw new NotFoundException(`Wallet not found for ${quote.crypto}`);
+    }
+
     const quoteNetwork =
       quote.network && quote.network !== 'N/A'
         ? (quote.network as CryptoNetwork)
-        : undefined;
+        : (userCryptoWallet.defaultNetwork as CryptoNetwork | undefined);
     const cryptoDecimals =
       typeof quote.cryptoDecimals === 'number'
         ? quote.cryptoDecimals
@@ -267,18 +279,6 @@ export class BuyService {
       select: { id: true, email: true },
     });
     if (!user) throw new NotFoundException('User not found');
-
-    const userCryptoWallet = await this.prisma.wallet.findFirst({
-      where: {
-        userId,
-        currency: { equals: normalizedCrypto, mode: 'insensitive' },
-      },
-      select: { quidaxWalletId: true },
-    });
-
-    if (!userCryptoWallet?.quidaxWalletId) {
-      throw new NotFoundException(`Wallet not found for ${quote.crypto}`);
-    }
 
     const totalFiatMinor = BigInt(quote.totalFiatMinor);
     const platformFeeMinor = BigInt(quote.platformFeeMinor);
