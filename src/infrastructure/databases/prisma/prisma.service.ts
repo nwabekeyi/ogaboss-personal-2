@@ -15,13 +15,20 @@ export class PrismaService
   constructor() {
     const adapter = new PrismaPg({
       connectionString: process.env.DATABASE_URL as string,
-      min: 5,
-      max: 20,
+      min: 1,
+      max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 10000,
     });
 
-    super({ adapter, log: ['error', 'warn'], errorFormat: 'minimal' });
+    super({
+      adapter,
+      log: ['error', 'warn'],
+      errorFormat: 'minimal',
+      transactionOptions: {
+        timeout: 30000,
+      },
+    });
   }
 
   async onModuleInit() {
