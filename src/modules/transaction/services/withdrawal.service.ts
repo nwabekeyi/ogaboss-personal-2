@@ -1,9 +1,8 @@
 import {
-  Injectable,
   BadRequestException,
+  Injectable,
   NotFoundException,
   UnauthorizedException,
-  ConflictException,
   Logger,
 } from '@nestjs/common';
 import {
@@ -11,673 +10,428 @@ import {
   TransactionContext,
   TransactionStatus,
   TransactionType,
-  WithdrawalStatus,
-} from '../../../infrastructure';
-import { CreateSendPreviewDto, ConfirmSendDto } from '../dto';
-import {
-  ConvertCurrency,
-  CryptoNetwork,
-  getCurrencyDecimals,
-  toDecimal,
-  CURRENCY_PRECISION,
-} from '../../../shared';
-import {
-  PLATFORM_SPREAD,
-  QUOTE_TTL_SECONDS,
-  MIN_TRANSACTION_USDT,
-  QUIDAX_COMPANY_USERID,
-} from '../constants';
-import { TransactionService } from './transaction.service';
-import { TempStoreService } from '../../../infrastructure';
-import { randomUUID } from 'crypto';
+} from '../../../infrastructure/databases/prisma';
+import { PreviewSwapDto, ConfirmSwapDto } from '../dto';
+import { ConvertCurrency, CryptoNetwork, toDecimal } from '../../../shared';
 import Decimal from 'decimal.js';
 import axios from 'axios';
+import { TransactionService } from './transaction.service';
+ import { TempStoreService } from '../../../infrastructure/databases/redis/temp-store.service';
+ import { ISwapQuote } from './types';
+
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
+import { MIN_TRANSACTION_USDT, QUIDAX_COMPANY_USERID } from '../constants';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 
 @Injectable()
-export class WithdrawalService {
-  private readonly logger = new Logger(WithdrawalService.name);
+export class SwapService {
+ private readonly logger = new Logger(SwapService.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly transactionService: TransactionService,
-    private readonly tempStore: TempStoreService,
-    private readonly companyLiquidityService: CompanyLiquidityService,
-    private readonly transactionNotificationService: TransactionNotificationService,
-    private readonly queueService: QueueService,
-  ) {}
+ constructor(
+   private readonly prisma: PrismaService,
+   private readonly transactionService: TransactionService,
+   private readonly tempStore: TempStoreService,
+   private readonly companyLiquidityService: CompanyLiquidityService,
+   private readonly transactionNotificationService: TransactionNotificationService,
+   private readonly queueService: QueueService,
+ ) {}
 
-  private async notifySuperAdminLiquidityInsufficient(
-    payload: Record<string, any>,
-  ) {
+  private async notifySuperAdminLiquidityInsufficient(payload: Record<string, any>) {
     const to = process.env.SUPERADMIN_EMAIL?.trim();
     if (!to) return;
     await this.queueService.add(QueueName.EMAIL, 'send-transactional-email', {
       to,
       subject: '[ALERT] Insufficient company liquidity',
       template: 'generic-notification',
-      context: {
-        title: 'Insufficient company liquidity detected',
-        data: payload,
-      },
+      context: { title: 'Insufficient company liquidity detected', data: payload },
     });
   }
 
-  async previewSend(userId: string, dto: CreateSendPreviewDto) {
-    const { currency, amount, toAddress, network, destinationTag } = dto;
-    const normalizedCurrency = currency.toUpperCase();
-    const normalizedNetwork = network?.toUpperCase();
-    const currencyKey = normalizedCurrency.toLowerCase();
-    const networkKey = normalizedNetwork?.toLowerCase();
-    await this.transactionService.validateNetworkExists(
-      userId,
-      normalizedCurrency,
-      normalizedNetwork,
-    );
+   /**
+  * Preview a swap using an existing quote ID.
+  * Initializes pinVerified = false if not already present.
+  */
+   async previewSwap(userId: string, dto: PreviewSwapDto) {
+     const { quoteId } = dto;
+ 
+     const raw = await this.tempStore.get(`swap:${quoteId}`);
+     if (!raw) throw new NotFoundException('Swap quote not found or expired');
+ 
+     const quote: ISwapQuote = typeof raw === 'string' ? JSON.parse(raw) : raw;
+ 
+     if (quote.userId !== userId) {
+       throw new UnauthorizedException('Quote does not belong to this user');
+     }
+ 
+     if (Date.now() > quote.expiresAt) {
+       await this.tempStore.del(`swap:${quoteId}`);
+       throw new BadRequestException(
+         'Swap quote has expired. Please request a new one.',
+       );
+     }
+ 
+     const fromNet = quote.fromNetwork as CryptoNetwork;
+     const toNet = quote.toNetwork as CryptoNetwork;
+ 
+     // All display values derived directly from ISwapQuote Minor fields —
+     // these are the exact field names getSwapQuote() writes, no aliases
+     return {
+       message: 'Swap preview ready — please verify your PIN to confirm',
+       data: {
+         previewId: quoteId,
+         from: quote.from,
+         to: quote.to,
+         fromNetwork: quote.fromNetwork,
+         toNetwork: quote.toNetwork,
+         amountIn: ConvertCurrency.fromBase(
+           quote.exactFromMinor,
+           quote.from,
+           fromNet,
+         ),
+         platformFee: ConvertCurrency.fromBase(
+           quote.platformFeeMinor,
+           quote.from,
+           fromNet,
+         ),
+         estimatedOut: ConvertCurrency.fromBase(
+           quote.estimatedOutMinor,
+           quote.to,
+           toNet,
+         ),
+         marketRate: ConvertCurrency.fromBase(
+           quote.marketRateMinor,
+           quote.to,
+           toNet,
+         ),
+         protectedRate: ConvertCurrency.fromBase(
+           quote.protectedRateMinor,
+           quote.to,
+           toNet,
+         ),
+         bufferSpread: ConvertCurrency.fromBase(
+           quote.bufferSpreadMinor,
+           quote.to,
+           toNet,
+         ),
+         bufferPercent: quote.bufferPercent,
+         totalBufferPercent: quote.totalBufferPercent,
+         expiresIn: `${Math.max(0, Math.floor((quote.expiresAt - Date.now()) / 1000))}s`,
+         requiresPinVerification: true,
+         pinVerified: quote.pinVerified,
+       },
+     };
+   }
 
-    // ── EARLY CURRENCY & NETWORK VALIDATION (BEFORE QUIDAX CALL) ──────────────
-    // Validate that the currency is supported for withdrawals
-    if (!CURRENCY_PRECISION[currencyKey as keyof typeof CURRENCY_PRECISION]) {
-      this.logger.warn(`Withdrawal preview rejected: unsupported currency`, {
-        userId,
-        currency: normalizedCurrency,
-        network: normalizedNetwork,
-      });
-      throw new BadRequestException(
-        `Currency "${currency.toUpperCase()}" is not supported for withdrawals.`,
-      );
-    }
+ /**
+  * Confirm swap using Quidax instant swap execution.
+  * Strict order:
+  * 1. Refresh quotation → validate quoted_price >= protectedRate
+  * 2. Check company liquidity
+  *    - If insufficient: create FailedCompanyLiquidityTransaction, return
+  * 3. Reserve user + company balances (no DB records yet)
+  * 4. Confirm swap on Quidax
+  * 5. Create transaction + swapTransaction records (COMPLETED)
+  * 6. If any step fails → release reserves
+  */
+   async confirmSwap(userId: string, dto: ConfirmSwapDto) {
+     await this.transactionService.enforceConfirmationCooldown(userId);
+     const { previewId: quoteId } = dto;
 
-    // Validate that the network is valid for this currency
-    const supportedNetworks = CURRENCY_PRECISION[
-      currencyKey as keyof typeof CURRENCY_PRECISION
-    ].map((n) => n.id);
-    if (networkKey && !supportedNetworks.includes(networkKey)) {
-      this.logger.warn(
-        `Withdrawal preview rejected: unsupported network for currency`,
-        {
-          userId,
-          currency: normalizedCurrency,
-          network: normalizedNetwork,
-          supportedNetworks,
-        },
-      );
-      throw new BadRequestException(
-        `Network "${network.toUpperCase()}" is not supported for ${currency.toUpperCase()}. Supported networks: ${supportedNetworks
-          .map((n) => n.toUpperCase())
-          .join(', ')}`,
-      );
-    }
-    // ────────────────────────────────────────────────────────────────────────────
+     const raw = await this.tempStore.get(`swap:${quoteId}`);
+     if (!raw) throw new NotFoundException('Swap quote not found or expired');
+     const q: ISwapQuote = typeof raw === 'string' ? JSON.parse(raw) : raw;
 
-    const decimals = getCurrencyDecimals(
-      normalizedCurrency,
-      networkKey as CryptoNetwork,
-    );
+     if (q.userId !== userId) throw new UnauthorizedException('Not your quote');
+     if (!q.pinVerified) throw new UnauthorizedException('PIN not verified');
+     if (Date.now() > q.expiresAt) {
+       await this.tempStore.del(`swap:${quoteId}`);
+       throw new BadRequestException('Quote expired.');
+     }
 
-    const requestedAmountBase = ConvertCurrency.toBase(
-      amount.toString(),
-      normalizedCurrency,
-      networkKey as CryptoNetwork,
-    );
+     const minimumSwapAmount = new Decimal(MIN_TRANSACTION_USDT);
+     if (q.from.toUpperCase() === 'USDT') {
+       const fromAmount = new Decimal(ConvertCurrency.fromBase(q.exactFromMinor, q.from, q.fromNetwork as CryptoNetwork));
+       if (fromAmount.lt(minimumSwapAmount)) {
+         throw new BadRequestException(`Minimum swap amount is ${MIN_TRANSACTION_USDT} USDT equivalent`);
+       }
+     }
 
-    const feeRes = await axios
-      .get(`${process.env.QUIDAX_API_URL}/fee`, {
-        params: { currency: currencyKey, network: networkKey },
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
-        },
-      })
-      .then((res) => res.data);
+     // Duplicate check
+   const existing = await this.prisma.swapTransaction.findFirst({
+     where: { quoteId, userId },
+     select: { id: true, status: true, swapId: true },
+   });
+   if (existing) {
+     return {
+       success: true,
+       swapRecordId: existing.id,
+       quidaxSwapId: existing.swapId,
+       status: existing.status,
+       message: 'Swap already submitted.',
+     };
+   }
 
-    if (!feeRes || feeRes.status !== 'success') {
-      throw new BadRequestException(
-        feeRes.message || 'Service unavailable to calculate fees',
-      );
-    }
+   const fromNet = q.fromNetwork as CryptoNetwork;
+   const toNet = q.toNetwork as CryptoNetwork;
+   const quidaxAccountId = await this.transactionService.getQuidaxUserId(userId);
 
-    const networkFeeTiers = feeRes.data.fee ?? [];
+   const fromAmountHuman = ConvertCurrency.fromBase(q.exactFromMinor, q.from, fromNet);
 
-    let networkFeeHuman = '0';
-    const amountDec = new Decimal(amount);
+   const exactFromMinor = BigInt(q.exactFromMinor);
+   const platformFeeMinor = BigInt(q.platformFeeMinor);
+   const reservedAmount = exactFromMinor + platformFeeMinor;
 
-    for (const tier of networkFeeTiers) {
-      const min = new Decimal(tier.min);
-      const max = new Decimal(tier.max);
+   // ============================================
+   // STEP 1: REFRESH QUOTATION + RATE GUARD
+   // ============================================
+   let refreshedQuotationId: string;
+   try {
+     const refreshResponse = await axios.post(
+       `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/swap_quotation/${q.quotationId}/refresh`,
+       {
+         from_currency: q.from.toLowerCase(),
+         to_currency: q.to.toLowerCase(),
+         from_amount: fromAmountHuman,
+       },
+       {
+         headers: {
+           'Content-Type': 'application/json',
+           Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+         },
+       },
+     ).then((res) => res.data);
 
-      if (amountDec.gte(min) && amountDec.lte(max)) {
-        if (tier.type === 'flat') {
-          networkFeeHuman = tier.value.toString();
-        } else if (tier.type === 'percentage') {
-          networkFeeHuman = amountDec
-            .mul(new Decimal(tier.value).div(100))
-            .toFixed(decimals);
-        }
-        break;
-      }
-    }
+     const refreshedData = refreshResponse?.data;
+     if (!refreshedData?.id) throw new BadRequestException('Cannot complete swap at the moment. Try again later.');
 
-    const networkFeeBase = ConvertCurrency.toBase(
-      networkFeeHuman,
-      normalizedCurrency,
-      networkKey as CryptoNetwork,
-    );
+     this.logger.debug(`Quidax refresh quote response received: quotationId=${refreshedData.id}, confirmed=${refreshedData.confirmed}`);
+     refreshedQuotationId = refreshedData.id;
 
-    const platformFeeBase = BigInt(
-      new Decimal(requestedAmountBase.toString())
-        .mul(PLATFORM_SPREAD)
-        .toDecimalPlaces(0, Decimal.ROUND_DOWN)
-        .toFixed(0),
-    );
+     const quotedPriceDec = new Decimal(refreshedData.quoted_price);
+     const protectedRateDec = new Decimal(ConvertCurrency.fromBase(q.protectedRateMinor, q.to, toNet));
+     if (quotedPriceDec.lt(protectedRateDec)) {
+       throw new BadRequestException(
+         `Swap rate slipped. Quoted: ${quotedPriceDec.toFixed(q.toDecimals)} < Protected: ${protectedRateDec.toFixed(q.toDecimals)}.`
+       );
+     }
+   } catch (error: any) {
+     throw error;
+   }
 
-    const totalDeductionBase =
-      requestedAmountBase + networkFeeBase + platformFeeBase;
+   // ============================================
+   // STEP 2: CREATE TRANSACTION + RESERVE BALANCES (atomic)
+   // ============================================
+   let pendingTransaction: any;
+   let companyLiquidityReserved = false;
 
-    const previewId = randomUUID();
+   try {
+     await this.prisma.$transaction(async (tx) => {
+       pendingTransaction = await this.transactionService.createTransaction(tx, {
+         userId,
+         transactionUniqueId: quoteId,
+         network: fromNet || null,
+         currency: q.from.toUpperCase(),
+         cryptoAmountBase: exactFromMinor,
+         cryptoAmountOriginal: fromAmountHuman,
+         platformFeeBase: platformFeeMinor,
+         platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
+         totalAmountSentBase: reservedAmount,
+         totalAmountSentOriginal: ConvertCurrency.fromBase(reservedAmount, q.from, fromNet),
+         fiatAmountBase: 0n,
+         fiatAmountOriginal: '0',
+         transactionType: TransactionType.DEBIT,
+         transactionContext: TransactionContext.SWAP,
+         status: TransactionStatus.PENDING,
+       });
 
-    const preview = {
-      previewId,
-      userId,
-      currency: normalizedCurrency,
-      network: normalizedNetwork,
-      toAddress,
-      destinationTag,
-      side: 'send',
-      requestedAmount: amount.toString(),
-      requestedAmountBase: requestedAmountBase.toString(),
-      networkFee: networkFeeHuman,
-      networkFeeBase: networkFeeBase.toString(),
-      platformFee: ConvertCurrency.fromBase(
-        platformFeeBase.toString(),
-        normalizedCurrency,
-        networkKey as CryptoNetwork,
-      ),
-      platformFeeBase: platformFeeBase.toString(),
-      totalDeduction: ConvertCurrency.fromBase(
-        totalDeductionBase.toString(),
-        normalizedCurrency,
-        networkKey as CryptoNetwork,
-      ),
-      totalDeductionBase: totalDeductionBase.toString(),
-      pinVerified: false,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + QUOTE_TTL_SECONDS * 1000,
-    };
+       await this.transactionService.reserveBalance(tx, userId, q.from, reservedAmount);
+       companyLiquidityReserved = await this.companyLiquidityService.reserveLiquidity(q.from, exactFromMinor, tx);
 
-    await this.tempStore.set(
-      `send:${previewId}`,
-      JSON.stringify(preview),
-      QUOTE_TTL_SECONDS,
-    );
+       if (!companyLiquidityReserved) {
+         await tx.failedCompanyLiquidityTransaction.create({
+           data: {
+             transactionId: pendingTransaction.id,
+             transactionType: 'SWAP',
+             fromCurrency: q.from.toUpperCase(),
+             toCurrency: q.to.toUpperCase(),
+             amountOriginal: fromAmountHuman,
+             currency: q.from.toUpperCase(),
+             amountBase: exactFromMinor.toString(),
+             providerResponse: { reason: 'Insufficient company liquidity' },
+           },
+         });
+         await this.notifySuperAdminLiquidityInsufficient({
+           context: 'SWAP',
+           transactionId: pendingTransaction.id,
+           userId,
+           currency: q.from.toUpperCase(),
+           amountBase: exactFromMinor.toString(),
+           fromCurrency: q.from.toUpperCase(),
+           toCurrency: q.to.toUpperCase(),
+         });
+       }
+     });
+   } catch (error: any) {
+     this.logger.error(`Balance/liquidity reservation failed: ${error.message}`, error.stack);
+     if (error instanceof BadRequestException && error.message?.toLowerCase().includes('insufficient')) {
+       throw error;
+     }
+     throw new BadRequestException('Cannot confrim swap at the moment. Please try again later');
+   }
 
-    return {
-      previewId,
-      currency: normalizedCurrency,
-      network: normalizedNetwork,
-      requestedSendAmount: preview.requestedAmount,
-      networkFee: preview.networkFee,
-      transactionFee: preview.platformFee,
-      totalToBeDeducted: preview.totalDeduction,
-      expiresIn: QUOTE_TTL_SECONDS,
-      note: 'This is only a preview. No deduction has occurred yet.',
-    };
-  }
+   if (!companyLiquidityReserved) {
+     await this.tempStore.del(`swap:${quoteId}`);
+     return {
+       success: true,
+       message: 'Swap request successful. Awaiting confirmation',
+     };
+   }
 
-  async confirmSend(userId: string, dto: ConfirmSendDto) {
-    const { previewId } = dto;
-    const previewKey = `send:${previewId}`;
+   // ============================================
+   // STEP 4: CONFIRM SWAP ON QUIDAX
+   // ============================================
+   let confirmedSwap: any;
+   try {
+     const confirmRes = await axios.post(
+       `${process.env.QUIDAX_API_URL}/users/me/swap_quotation/${refreshedQuotationId}/confirm`,
+       {},
+       {
+         headers: {
+           'Content-Type': 'application/json',
+           Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+         },
+       },
+     ).then((res) => res.data);
 
-    const rawPreview = await this.tempStore.get(previewKey);
-    if (!rawPreview)
-      throw new NotFoundException('Preview not found or expired');
+     confirmedSwap = confirmRes?.data;
+     this.logger.debug(
+       `Quidax confirm swap response received: id=${confirmedSwap?.id}, status=${confirmedSwap?.status}, execution_price=${confirmedSwap?.execution_price}`,
+     );
 
-    const preview =
-      typeof rawPreview === 'string' ? JSON.parse(rawPreview) : rawPreview;
-
-    if (preview.userId !== userId)
-      throw new UnauthorizedException('Unauthorized to confirm this preview');
-
-    if (!preview.pinVerified) throw new BadRequestException('PIN not verified');
-
-    if (Date.now() > preview.expiresAt) {
-      await this.tempStore.del(previewKey);
-      throw new BadRequestException(
-        'Preview has expired. Please request a new one.',
-      );
-    }
-
-    // Define missing variables
-    const requestedAmountBase = BigInt(preview.requestedAmountBase);
-    const networkFeeBase = BigInt(preview.networkFeeBase);
-    const platformFeeBase = BigInt(preview.platformFeeBase);
-    const totalDeductionBase = BigInt(preview.totalDeductionBase);
-
-    if (preview.currency?.toUpperCase() === 'USDT') {
-      const minUsdtBase = ConvertCurrency.toBase(
-        MIN_TRANSACTION_USDT.toString(),
-        'usdt',
-        preview.network as CryptoNetwork,
-      );
-      if (requestedAmountBase < minUsdtBase) {
-        throw new BadRequestException(
-          `Minimum transaction amount is ${MIN_TRANSACTION_USDT} USDT`,
-        );
-      }
-    }
-
-    const isXRP = preview.currency?.toUpperCase() === 'XRP';
-
-    // SINGLE TRANSACTION BLOCK
-    const { transaction, withdrawal, companyLiquidityReserved } =
-      await this.prisma.$transaction(async (tx) => {
-        // Idempotency check by unique reference
-        const existingWithdrawal = await tx.withdrawal.findFirst({
-          where: { reference: previewId },
-          include: { transaction: true },
-        });
-
-        if (existingWithdrawal) {
-          return {
-            transaction: existingWithdrawal.transaction,
-            withdrawal: existingWithdrawal,
-            companyLiquidityReserved: false,
-          };
-        }
-
-        await this.transactionService.reserveBalance(
-          tx,
-          userId,
-          preview.currency,
-          totalDeductionBase,
-        );
-
-        const wallet = await tx.wallet.findFirst({
-          where: {
-            userId,
-            currency: { equals: preview.currency, mode: 'insensitive' },
-          },
-        });
-
-        if (!wallet) throw new NotFoundException('Wallet not found');
-
-        const transaction = await tx.transaction.create({
-          data: {
-            userId,
-            senderWalletId: wallet.id,
-            senderWalletAddress: wallet.quidaxWalletId || null,
-            receiverWalletAddress: preview.toAddress,
-            transactionType: TransactionType.DEBIT,
-            transactionContext: TransactionContext.WITHDRAWAL,
-            transactionUniqueId: previewId,
-            currency: preview.currency,
-            network: preview.network,
-            cryptoAmountBase: toDecimal(requestedAmountBase),
-            platformFeeBase: toDecimal(platformFeeBase),
-            networkFeeBase: toDecimal(networkFeeBase),
-            totalAmountSentBase: toDecimal(totalDeductionBase),
-            totalAmountSentOriginal: preview.totalDeduction,
-            platformFeeOriginal: preview.platformFee,
-            networkFeeOriginal: preview.networkFee,
-            fiatAmountBase: toDecimal(0n),
-            fiatAmountOriginal: '0',
-            status: TransactionStatus.PENDING,
-            isProcessed: false,
-          },
-        });
-
-        const companyLiquidityReserved =
-          await this.companyLiquidityService.reserveLiquidity(
-            preview.currency,
-            totalDeductionBase,
-            tx,
-          );
-
-        const withdrawal = await tx.withdrawal.create({
-          data: {
-            userId,
-            reference: previewId,
-            currency: preview.currency,
-            network: preview.network,
-            amount: preview.requestedAmount,
-            fee: preview.networkFee,
-            total: preview.totalDeduction,
-            recipientType: 'external',
-            recipientAddress: preview.toAddress,
-            destinationTag: preview.destinationTag || null,
-            status: companyLiquidityReserved
-              ? WithdrawalStatus.PROCESSING
-              : WithdrawalStatus.PENDING,
-            createdAtProvider: new Date(),
-            transactionId: transaction.id,
-          },
-        });
-
-        if (!companyLiquidityReserved) {
-          await tx.failedCompanyLiquidityTransaction.create({
-            data: {
-              transactionId: transaction.id,
-              transactionType: 'WITHDRAWAL',
-              fromCurrency: preview.currency,
-              amountOriginal: preview.totalDeduction,
-              currency: preview.currency,
-              amountBase: totalDeductionBase.toString(),
-              providerResponse: {
-                reason: 'Insufficient company liquidity at time of request',
-                requestedAmount: preview.requestedAmount,
-                networkFee: preview.networkFee,
-                platformFee: preview.platformFee,
-                totalDeduction: preview.totalDeduction,
-                recipientAddress: preview.toAddress,
-                network: preview.network,
-              },
-            },
-          });
-          await this.notifySuperAdminLiquidityInsufficient({
-            context: 'WITHDRAWAL',
-            transactionId: transaction.id,
-            userId,
-            currency: preview.currency,
-            amountBase: totalDeductionBase.toString(),
-            amountOriginal: preview.totalDeduction,
-          });
-        }
-
-        return { transaction, withdrawal, companyLiquidityReserved };
-      });
-
-    // Notification
-    const transactionWithUser = await this.prisma.transaction.findUnique({
-      where: { id: transaction.id },
-      select: {
-        id: true,
-        userId: true,
-        transactionUniqueId: true,
-        transactionContext: true,
-        status: true,
-        User: { select: { email: true, firstName: true } },
-        paymentMetadata: true,
-      },
-    });
-
-    if (transactionWithUser) {
-      try {
-        this.transactionNotificationService.sendTransactionInitiatedNotification(
-          transactionWithUser,
-        );
-      } catch (error) {
-        this.logger.error(
-          `Failed to send notification for withdrawal transaction ${transaction.id}: ${error.message}`,
-          error.stack,
-        );
-      }
-    }
-
-    // Liquidity fallback
-    if (!companyLiquidityReserved) {
-      return {
-        success: true,
-        transactionId: transaction.id,
-        withdrawalId: withdrawal.id,
-        providerWithdrawalId: null,
-        requestedAmount: preview.requestedAmount,
-        message: 'Withdrawal queued. You will be notified.',
-      };
-    }
-
-    let providerWithdrawalId: string;
-
-    try {
-      const response = await axios
-        .post(
-          `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`,
-          {
-            user_id: QUIDAX_COMPANY_USERID,
-            currency: preview.currency,
-            amount: preview.requestedAmount,
-            fund_uid: preview.toAddress,
-            fund_uid2: isXRP ? preview.destinationTag : undefined,
-            network: preview.network,
-            reference: previewId,
-            transaction_note: 'External crypto withdrawal',
-            narration: `Send to ${preview.toAddress.slice(0, 8)}...`,
-          },
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
-            },
-          },
-        )
-        .then((res) => res.data);
-
-      if (response.status !== 'success' || !response.data?.id) {
-        await this.tempStore.del(previewKey);
-        await this.compensateFailedWithdrawal(
-          transaction.id,
-          withdrawal.id,
-          userId,
-          preview.currency,
-          totalDeductionBase,
-          response.message || 'Provider rejected the withdrawal request',
-        );
-
-        throw new BadRequestException(
-          `Withdrawal initiation failed: ${response.message || 'Unknown error'}`,
-        );
-      }
-
-      providerWithdrawalId = response.data.id;
+     // Guard against accidental quotation-shaped response; confirm must return swap-transaction shape
+     if (
+       !confirmedSwap?.id ||
+       !confirmedSwap?.execution_price ||
+       !confirmedSwap?.status ||
+       !confirmedSwap?.received_amount ||
+       !confirmedSwap?.swap_quotation?.id
+     ) {
+       this.logger.error('Unexpected Quidax confirm swap payload shape', {
+         quotationId: refreshedQuotationId,
+         payload: confirmRes,
+       });
+       throw new BadRequestException('Unexpected confirm response from swap provider.');
+     }
     } catch (error: any) {
-      if (error instanceof BadRequestException) throw error;
-
-      await this.tempStore.del(previewKey);
-      await this.compensateFailedWithdrawal(
-        transaction.id,
-        withdrawal.id,
-        userId,
-        preview.currency,
-        totalDeductionBase,
-        `Provider API error: ${error.message}`,
-      );
-
-      throw new BadRequestException(
-        'Could not reach the withdrawal provider. Please try again shortly.',
-      );
-    }
-
-    await this.prisma.$transaction(async (tx) => {
-      await tx.transaction.update({
-        where: { id: transaction.id },
-        data: { transactionUniqueId: providerWithdrawalId },
-      });
-
-      await tx.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: { providerWithdrawalId },
-      });
-    });
-
-    await this.tempStore.del(previewKey);
-
-    return {
-      success: true,
-      transactionId: transaction.id,
-      withdrawalId: withdrawal.id,
-      providerWithdrawalId,
-      status: 'processing',
-      requestedAmount: preview.requestedAmount,
-      message:
-        'Withdrawal request submitted — awaiting blockchain confirmation',
-    };
-  }
-
-  async cancelWithdrawal(userId: string, transactionId: string) {
-    const transaction = await this.prisma.transaction.findUnique({
-      where: { id: transactionId },
-    });
-
-    if (!transaction) throw new NotFoundException('Transaction not found');
-    if (transaction.userId !== userId)
-      throw new UnauthorizedException('You cannot cancel this transaction');
-    if (transaction.transactionContext !== TransactionContext.WITHDRAWAL) {
-      throw new BadRequestException('This transaction is not a withdrawal');
-    }
-    if (transaction.isProcessed) {
-      throw new ConflictException(
-        'Withdrawal already finalized and cannot be cancelled',
-      );
-    }
-
-    // Find by reference (previewId) since transactionUniqueId may already be the
-    // provider ID after Phase 3. Using reference is safer here.
-    const withdrawal = await this.prisma.withdrawal.findFirst({
-      where: { transactionId: transaction.id, userId },
-    });
-
-    if (!withdrawal)
-      throw new NotFoundException('Related withdrawal not found');
-
-    if (
-      withdrawal.status !== WithdrawalStatus.PENDING &&
-      withdrawal.status !== WithdrawalStatus.PROCESSING
-    ) {
-      throw new BadRequestException(
-        `Withdrawal cannot be cancelled. Current status: ${withdrawal.status}`,
-      );
-    }
-
-    // Pre-provider cancellation: no Quidax call was ever made
-    if (!withdrawal.providerWithdrawalId) {
-      return this.prisma.$transaction(async (tx) => {
-        await this.transactionService.releaseBalance(
-          tx,
-          userId,
-          transaction.currency,
-          transaction.totalAmountSentBase,
-        );
-
-        // Release company liquidity if it was reserved (PROCESSING status)
-        if (withdrawal.status === WithdrawalStatus.PROCESSING) {
-          await this.companyLiquidityService.releaseLiquidity(
-            transaction.currency,
-            transaction.totalAmountSentBase,
-            tx,
-          );
-        }
-
-        await tx.withdrawal.update({
-          where: { id: withdrawal.id },
-          data: {
-            status: WithdrawalStatus.FAILED,
-            reason: 'Cancelled by user (pre-provider)',
-          },
-        });
-
+      // Release reserves and mark transaction as FAILED on failure
+      await this.prisma.$transaction(async (tx) => {
+        await this.transactionService.releaseBalance(tx, userId, q.from, reservedAmount);
+        await this.companyLiquidityService.releaseLiquidity(q.from, exactFromMinor, tx);
         await tx.transaction.update({
-          where: { id: transaction.id },
-          data: { status: TransactionStatus.FAILED, isProcessed: false },
-        });
-
-        return {
-          success: true,
-          message: 'Withdrawal cancelled successfully',
-          transactionId: transaction.id,
-        };
-      });
-    }
-
-    // PROCESSING: provider was called — we must tell Quidax to cancel first
-    const response = await axios
-      .post(
-        `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
-        { user_id: 'me', withdrawal_id: withdrawal.providerWithdrawalId },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          where: { id: pendingTransaction.id },
+          data: {
+            status: TransactionStatus.FAILED,
+            isProcessed: true,
+            paymentMetadata: {
+              ...(pendingTransaction.paymentMetadata as Record<string, any>),
+              swapOrderStatus: 'failed',
+              swapOrderFailureResponse: error?.message || 'Unknown error',
+            } as Record<string, any>,
           },
-        },
-      )
-      .then((res) => res.data);
-
-    if (response.status !== 'success') {
-      throw new BadRequestException(
-        response.message || 'Failed to cancel withdrawal with provider',
-      );
+        });
+      });
+      await this.tempStore.del(`swap:${quoteId}`);
+      throw new BadRequestException(error?.message || 'Swap failed.');
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      await this.transactionService.releaseBalance(
-        tx,
-        userId,
-        transaction.currency,
-        transaction.totalAmountSentBase,
-      );
+   // ============================================
+   // STEP 5: CREATE DB RECORDS (COMPLETED)
+   // ============================================
+   let transactionRecord: any;
+   let swapTxRecord: any;
 
-      await this.companyLiquidityService.releaseLiquidity(
-        transaction.currency,
-        transaction.totalAmountSentBase,
-        tx,
-      );
+   try {
+     const result = await this.prisma.$transaction(async (tx) => {
+       const transaction = await tx.transaction.update({
+         where: { id: pendingTransaction.id },
+         data: {
+           transactionUniqueId: confirmedSwap.id,
+           cryptoAmountOriginal: confirmedSwap.from_amount,
+           platformFeeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
+           totalAmountSentOriginal: new Decimal(confirmedSwap.from_amount)
+             .add(ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet))
+             .toString(),
+           executedCryptoAmountBase: toDecimal(exactFromMinor),
+           executionPrice: confirmedSwap.execution_price,
+           executedAt: confirmedSwap.updated_at
+             ? new Date(confirmedSwap.updated_at)
+             : new Date(),
+         },
+       });
 
-      await tx.withdrawal.update({
-        where: { id: withdrawal.id },
-        data: { status: WithdrawalStatus.FAILED, reason: 'Cancelled by user' },
-      });
+       const swapTx = await tx.swapTransaction.create({
+         data: {
+           userId,
+           quidaxAccountId,
+           fromCurrency: q.from.toUpperCase(),
+           toCurrency: q.to.toUpperCase(),
+           amountOriginal: confirmedSwap.from_amount,
+           quotedPriceOriginal: ConvertCurrency.fromBase(q.protectedRateMinor, q.to, toNet),
+           toAmountOriginal: confirmedSwap.received_amount,
+           feeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
+           quoteId,
+           swapId: confirmedSwap.id,
+           executionPriceOriginal: confirmedSwap.execution_price,
+           confirmed: false,
+           status: TransactionStatus.PENDING,
+           description: `Swap ${q.from} → ${q.to}`,
+         },
+       });
 
-      await tx.transaction.update({
-        where: { id: transaction.id },
-        data: { status: TransactionStatus.FAILED, isProcessed: false },
-      });
+       return { transaction, swapTx };
+     });
 
-      return {
-        success: true,
-        message: 'Withdrawal cancelled successfully',
-        transactionId: transaction.id,
-      };
-    });
-  }
+     transactionRecord = result.transaction;
+     swapTxRecord = result.swapTx;
+   } catch (error: any) {
+     this.logger.error(`DB record creation failed: ${error.message}`, error.stack);
+     throw new BadRequestException('Swap failed during finalization. Please contact support.');
+   }
 
-  /**
-   * Compensation path when the Quidax API call fails after Phase 1 has already
-   * reserved balances and created records. Runs in a single atomic transaction.
-   */
-  private async compensateFailedWithdrawal(
-    transactionId: string,
-    withdrawalId: string,
-    userId: string,
-    currency: string,
-    totalDeductionBase: bigint | string,
-    reason: string,
-  ): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      await this.transactionService.releaseBalance(
-        tx,
-        userId,
-        currency,
-        totalDeductionBase,
-      );
-      await this.companyLiquidityService.releaseLiquidity(
-        currency,
-        totalDeductionBase,
-        tx,
-      );
+   // Cleanup & notify
+   await this.tempStore.del(`swap:${quoteId}`);
 
-      await tx.transaction.update({
-        where: { id: transactionId },
-        data: { status: TransactionStatus.FAILED, isProcessed: false },
-      });
+   try {
+     const txWithUser = await this.prisma.transaction.findUnique({
+       where: { id: transactionRecord.id },
+       select: {
+         id: true,
+         userId: true,
+         transactionUniqueId: true,
+         transactionContext: true,
+         status: true,
+         currency: true,
+         cryptoAmountOriginal: true,
+         fiatAmountOriginal: true,
+         platformFeeOriginal: true,
+         executionPrice: true,
+         executedAt: true,
+         User: { select: { email: true, firstName: true } },
+         paymentMetadata: true,
+       },
+     });
+     if (txWithUser) this.transactionNotificationService.sendTransactionInitiatedNotification(txWithUser);
+   } catch (error) {
+     this.logger.error(`Notification failed: ${error.message}`, error.stack);
+   }
 
-      await tx.withdrawal.update({
-        where: { id: withdrawalId },
-        data: { status: WithdrawalStatus.FAILED, reason },
-      });
-    });
-
-    this.logger.warn(`Withdrawal ${withdrawalId} compensated: ${reason}`);
-  }
+   return {
+     success: true,
+     swapRecordId: swapTxRecord.id,
+     quidaxSwapId: confirmedSwap.id,
+     message: 'Swap request successful. Awaaiting confirmation',
+   };
+ }
 }
