@@ -30,6 +30,7 @@ import {
   CryptoNetwork,
   getCurrencyDecimals,
   LiquidityReservationStatus,
+  toDecimal,
 } from '../../../shared';
 import { TransactionService } from './transaction.service';
 import { CompanyLiquidityService } from './company-liquidity.service';
@@ -184,13 +185,18 @@ export class SellService {
       }
     }
 
-    // Slippage protection: check current price against quoted buffered price
-    await this.transactionService.checkPriceSlippage(
-      normalizedCrypto,
-      quote.fiatCurrency,
-      ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
-      false, // isBuy (false for sell)
-    );
+    const bypassProviders = process.env.NODE_ENV !== 'production';
+
+    // Slippage protection uses provider tickers; skip it in non-production
+    // confirmations so local/dev flows do not call Quidax.
+    if (!bypassProviders) {
+      await this.transactionService.checkPriceSlippage(
+        normalizedCrypto,
+        quote.fiatCurrency,
+        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
+        false, // isBuy (false for sell)
+      );
+    }
 
     const existingTransaction = await this.prisma.transaction.findFirst({
       where: { transactionUniqueId: previewId },
@@ -271,12 +277,13 @@ export class SellService {
         totalUserDebitBase,
       );
 
-      const availableLiquidity =
-        await this.companyLiquidityService.getAvailableLiquidity(
-          BASE_CURRENCY,
-          tx,
-        );
-      const hasLiquidity = availableLiquidity >= netFiatBase;
+      const availableLiquidity = bypassProviders
+        ? netFiatBase
+        : await this.companyLiquidityService.getAvailableLiquidity(
+            BASE_CURRENCY,
+            tx,
+          );
+      const hasLiquidity = bypassProviders || availableLiquidity >= netFiatBase;
 
       const transaction = await this.transactionService.createTransaction(tx, {
         userId,
@@ -362,11 +369,13 @@ export class SellService {
         return { transaction, order, queued: true };
       }
 
-      const reserved = await this.companyLiquidityService.reserveLiquidity(
-        BASE_CURRENCY,
-        netFiatBase,
-        tx,
-      );
+      const reserved = bypassProviders
+        ? true
+        : await this.companyLiquidityService.reserveLiquidity(
+            BASE_CURRENCY,
+            netFiatBase,
+            tx,
+          );
 
       if (!reserved) {
         await tx.failedCompanyLiquidityTransaction.create({
@@ -427,6 +436,96 @@ export class SellService {
           currency: quote.crypto,
           estimatedNgnCredit: estimatedNgn.toString(),
           ngnCurrency: quote.fiatCurrency || BASE_CURRENCY.toUpperCase(),
+        },
+      };
+    }
+
+    if (bypassProviders) {
+      await this.prisma.$transaction(async (tx) => {
+        const cryptoDebit = toDecimal(totalUserDebitBase);
+        const updatedCryptoWallet = await tx.$queryRaw<
+          { baseBalance: string }[]
+        >`
+          UPDATE "wallets"
+          SET
+            "baseBalance" = "baseBalance" - ${cryptoDebit},
+            "reservedBalance" = "reservedBalance" - ${cryptoDebit}
+          WHERE "userId" = ${userId}
+            AND LOWER("currency") = LOWER(${normalizedCrypto})
+            AND "baseBalance" >= ${cryptoDebit}
+            AND "reservedBalance" >= ${cryptoDebit}
+          RETURNING "baseBalance"
+        `;
+
+        if (updatedCryptoWallet.length === 0) {
+          throw new BadRequestException(
+            `Insufficient reserved ${normalizedCrypto} balance`,
+          );
+        }
+
+        const newCryptoOriginalBalance = ConvertCurrency.fromBase(
+          BigInt(String(updatedCryptoWallet[0].baseBalance)),
+          normalizedCrypto,
+          cryptoDecimals,
+        );
+
+        await tx.wallet.updateMany({
+          where: {
+            userId,
+            currency: { equals: normalizedCrypto, mode: 'insensitive' },
+          },
+          data: { originalBalance: newCryptoOriginalBalance },
+        });
+
+        await tx.order.update({
+          where: { id: result.order.id },
+          data: {
+            status: OrderStatus.COMPLETED,
+            paymentStatus: PaymentStatus.PAID,
+            paymentReference: previewId,
+            paymentChannel: 'non_production_bypass',
+            paymentDate: new Date(),
+            referenceNo: previewId,
+            gatewayResponse: JSON.stringify({ providerBypass: true }),
+          },
+        });
+
+        await tx.transaction.update({
+          where: { id: result.transaction.id },
+          data: {
+            status: TxStatus.COMPLETED,
+            isProcessed: true,
+            paymentMetadata: {
+              ...((result.transaction.paymentMetadata as Record<string, any>) ||
+                {}),
+              providerBypass: true,
+              providerBypassReason: 'non_production_sell_confirm',
+              quidaxOrderReference: previewId,
+              sellOrderStatus: 'completed_without_provider',
+              payoutStatus: 'success',
+              payoutReference: previewId,
+              liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
+              liquidityReleasedAt: new Date().toISOString(),
+              liquidityReleaseReason: 'non_production_sell_confirm',
+            },
+          },
+        });
+
+        return undefined;
+      });
+
+      await this.quotationService.deleteQuote(previewId);
+
+      return {
+        success: true,
+        message: 'Sell order placed successfully.',
+        data: {
+          previewId,
+          sold: cryptoOriginal.toString(),
+          currency: quote.crypto,
+          estimatedNgnCredit: estimatedNgn.toString(),
+          ngnCurrency: quote.fiatCurrency || BASE_CURRENCY.toUpperCase(),
+          status: 'PROCESSING',
         },
       };
     }
