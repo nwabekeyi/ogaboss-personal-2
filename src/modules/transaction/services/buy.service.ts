@@ -224,14 +224,14 @@ export class BuyService {
       throw new NotFoundException(`Wallet not found for ${quote.crypto}`);
     }
 
-    const quoteNetwork =
-      quote.network && quote.network !== 'N/A'
-        ? (quote.network as CryptoNetwork)
-        : (userCryptoWallet.defaultNetwork as CryptoNetwork | undefined);
-    const cryptoDecimals =
-      typeof quote.cryptoDecimals === 'number'
-        ? quote.cryptoDecimals
-        : getCurrencyDecimals(normalizedCrypto, quoteNetwork);
+    if (!userCryptoWallet.defaultNetwork) {
+      throw new BadRequestException(
+        `Network is required for ${normalizedCrypto} because this wallet has no default network`,
+      );
+    }
+
+    const quoteNetwork = userCryptoWallet.defaultNetwork as CryptoNetwork;
+    const cryptoDecimals = getCurrencyDecimals(normalizedCrypto, quoteNetwork);
 
     if (normalizedCrypto === 'USDT') {
       const minUsdtBase = ConvertCurrency.toBase(
@@ -339,7 +339,7 @@ export class BuyService {
         },
         platformWalletAddress: null,
         transactionUniqueId: previewId,
-        network: quote.network,
+        network: quoteNetwork,
         currency: normalizedCrypto,
         cryptoAmountBase: volumeCryptoMinor,
         fiatAmountBase: totalFiatMinor,

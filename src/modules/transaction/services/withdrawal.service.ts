@@ -24,8 +24,6 @@ import {
 import {
   PLATFORM_SPREAD,
   QUOTE_TTL_SECONDS,
-  COOLDOWN_KEY_PREFIX,
-  QUOTE_COOLDOWN_SECONDS,
   MIN_TRANSACTION_USDT,
   QUIDAX_COMPANY_USERID,
 } from '../constants';
@@ -215,7 +213,6 @@ export class WithdrawalService {
       JSON.stringify(preview),
       QUOTE_TTL_SECONDS,
     );
-    await this.setWithdrawalCooldown(userId);
 
     return {
       previewId,
@@ -231,10 +228,10 @@ export class WithdrawalService {
   }
 
   async confirmSend(userId: string, dto: ConfirmSendDto) {
-    await this.transactionService.enforceConfirmationCooldown(userId);
     const { previewId } = dto;
+    const previewKey = `send:${previewId}`;
 
-    const rawPreview = await this.tempStore.get(`send:${previewId}`);
+    const rawPreview = await this.tempStore.get(previewKey);
     if (!rawPreview)
       throw new NotFoundException('Preview not found or expired');
 
@@ -247,7 +244,7 @@ export class WithdrawalService {
     if (!preview.pinVerified) throw new BadRequestException('PIN not verified');
 
     if (Date.now() > preview.expiresAt) {
-      await this.tempStore.del(`send:${previewId}`);
+      await this.tempStore.del(previewKey);
       throw new BadRequestException(
         'Preview has expired. Please request a new one.',
       );
@@ -458,6 +455,7 @@ export class WithdrawalService {
         .then((res) => res.data);
 
       if (response.status !== 'success' || !response.data?.id) {
+        await this.tempStore.del(previewKey);
         await this.compensateFailedWithdrawal(
           transaction.id,
           withdrawal.id,
@@ -476,6 +474,7 @@ export class WithdrawalService {
     } catch (error: any) {
       if (error instanceof BadRequestException) throw error;
 
+      await this.tempStore.del(previewKey);
       await this.compensateFailedWithdrawal(
         transaction.id,
         withdrawal.id,
@@ -502,7 +501,7 @@ export class WithdrawalService {
       });
     });
 
-    await this.tempStore.del(`send:${previewId}`);
+    await this.tempStore.del(previewKey);
 
     return {
       success: true,
@@ -680,14 +679,5 @@ export class WithdrawalService {
     });
 
     this.logger.warn(`Withdrawal ${withdrawalId} compensated: ${reason}`);
-  }
-
-  private async setWithdrawalCooldown(userId: string): Promise<void> {
-    const key = `${COOLDOWN_KEY_PREFIX}${userId}`;
-    await this.tempStore.set(
-      key,
-      Date.now().toString(),
-      QUOTE_COOLDOWN_SECONDS + 10,
-    );
   }
 }

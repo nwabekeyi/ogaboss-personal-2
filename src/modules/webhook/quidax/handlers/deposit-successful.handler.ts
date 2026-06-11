@@ -195,34 +195,22 @@ export class DepositSuccessfulHandler {
 
         const amountDec = toDecimal(amountBase);
 
-        const depositTx = await tx.transaction.upsert({
+        const existingDepositTx = await tx.transaction.findUnique({
           where: { transactionUniqueId: providerDepositId },
-          create: {
+          select: { id: true },
+        });
+
+        if (existingDepositTx) {
+          createdTransactionId = existingDepositTx.id;
+          processedNewDeposit = false;
+          return;
+        }
+
+        const depositTx = await tx.transaction.create({
+          data: {
             userId: user.id,
             receiverWalletId: wallet.id,
             transactionUniqueId: providerDepositId,
-            network,
-            currency,
-            cryptoAmountBase: amountDec,
-            cryptoAmountOriginal: amountStr,
-            fiatAmountBase: toDecimal(0n),
-            fiatAmountOriginal: '0',
-            description: `Deposit received: ${amountStr} ${currency}`,
-            status: TransactionStatus.COMPLETED,
-            transactionType: TransactionType.CREDIT,
-            transactionContext: TransactionContext.DEPOSIT,
-            paymentMetadata: {
-              txid: txHash,
-              quidaxEventId: providerDepositId,
-              confirmations: data.payment_transaction?.confirmations,
-              depositAddress: data.wallet.deposit_address,
-              destinationTag: data.payment_address?.destination_tag,
-            },
-            isProcessed: true,
-          },
-          update: {
-            userId: user.id,
-            receiverWalletId: wallet.id,
             network,
             currency,
             cryptoAmountBase: amountDec,
