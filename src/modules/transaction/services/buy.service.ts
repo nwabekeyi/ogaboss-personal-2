@@ -13,6 +13,9 @@ import {
   TransactionType,
   TransactionContext,
   TransactionStatus,
+  OrderStatus,
+  OrderType,
+  PaymentStatus,
 } from '../../../infrastructure/databases/prisma';
 import {
   BASE_CURRENCY,
@@ -20,6 +23,7 @@ import {
   CryptoNetwork,
   getCurrencyDecimals,
   LiquidityReservationStatus,
+  toDecimal,
 } from '../../../shared';
 import { MIN_TRANSACTION_USDT } from '../constants';
 import { TransactionService } from './transaction.service';
@@ -246,13 +250,18 @@ export class BuyService {
       }
     }
 
-    // Slippage protection: check current price against quoted buffered price
-    await this.transactionService.checkPriceSlippage(
-      normalizedCrypto,
-      quote.fiatCurrency,
-      ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
-      true, // isBuy
-    );
+    const bypassProviders = process.env.NODE_ENV !== 'production';
+
+    // Slippage protection uses provider tickers; skip it in non-production
+    // confirmations so local/dev flows do not call Quidax.
+    if (!bypassProviders) {
+      await this.transactionService.checkPriceSlippage(
+        normalizedCrypto,
+        quote.fiatCurrency,
+        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
+        true, // isBuy
+      );
+    }
 
     const existingTransaction = await this.prisma.transaction.findFirst({
       where: { transactionUniqueId: previewId },
@@ -314,11 +323,13 @@ export class BuyService {
         return;
       }
 
-      const reserved = await this.companyLiquidityService.reserveLiquidity(
-        BASE_CURRENCY,
-        companyLiquidityAmount,
-        tx,
-      );
+      const reserved = bypassProviders
+        ? true
+        : await this.companyLiquidityService.reserveLiquidity(
+            BASE_CURRENCY,
+            companyLiquidityAmount,
+            tx,
+          );
 
       const liquidityReservationStatus = reserved
         ? LiquidityReservationStatus.RESERVED
@@ -429,6 +440,120 @@ export class BuyService {
           transactionId: transactionRecord.id,
         },
       };
+    }
+
+    if (bypassProviders) {
+      await this.prisma.$transaction(async (tx) => {
+        const creditAmount = toDecimal(volumeCryptoMinor);
+        const updatedWallet = await tx.$queryRaw<{ baseBalance: string }[]>`
+          UPDATE "wallets"
+          SET "baseBalance" = "baseBalance" + ${creditAmount}
+          WHERE "userId" = ${userId}
+            AND LOWER("currency") = LOWER(${normalizedCrypto})
+          RETURNING "baseBalance"
+        `;
+
+        if (updatedWallet.length === 0) {
+          throw new NotFoundException(
+            `Wallet not found for ${normalizedCrypto}`,
+          );
+        }
+
+        const newOriginalBalance = ConvertCurrency.fromBase(
+          BigInt(String(updatedWallet[0].baseBalance)),
+          normalizedCrypto,
+          cryptoDecimals,
+        );
+
+        await tx.wallet.updateMany({
+          where: {
+            userId,
+            currency: { equals: normalizedCrypto, mode: 'insensitive' },
+          },
+          data: { originalBalance: newOriginalBalance },
+        });
+
+        await tx.order.upsert({
+          where: { transactionId: transactionRecord.id },
+          update: {
+            status: OrderStatus.COMPLETED,
+            type: OrderType.BUY,
+            referenceNo: previewId,
+            paymentStatus: PaymentStatus.PAID,
+            paymentReference: previewId,
+            paymentChannel: 'non_production_bypass',
+            paymentDate: new Date(),
+            gatewayResponse: JSON.stringify({ providerBypass: true }),
+          },
+          create: {
+            transactionId: transactionRecord.id,
+            userId,
+            cryptoAmountBase: volumeCryptoMinor.toString(),
+            cryptoAmountOriginal: cryptoOriginal,
+            fiatAmountBase: totalFiatMinor.toString(),
+            fiatAmountOriginal: fiatOriginal,
+            fiatCurrency: quote.fiatCurrency,
+            status: OrderStatus.COMPLETED,
+            type: OrderType.BUY,
+            referenceNo: previewId,
+            paymentStatus: PaymentStatus.PAID,
+            paymentReference: previewId,
+            paymentChannel: 'non_production_bypass',
+            paymentAmountBase: totalFiatMinor.toString(),
+            paymentAmountOriginal: fiatOriginal,
+            paymentDate: new Date(),
+            gatewayResponse: JSON.stringify({ providerBypass: true }),
+          },
+        });
+
+        await tx.transaction.update({
+          where: { id: transactionRecord.id },
+          data: {
+            status: TransactionStatus.COMPLETED,
+            isProcessed: true,
+            paymentMetadata: {
+              ...((transactionRecord.paymentMetadata as Record<string, any>) ||
+                {}),
+              providerBypass: true,
+              providerBypassReason: 'non_production_buy_confirm',
+              paystackReference: previewId,
+              quidaxOrderReference: previewId,
+              buyOrderStatus: 'completed_without_provider',
+            },
+          },
+        });
+
+        return newOriginalBalance;
+      });
+
+      await this.tempStore.del(quoteKey);
+
+      if (paymentMethod.type === PaymentType.CARD) {
+        return {
+          message:
+            'Card payment successful. Your transaction is being processed.',
+          data: {
+            transactionId: transactionRecord.id,
+            status: TransactionStatus.PENDING,
+          },
+        };
+      }
+
+      if (paymentMethod.type === PaymentType.PAYSTACK) {
+        return {
+          message: 'Payment initialization successful',
+          data: {
+            transactionId: transactionRecord.id,
+            paymentType: PaymentType.PAYSTACK,
+            reference: previewId,
+            authorizationUrl: `https://checkout.paystack.com/mock-${previewId}`,
+            quoteId: previewId,
+            status: TransactionStatus.PENDING,
+          },
+        };
+      }
+
+      throw new BadRequestException('Unsupported payment type');
     }
 
     if (paymentMethod.type === PaymentType.CARD) {
