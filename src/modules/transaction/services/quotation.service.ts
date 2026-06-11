@@ -58,7 +58,11 @@ export class QuotationService {
   private async resolveQuoteNetwork(
     userId: string,
     symbol: string,
-  ): Promise<CryptoNetwork> {
+    requestedNetwork?: string,
+  ): Promise<CryptoNetwork | undefined> {
+    const trimmedNetwork = requestedNetwork?.trim();
+    if (trimmedNetwork) return trimmedNetwork as CryptoNetwork;
+
     const wallet = await this.prisma.wallet.findFirst({
       where: {
         userId,
@@ -281,10 +285,10 @@ export class QuotationService {
    // BUY QUOTE
    // ===================================================================
    async getBuyQuote(userId: string, dto: BuyQuoteDto & { network?: string }) {
-     const { crypto, amount } = dto;
+     const { crypto, amount, network } = dto;
 
     const symbol = crypto.toUpperCase();
-    const quoteNetwork = await this.resolveQuoteNetwork(userId, symbol);
+    const quoteNetwork = await this.resolveQuoteNetwork(userId, symbol, network);
     const fiat = await this.getBaseFiat();
     const cryptoDecimals = getCurrencyDecimals(symbol, quoteNetwork);
 
