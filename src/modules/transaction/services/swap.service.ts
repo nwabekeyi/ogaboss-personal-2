@@ -12,7 +12,7 @@ import {
   TransactionType,
 } from '../../../infrastructure/databases/prisma';
 import { PreviewSwapDto, ConfirmSwapDto } from '../dto';
-import { ConvertCurrency, CryptoNetwork } from '../../../shared';
+import { ConvertCurrency, CryptoNetwork, toDecimal } from '../../../shared';
 import Decimal from 'decimal.js';
 import axios from 'axios';
 import { TransactionService } from './transaction.service';
