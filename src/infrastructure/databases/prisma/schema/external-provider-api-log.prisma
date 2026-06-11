@@ -1,0 +1,20 @@
+model ExternalProviderApiLog {
+  id              String   @id @default(cuid())
+  provider        String
+  method          String
+  url             String
+  requestHeaders  Json?
+  requestBody     Json?
+  responseStatus  Int?
+  responseBody    Json?
+  success         Boolean
+  errorMessage    String?
+  durationMs      Int?
+  metadata        Json?
+  createdAt       DateTime @default(now())
+
+  @@index([provider, createdAt])
+  @@index([success, createdAt])
+  @@index([createdAt])
+  @@map("external_provider_api_logs")
+}

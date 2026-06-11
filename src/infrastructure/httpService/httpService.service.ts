@@ -3,6 +3,7 @@ import { HttpService as NestHttpService } from '@nestjs/axios';
 import { AxiosRequestConfig, AxiosError } from 'axios';
 import { HttpServiceException } from './errors';
 import { CircuitBreakerService } from './circuit-breaker.service';
+import { ExternalProviderApiLogService } from '../provider-api-log';
 
 @Injectable()
 export class HttpService {
@@ -11,6 +12,7 @@ export class HttpService {
   constructor(
     private readonly http: NestHttpService,
     private readonly circuitBreakerService: CircuitBreakerService,
+    private readonly providerApiLogService: ExternalProviderApiLogService,
   ) {}
 
   async get<T>(
@@ -110,21 +112,53 @@ export class HttpService {
   ): Promise<T> {
     const timeout = 60000;
 
+    const startedAt = Date.now();
+    const requestHeaders = { 'Content-Type': 'application/json', ...headers };
+
     try {
       const response = await this.http.axiosRef.request<T>({
         url,
         method,
         data,
         ...config,
-        headers: { 'Content-Type': 'application/json', ...headers },
+        headers: requestHeaders,
         timeout,
       });
+
+      if (this.providerApiLogService.isProviderResponseFailure(response.data)) {
+        await this.providerApiLogService.log({
+          provider: this.providerApiLogService.inferProvider(url),
+          method,
+          url,
+          requestHeaders,
+          requestBody: data,
+          responseStatus: response.status,
+          responseBody: response.data,
+          success: false,
+          errorMessage: this.providerApiLogService.getProviderFailureMessage(
+            response.data,
+          ),
+          durationMs: Date.now() - startedAt,
+        });
+      }
 
       return response.data;
     } catch (error: unknown) {
       const status = this.getErrorStatus(error);
 
       this.logAndWarnError(method, url, error);
+      await this.providerApiLogService.log({
+        provider: this.providerApiLogService.inferProvider(url),
+        method,
+        url,
+        requestHeaders,
+        requestBody: data,
+        responseStatus: status,
+        responseBody: this.getErrorResponseData(error),
+        success: false,
+        errorMessage: this.getErrorMessage(error),
+        durationMs: Date.now() - startedAt,
+      });
 
       throw new HttpServiceException(
         `Request failed: ${this.getErrorMessage(error)}`,

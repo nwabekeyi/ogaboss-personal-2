@@ -55,6 +55,31 @@ export class QuotationService {
     return getCurrencyDecimals(code.toLowerCase());
   }
 
+  private async resolveQuoteNetwork(
+    userId: string,
+    symbol: string,
+  ): Promise<CryptoNetwork> {
+    const wallet = await this.prisma.wallet.findFirst({
+      where: {
+        userId,
+        currency: { equals: symbol, mode: 'insensitive' },
+      },
+      select: { defaultNetwork: true },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException(`Wallet for ${symbol} not found`);
+    }
+
+    if (!wallet.defaultNetwork) {
+      throw new BadRequestException(
+        `Network is required for ${symbol} because this wallet has no default network`,
+      );
+    }
+
+    return wallet.defaultNetwork as CryptoNetwork;
+  }
+
   private async validateMinimumAmount(
     fiatValue: Decimal,
     cryptoSymbol: string,
@@ -256,19 +281,17 @@ export class QuotationService {
    // BUY QUOTE
    // ===================================================================
    async getBuyQuote(userId: string, dto: BuyQuoteDto & { network?: string }) {
-     const { crypto, amount, network } = dto;
+     const { crypto, amount } = dto;
 
     const symbol = crypto.toUpperCase();
+    const quoteNetwork = await this.resolveQuoteNetwork(userId, symbol);
     const fiat = await this.getBaseFiat();
-    const cryptoDecimals = getCurrencyDecimals(
-      symbol,
-      network as CryptoNetwork,
-    );
+    const cryptoDecimals = getCurrencyDecimals(symbol, quoteNetwork);
 
     const volumeCryptoMinor = ConvertCurrency.toBase(
       new Decimal(amount).toFixed(cryptoDecimals),
       symbol,
-      network as CryptoNetwork,
+      quoteNetwork,
     );
 
     const marketPair = `${symbol.toLowerCase()}${fiat.code.toLowerCase()}`;
@@ -282,7 +305,7 @@ export class QuotationService {
        symbol,
        'buy',
        volumeCryptoMinor,
-       network as CryptoNetwork,
+       quoteNetwork,
      );
 
      // bufferedPrice: the rate ceiling the company will execute at
@@ -313,7 +336,7 @@ export class QuotationService {
       userId,
       side: 'buy',
       crypto: symbol,
-      network: network || 'N/A',
+      network: quoteNetwork || 'N/A',
       fiatCurrency: fiat.code,
       fiatDecimals: fiat.decimals,
       cryptoDecimals,
@@ -340,12 +363,12 @@ export class QuotationService {
         id: quoteId,
         side: 'buy',
         crypto: symbol,
-        network: network || 'N/A',
+        network: quoteNetwork || 'N/A',
         fiatCurrency: fiat.code,
         cryptoVolume: ConvertCurrency.formatCryptoForQuote(
           volumeCryptoMinor.toString(),
           symbol,
-          network as CryptoNetwork,
+          quoteNetwork,
         ),
         marketRate: ConvertCurrency.fromBase(marketPriceMinor, fiat.code),
         bufferedRate: ConvertCurrency.fromBase(bufferedPriceMinor, fiat.code),

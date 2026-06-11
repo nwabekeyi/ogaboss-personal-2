@@ -32,6 +32,39 @@ export class FailedCompanyLiquidityService {
     private readonly transactionService: TransactionService,
   ) {}
 
+  private isRetryableTransaction(transaction: any): boolean {
+    return (
+      transaction.status === TransactionStatus.PENDING &&
+      transaction.isProcessed !== true
+    );
+  }
+
+  private getUserReservedBalanceRelease(transaction: any): {
+    currency: string;
+    amount: bigint;
+  } | null {
+    if (transaction.transactionContext === TransactionContext.BUY) {
+      return null;
+    }
+
+    if (
+      ![
+        TransactionContext.SELL,
+        TransactionContext.SWAP,
+        TransactionContext.WITHDRAWAL,
+      ].includes(transaction.transactionContext)
+    ) {
+      return null;
+    }
+
+    const amount = toBigInt(
+      transaction.totalAmountSentBase ?? transaction.cryptoAmountBase ?? 0,
+    );
+    if (amount <= 0n) return null;
+
+    return { currency: transaction.currency, amount };
+  }
+
   async getPending(limit = 100) {
     return this.prisma.failedCompanyLiquidityTransaction.findMany({
       orderBy: { createdAt: 'asc' },
@@ -78,12 +111,19 @@ export class FailedCompanyLiquidityService {
     let processed = 0;
 
     for (const item of pendings) {
-      const available =
-        await this.companyLiquidityService.getAvailableLiquidity(item.currency);
-      if (available < toBigInt(item.amountBase)) continue;
+      try {
+        const available =
+          await this.companyLiquidityService.getAvailableLiquidity(item.currency);
+        if (available < toBigInt(item.amountBase)) continue;
 
-      const res = await this.processFailedRecord(item.id);
-      if (res.activated) processed += 1;
+        const res = await this.processFailedRecord(item.id);
+        if (res.activated) processed += 1;
+      } catch (error) {
+        this.logger.error(
+          `Failed-company liquidity retry errored for record ${item.id}: ${error?.message || error}`,
+          error?.stack,
+        );
+      }
     }
 
     return { scanned: pendings.length, processed };
@@ -100,37 +140,60 @@ export class FailedCompanyLiquidityService {
       orderBy: { createdAt: 'asc' },
     });
 
+    let markedFailed = 0;
+    let removedNonRetryable = 0;
+
     for (const item of stale) {
       if (!item.Transaction) continue;
 
-      await this.prisma.$transaction(async (tx) => {
-        const amount = toBigInt(item.amountBase);
+      try {
+        if (!this.isRetryableTransaction(item.Transaction)) {
+          await this.prisma.failedCompanyLiquidityTransaction.delete({
+            where: { id: item.id },
+          });
+          removedNonRetryable += 1;
+          this.logger.warn(
+            `Removed stale failed-liquidity retry record ${item.id} for non-retryable transaction ${item.Transaction.id} (${item.Transaction.status})`,
+          );
+          continue;
+        }
 
-        await this.transactionService.releaseBalance(
-          tx,
-          item.Transaction.userId,
-          item.Transaction.currency,
-          amount,
+        await this.prisma.$transaction(async (tx) => {
+          const release = this.getUserReservedBalanceRelease(item.Transaction);
+          if (release) {
+            await this.transactionService.releaseBalance(
+              tx,
+              item.Transaction.userId,
+              release.currency,
+              release.amount,
+            );
+          }
+          // Do not release company liquidity here: failed-company records are created before company liquidity is reserved.
+
+          await tx.transaction.update({
+            where: { id: item.Transaction.id },
+            data: {
+              status: TransactionStatus.FAILED,
+              isProcessed: true,
+            },
+          });
+
+          await tx.failedCompanyLiquidityTransaction.delete({
+            where: { id: item.id },
+          });
+        });
+        markedFailed += 1;
+      } catch (error) {
+        this.logger.error(
+          `Failed to expire stale failed-liquidity record ${item.id}: ${error?.message || error}`,
+          error?.stack,
         );
-        // Do not release company liquidity here: failed-company records are created before company liquidity is reserved.
-
-        await tx.transaction.update({
-          where: { id: item.Transaction.id },
-          data: {
-            status: TransactionStatus.FAILED,
-            isProcessed: true,
-          },
-        });
-
-        await tx.failedCompanyLiquidityTransaction.delete({
-          where: { id: item.id },
-        });
-      });
+      }
     }
 
-    if (stale.length > 0) {
+    if (markedFailed > 0 || removedNonRetryable > 0) {
       this.logger.warn(
-        `Marked ${stale.length} stale failed-liquidity transactions as FAILED (older than ${maxAgeDays} days)`,
+        `Expired failed-liquidity records older than ${maxAgeDays} days: marked ${markedFailed} transaction(s) as FAILED, removed ${removedNonRetryable} non-retryable record(s)`,
       );
     }
   }
@@ -148,28 +211,44 @@ export class FailedCompanyLiquidityService {
 
     const txRecord = failed.Transaction;
 
-    await this.prisma.$transaction(async (tx) => {
-      const reserved = await this.companyLiquidityService.reserveLiquidity(
-        failed.currency,
-        toBigInt(failed.amountBase),
-        tx,
-      );
+    if (!this.isRetryableTransaction(txRecord)) {
+      await this.prisma.failedCompanyLiquidityTransaction.delete({
+        where: { id },
+      });
+      return { activated: false, reason: 'transaction_not_retryable' };
+    }
 
-      if (!reserved) {
-        throw new Error('Failed to reserve liquidity');
-      }
-    });
+    const reservedAmount = toBigInt(failed.amountBase);
+    const reserved = await this.prisma.$transaction(async (tx) =>
+      this.companyLiquidityService.reserveLiquidity(
+        failed.currency,
+        reservedAmount,
+        tx,
+      ),
+    );
+
+    if (!reserved) {
+      return { activated: false, reason: 'insufficient_liquidity' };
+    }
 
     let success = false;
 
-    if (txRecord.transactionContext === TransactionContext.SELL) {
-      success = await this.resumeSell(txRecord.id);
-    } else if (txRecord.transactionContext === TransactionContext.SWAP) {
-      success = await this.resumeSwap(failed, txRecord.id);
-    } else if (txRecord.transactionContext === TransactionContext.WITHDRAWAL) {
-      success = await this.resumeWithdrawal(txRecord.id);
-    } else if (txRecord.transactionContext === TransactionContext.BUY) {
-      success = await this.resumeBuy(txRecord.id);
+    try {
+      if (txRecord.transactionContext === TransactionContext.SELL) {
+        success = await this.resumeSell(txRecord.id);
+      } else if (txRecord.transactionContext === TransactionContext.SWAP) {
+        success = await this.resumeSwap(failed, txRecord.id);
+      } else if (txRecord.transactionContext === TransactionContext.WITHDRAWAL) {
+        success = await this.resumeWithdrawal(txRecord.id);
+      } else if (txRecord.transactionContext === TransactionContext.BUY) {
+        success = await this.resumeBuy(txRecord.id);
+      }
+    } catch (error) {
+      this.logger.error(
+        `Retry execution threw for transaction ${txRecord.id}: ${error?.message || error}`,
+        error?.stack,
+      );
+      success = false;
     }
 
     if (!success) {
@@ -177,7 +256,7 @@ export class FailedCompanyLiquidityService {
 
       await this.companyLiquidityService.releaseLiquidity(
         failed.currency,
-        toBigInt(failed.amountBase),
+        reservedAmount,
       );
 
       return { activated: false, reason: 'provider_failed' };

@@ -393,24 +393,52 @@ export class CompanyLiquidityService {
     const client = tx || this.prisma;
     const normalizedCurrency = this.verifyCurrency(currency);
 
-    const result =
-      operation === 'add'
-        ? await client.$executeRaw`
-            UPDATE "company_liquidity"
-            SET "internalBalance" = "internalBalance" + ${amount}, "updatedAt" = NOW()
-            WHERE LOWER(currency) = LOWER(${normalizedCurrency})
-          `
-        : await client.$executeRaw`
-            UPDATE "company_liquidity"
-            SET "internalBalance" = "internalBalance" - ${amount}, "updatedAt" = NOW()
-            WHERE LOWER(currency) = LOWER(${normalizedCurrency})
-            AND "internalBalance" >= ${amount}
-          `;
+    const liquidity = await client.companyLiquidity.findFirst({
+      where: { currency: { equals: normalizedCurrency, mode: 'insensitive' } },
+      select: { id: true, internalBalance: true },
+    });
 
-    if (Number(result) === 0) {
+    if (!liquidity) {
+      if (operation === 'subtract') {
+        throw new BadRequestException(
+          `Company ${normalizedCurrency} internal balance inconsistency`,
+        );
+      }
+
+      await client.companyLiquidity.create({
+        data: {
+          currency: normalizedCurrency.toLowerCase(),
+          internalBalance: amount,
+          totalBalance: toDecimal(0n),
+          reservedBalance: toDecimal(0n),
+        },
+      });
+
+      if (!tx) {
+        await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
+      }
+      return;
+    }
+
+    if (
+      operation === 'subtract' &&
+      toBigInt(liquidity.internalBalance) < toBigInt(amount)
+    ) {
       throw new BadRequestException(
         `Company ${normalizedCurrency} internal balance inconsistency`,
       );
+    }
+
+    if (operation === 'add') {
+      await client.companyLiquidity.update({
+        where: { id: liquidity.id },
+        data: { internalBalance: { increment: amount } },
+      });
+    } else {
+      await client.companyLiquidity.update({
+        where: { id: liquidity.id },
+        data: { internalBalance: { decrement: amount } },
+      });
     }
 
     if (!tx) {

@@ -212,14 +212,26 @@ export class BuyService {
     }
 
     const normalizedCrypto = quote.crypto.toUpperCase();
-    const quoteNetwork =
-      quote.network && quote.network !== 'N/A'
-        ? (quote.network as CryptoNetwork)
-        : undefined;
-    const cryptoDecimals =
-      typeof quote.cryptoDecimals === 'number'
-        ? quote.cryptoDecimals
-        : getCurrencyDecimals(normalizedCrypto, quoteNetwork);
+    const userCryptoWallet = await this.prisma.wallet.findFirst({
+      where: {
+        userId,
+        currency: { equals: normalizedCrypto, mode: 'insensitive' },
+      },
+      select: { quidaxWalletId: true, defaultNetwork: true },
+    });
+
+    if (!userCryptoWallet?.quidaxWalletId) {
+      throw new NotFoundException(`Wallet not found for ${quote.crypto}`);
+    }
+
+    if (!userCryptoWallet.defaultNetwork) {
+      throw new BadRequestException(
+        `Network is required for ${normalizedCrypto} because this wallet has no default network`,
+      );
+    }
+
+    const quoteNetwork = userCryptoWallet.defaultNetwork as CryptoNetwork;
+    const cryptoDecimals = getCurrencyDecimals(normalizedCrypto, quoteNetwork);
 
     if (normalizedCrypto === 'USDT') {
       const minUsdtBase = ConvertCurrency.toBase(
@@ -267,18 +279,6 @@ export class BuyService {
       select: { id: true, email: true },
     });
     if (!user) throw new NotFoundException('User not found');
-
-    const userCryptoWallet = await this.prisma.wallet.findFirst({
-      where: {
-        userId,
-        currency: { equals: normalizedCrypto, mode: 'insensitive' },
-      },
-      select: { quidaxWalletId: true },
-    });
-
-    if (!userCryptoWallet?.quidaxWalletId) {
-      throw new NotFoundException(`Wallet not found for ${quote.crypto}`);
-    }
 
     const totalFiatMinor = BigInt(quote.totalFiatMinor);
     const platformFeeMinor = BigInt(quote.platformFeeMinor);
@@ -339,7 +339,7 @@ export class BuyService {
         },
         platformWalletAddress: null,
         transactionUniqueId: previewId,
-        network: quote.network,
+        network: quoteNetwork,
         currency: normalizedCrypto,
         cryptoAmountBase: volumeCryptoMinor,
         fiatAmountBase: totalFiatMinor,
