@@ -71,6 +71,152 @@ export class SellService {
     });
   }
 
+  private async sendCompletedTransactionNotification(transactionId: string) {
+    try {
+      const transactionWithUser = await this.prisma.transaction.findUnique({
+        where: { id: transactionId },
+        select: {
+          id: true,
+          userId: true,
+          transactionUniqueId: true,
+          transactionContext: true,
+          status: true,
+          currency: true,
+          network: true,
+          cryptoAmountOriginal: true,
+          fiatAmountOriginal: true,
+          executedCryptoAmountBase: true,
+          executedFiatAmountBase: true,
+          executionPrice: true,
+          executedAt: true,
+          User: { select: { email: true, firstName: true } },
+          paymentMetadata: true,
+        },
+      });
+
+      if (transactionWithUser) {
+        await this.transactionNotificationService.sendTransactionStatusNotification(
+          transactionWithUser,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to send completed notification for sell transaction ${transactionId}: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
+  private async completeNonProductionSellConfirm({
+    transactionId,
+    transactionPaymentMetadata,
+    userId,
+    normalizedCrypto,
+    cryptoDecimals,
+    quote,
+    previewId,
+    cryptoAmountBase,
+    netFiatBase,
+    totalUserDebitBase,
+  }: {
+    transactionId: string;
+    transactionPaymentMetadata?: Record<string, any> | null;
+    userId: string;
+    normalizedCrypto: string;
+    cryptoDecimals: number;
+    quote: ISellQuote;
+    previewId: string;
+    cryptoAmountBase: bigint;
+    netFiatBase: bigint;
+    totalUserDebitBase: bigint;
+  }) {
+    await this.prisma.$transaction(async (tx) => {
+      const existingOrder = await tx.order.findUnique({
+        where: { transactionId },
+        select: { id: true, status: true },
+      });
+
+      if (existingOrder?.status !== OrderStatus.COMPLETED) {
+        const cryptoDebit = toDecimal(totalUserDebitBase);
+        const updatedCryptoWallet = await tx.$queryRaw<
+          { baseBalance: string }[]
+        >`
+          UPDATE "wallets"
+          SET
+            "baseBalance" = "baseBalance" - ${cryptoDebit},
+            "reservedBalance" = "reservedBalance" - ${cryptoDebit}
+          WHERE "userId" = ${userId}
+            AND LOWER("currency") = LOWER(${normalizedCrypto})
+            AND "baseBalance" >= ${cryptoDebit}
+            AND "reservedBalance" >= ${cryptoDebit}
+          RETURNING "baseBalance"
+        `;
+
+        if (updatedCryptoWallet.length === 0) {
+          throw new BadRequestException(
+            `Insufficient reserved ${normalizedCrypto} balance`,
+          );
+        }
+
+        const newCryptoOriginalBalance = ConvertCurrency.fromBase(
+          BigInt(String(updatedCryptoWallet[0].baseBalance)),
+          normalizedCrypto,
+          cryptoDecimals,
+        );
+
+        await tx.wallet.updateMany({
+          where: {
+            userId,
+            currency: { equals: normalizedCrypto, mode: 'insensitive' },
+          },
+          data: { originalBalance: newCryptoOriginalBalance },
+        });
+      }
+
+      if (existingOrder) {
+        await tx.order.update({
+          where: { id: existingOrder.id },
+          data: {
+            status: OrderStatus.COMPLETED,
+            paymentStatus: PaymentStatus.PAID,
+            paymentReference: previewId,
+            paymentChannel: 'non_production_bypass',
+            paymentDate: new Date(),
+            referenceNo: previewId,
+            gatewayResponse: JSON.stringify({ providerBypass: true }),
+          },
+        });
+      }
+
+      await tx.transaction.update({
+        where: { id: transactionId },
+        data: {
+          status: TxStatus.COMPLETED,
+          isProcessed: true,
+          executedCryptoAmountBase: toDecimal(cryptoAmountBase),
+          executedFiatAmountBase: toDecimal(netFiatBase),
+          executionPrice: ConvertCurrency.fromBase(
+            quote.bufferedPriceMinor,
+            quote.fiatCurrency,
+          ),
+          executedAt: new Date(),
+          paymentMetadata: {
+            ...(transactionPaymentMetadata || {}),
+            providerBypass: true,
+            providerBypassReason: 'non_production_sell_confirm',
+            quidaxOrderReference: previewId,
+            sellOrderStatus: 'completed_without_provider',
+            payoutStatus: 'success',
+            payoutReference: previewId,
+            liquidityReservationStatus: LiquidityReservationStatus.RELEASED,
+            liquidityReleasedAt: new Date().toISOString(),
+            liquidityReleaseReason: 'non_production_sell_confirm',
+          },
+        },
+      });
+    });
+  }
+
   // ===================================================================
   // PREVIEW SELL
   // ===================================================================
@@ -198,21 +344,6 @@ export class SellService {
       );
     }
 
-    const existingTransaction = await this.prisma.transaction.findFirst({
-      where: { transactionUniqueId: previewId },
-      select: { id: true, status: true },
-    });
-    if (existingTransaction) {
-      return {
-        success: true,
-        message: 'Sell already submitted',
-        data: {
-          transactionId: existingTransaction.id,
-          status: existingTransaction.status,
-        },
-      };
-    }
-
     const cryptoAmountBase = BigInt(quote.exactCryptoMinor);
     const netFiatBase = BigInt(quote.netFiatMinor);
     const platformFeeBase = BigInt(quote.platformFeeMinor);
@@ -228,6 +359,44 @@ export class SellService {
       quote.netFiatMinor,
       quote.fiatCurrency,
     );
+
+    const existingTransaction = await this.prisma.transaction.findFirst({
+      where: { transactionUniqueId: previewId },
+      select: { id: true, status: true, paymentMetadata: true },
+    });
+    if (existingTransaction) {
+      if (
+        bypassProviders &&
+        existingTransaction.status !== TxStatus.COMPLETED
+      ) {
+        await this.completeNonProductionSellConfirm({
+          transactionId: existingTransaction.id,
+          transactionPaymentMetadata:
+            existingTransaction.paymentMetadata as Record<string, any> | null,
+          userId,
+          normalizedCrypto,
+          cryptoDecimals,
+          quote,
+          previewId,
+          cryptoAmountBase,
+          netFiatBase,
+          totalUserDebitBase,
+        });
+        await this.quotationService.deleteQuote(previewId);
+        await this.sendCompletedTransactionNotification(existingTransaction.id);
+      }
+
+      return {
+        success: true,
+        message: 'Sell already submitted',
+        data: {
+          transactionId: existingTransaction.id,
+          status: bypassProviders
+            ? TxStatus.COMPLETED
+            : existingTransaction.status,
+        },
+      };
+    }
 
     const userBankAccount = await this.prisma.userBankAccount.findFirst({
       where: {
@@ -495,6 +664,13 @@ export class SellService {
           data: {
             status: TxStatus.COMPLETED,
             isProcessed: true,
+            executedCryptoAmountBase: toDecimal(cryptoAmountBase),
+            executedFiatAmountBase: toDecimal(netFiatBase),
+            executionPrice: ConvertCurrency.fromBase(
+              quote.bufferedPriceMinor,
+              quote.fiatCurrency,
+            ),
+            executedAt: new Date(),
             paymentMetadata: {
               ...((result.transaction.paymentMetadata as Record<string, any>) ||
                 {}),
@@ -515,6 +691,7 @@ export class SellService {
       });
 
       await this.quotationService.deleteQuote(previewId);
+      await this.sendCompletedTransactionNotification(result.transaction.id);
 
       return {
         success: true,
@@ -525,7 +702,7 @@ export class SellService {
           currency: quote.crypto,
           estimatedNgnCredit: estimatedNgn.toString(),
           ngnCurrency: quote.fiatCurrency || BASE_CURRENCY.toUpperCase(),
-          status: 'PROCESSING',
+          status: 'COMPLETED',
         },
       };
     }
