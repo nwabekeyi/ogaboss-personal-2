@@ -65,6 +65,42 @@ export class BuyService {
     });
   }
 
+  private async sendCompletedTransactionNotification(transactionId: string) {
+    try {
+      const transactionWithUser = await this.prisma.transaction.findUnique({
+        where: { id: transactionId },
+        select: {
+          id: true,
+          userId: true,
+          transactionUniqueId: true,
+          transactionContext: true,
+          status: true,
+          currency: true,
+          network: true,
+          cryptoAmountOriginal: true,
+          fiatAmountOriginal: true,
+          executedCryptoAmountBase: true,
+          executedFiatAmountBase: true,
+          executionPrice: true,
+          executedAt: true,
+          User: { select: { email: true, firstName: true } },
+          paymentMetadata: true,
+        },
+      });
+
+      if (transactionWithUser) {
+        await this.transactionNotificationService.sendTransactionStatusNotification(
+          transactionWithUser,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to send completed notification for buy transaction ${transactionId}: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
   getPaymentMethods() {
     return [
       {
@@ -511,6 +547,13 @@ export class BuyService {
           data: {
             status: TransactionStatus.COMPLETED,
             isProcessed: true,
+            executedCryptoAmountBase: toDecimal(volumeCryptoMinor),
+            executedFiatAmountBase: toDecimal(totalFiatMinor),
+            executionPrice: ConvertCurrency.fromBase(
+              quote.bufferedPriceMinor,
+              quote.fiatCurrency,
+            ),
+            executedAt: new Date(),
             paymentMetadata: {
               ...((transactionRecord.paymentMetadata as Record<string, any>) ||
                 {}),
@@ -527,6 +570,7 @@ export class BuyService {
       });
 
       await this.tempStore.del(quoteKey);
+      await this.sendCompletedTransactionNotification(transactionRecord.id);
 
       if (paymentMethod.type === PaymentType.CARD) {
         return {
@@ -534,7 +578,7 @@ export class BuyService {
             'Card payment successful. Your transaction is being processed.',
           data: {
             transactionId: transactionRecord.id,
-            status: TransactionStatus.PENDING,
+            status: TransactionStatus.COMPLETED,
           },
         };
       }
@@ -548,7 +592,7 @@ export class BuyService {
             reference: previewId,
             authorizationUrl: `https://checkout.paystack.com/mock-${previewId}`,
             quoteId: previewId,
-            status: TransactionStatus.PENDING,
+            status: TransactionStatus.COMPLETED,
           },
         };
       }

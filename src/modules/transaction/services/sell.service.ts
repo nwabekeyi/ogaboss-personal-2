@@ -71,6 +71,42 @@ export class SellService {
     });
   }
 
+  private async sendCompletedTransactionNotification(transactionId: string) {
+    try {
+      const transactionWithUser = await this.prisma.transaction.findUnique({
+        where: { id: transactionId },
+        select: {
+          id: true,
+          userId: true,
+          transactionUniqueId: true,
+          transactionContext: true,
+          status: true,
+          currency: true,
+          network: true,
+          cryptoAmountOriginal: true,
+          fiatAmountOriginal: true,
+          executedCryptoAmountBase: true,
+          executedFiatAmountBase: true,
+          executionPrice: true,
+          executedAt: true,
+          User: { select: { email: true, firstName: true } },
+          paymentMetadata: true,
+        },
+      });
+
+      if (transactionWithUser) {
+        await this.transactionNotificationService.sendTransactionStatusNotification(
+          transactionWithUser,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Failed to send completed notification for sell transaction ${transactionId}: ${error.message}`,
+        error.stack,
+      );
+    }
+  }
+
   // ===================================================================
   // PREVIEW SELL
   // ===================================================================
@@ -495,6 +531,13 @@ export class SellService {
           data: {
             status: TxStatus.COMPLETED,
             isProcessed: true,
+            executedCryptoAmountBase: toDecimal(cryptoAmountBase),
+            executedFiatAmountBase: toDecimal(netFiatBase),
+            executionPrice: ConvertCurrency.fromBase(
+              quote.bufferedPriceMinor,
+              quote.fiatCurrency,
+            ),
+            executedAt: new Date(),
             paymentMetadata: {
               ...((result.transaction.paymentMetadata as Record<string, any>) ||
                 {}),
@@ -515,6 +558,7 @@ export class SellService {
       });
 
       await this.quotationService.deleteQuote(previewId);
+      await this.sendCompletedTransactionNotification(result.transaction.id);
 
       return {
         success: true,
@@ -525,7 +569,7 @@ export class SellService {
           currency: quote.crypto,
           estimatedNgnCredit: estimatedNgn.toString(),
           ngnCurrency: quote.fiatCurrency || BASE_CURRENCY.toUpperCase(),
-          status: 'PROCESSING',
+          status: 'COMPLETED',
         },
       };
     }
