@@ -790,7 +790,6 @@ export class PaystackWebhookHandler {
       const newOriginalBalance = ConvertCurrency.fromBase(
         BigInt(String(newBaseStr)),
         transaction.currency,
-        undefined,
       );
       await tx.$executeRaw`
         UPDATE "wallets"
@@ -807,18 +806,13 @@ export class PaystackWebhookHandler {
       if (sellNgnPrice && new Decimal(sellNgnPrice).gt(0)) {
         const cryptoAmountStr =
           transaction.cryptoAmountOriginal ||
-          ConvertCurrency.fromBase(
-            totalSentBase,
-            transaction.currency,
-            undefined,
-          );
+          ConvertCurrency.fromBase(totalSentBase, transaction.currency);
         const sellNgnValue = new Decimal(sellNgnPrice).mul(
           new Decimal(cryptoAmountStr),
         );
         const sellNgnBase = ConvertCurrency.toBase(
           sellNgnValue.toFixed(2),
           'ngn',
-          undefined,
         );
         sellNgnBaseDec = toDecimal(sellNgnBase);
       }

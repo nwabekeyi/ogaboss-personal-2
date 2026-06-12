@@ -16,8 +16,6 @@ import {
   ConvertCurrency,
   CURRENCY_PRECISION,
   CryptoCurrency as CryptoCurrencyType,
-  CryptoCurrency,
-  CryptoNetwork,
 } from '../../../../shared';
 
 @Injectable()
@@ -57,8 +55,6 @@ export class CryptoBufferService {
       throw new NotFoundException(`Cryptocurrency not found`);
     }
 
-    const network = this.getFirstNetwork(crypto.symbol) as CryptoNetwork;
-
     return {
       success: true,
       message: 'Buffer configuration retrieved successfully',
@@ -78,10 +74,10 @@ export class CryptoBufferService {
           id: t.id,
           orderType: t.orderType,
           minAmount: t.minAmount
-            ? ConvertCurrency.fromBase(t.minAmount, crypto.symbol, network)
+            ? ConvertCurrency.fromBase(t.minAmount, crypto.symbol)
             : null,
           maxAmount: t.maxAmount
-            ? ConvertCurrency.fromBase(t.maxAmount, crypto.symbol, network)
+            ? ConvertCurrency.fromBase(t.maxAmount, crypto.symbol)
             : null,
           bufferPercent: new Decimal(t.bufferPercent).toNumber(),
         })),
@@ -132,18 +128,8 @@ export class CryptoBufferService {
       throw new BadRequestException('bufferPercent must be between 0 and 100');
     }
 
-    const network = this.getFirstNetwork(crypto.symbol);
-
-    const minAmount = ConvertCurrency.toBase(
-      dto.minAmount,
-      crypto.symbol,
-      network as CryptoNetwork,
-    );
-    const maxAmount = ConvertCurrency.toBase(
-      dto.maxAmount,
-      crypto.symbol,
-      network as CryptoNetwork,
-    );
+    const minAmount = ConvertCurrency.toBase(dto.minAmount, crypto.symbol);
+    const maxAmount = ConvertCurrency.toBase(dto.maxAmount, crypto.symbol);
 
     this.assertValidRange(
       new Decimal(minAmount.toString()),
@@ -195,18 +181,10 @@ export class CryptoBufferService {
       data: {
         ...bufferTier,
         minAmount: bufferTier.minAmount
-          ? ConvertCurrency.fromBase(
-              bufferTier.minAmount,
-              crypto.symbol,
-              network as CryptoNetwork,
-            )
+          ? ConvertCurrency.fromBase(bufferTier.minAmount, crypto.symbol)
           : null,
         maxAmount: bufferTier.maxAmount
-          ? ConvertCurrency.fromBase(
-              bufferTier.maxAmount,
-              crypto.symbol,
-              network as CryptoNetwork,
-            )
+          ? ConvertCurrency.fromBase(bufferTier.maxAmount, crypto.symbol)
           : null,
       },
     };
@@ -267,8 +245,6 @@ export class CryptoBufferService {
       const updatedTiers: any[] = [];
 
       if (dto.tiers?.length) {
-        const network = this.getFirstNetwork(crypto.symbol) as CryptoNetwork;
-
         for (const tierPatch of dto.tiers) {
           const { id, ...patch } = tierPatch;
 
@@ -281,11 +257,11 @@ export class CryptoBufferService {
             );
 
           const resolvedMin = patch.minAmount
-            ? ConvertCurrency.toBase(patch.minAmount, crypto.symbol, network)
+            ? ConvertCurrency.toBase(patch.minAmount, crypto.symbol)
             : existingTier.minAmount;
 
           const resolvedMax = patch.maxAmount
-            ? ConvertCurrency.toBase(patch.maxAmount, crypto.symbol, network)
+            ? ConvertCurrency.toBase(patch.maxAmount, crypto.symbol)
             : existingTier.maxAmount;
 
           this.assertValidRange(
@@ -320,18 +296,10 @@ export class CryptoBufferService {
           updatedTiers.push({
             ...updatedTier,
             minAmount: updatedTier.minAmount
-              ? ConvertCurrency.fromBase(
-                  updatedTier.minAmount,
-                  crypto.symbol,
-                  network,
-                )
+              ? ConvertCurrency.fromBase(updatedTier.minAmount, crypto.symbol)
               : null,
             maxAmount: updatedTier.maxAmount
-              ? ConvertCurrency.fromBase(
-                  updatedTier.maxAmount,
-                  crypto.symbol,
-                  network,
-                )
+              ? ConvertCurrency.fromBase(updatedTier.maxAmount, crypto.symbol)
               : null,
           });
         }

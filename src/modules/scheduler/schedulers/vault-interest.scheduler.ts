@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { VaultStatus } from '../../../infrastructure/databases/prisma';
-import { ConvertCurrency, CryptoNetwork } from '../../../shared';
+import { ConvertCurrency } from '../../../shared';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
 import { TempStoreService } from '../../../infrastructure';
@@ -149,15 +149,9 @@ export class VaultInterestScheduler {
             WHERE "id" = ${wallet.id}
             RETURNING "baseBalance"
           `;
-
-          const decimalsOrNetwork =
-            cryptoSymbol === 'USDT' || cryptoSymbol === 'USDC'
-              ? 6
-              : (wallet.defaultNetwork as CryptoNetwork);
           const newOriginalBalance = ConvertCurrency.fromBase(
             BigInt(String(walletUpdate.baseBalance)),
             cryptoSymbol,
-            decimalsOrNetwork,
           );
           await tx.$executeRaw`
             UPDATE "wallets"
@@ -195,14 +189,12 @@ export class VaultInterestScheduler {
             amountToReceiveHuman: ConvertCurrency.fromBase(
               amountToReceive,
               cryptoSymbol,
-              decimalsOrNetwork,
             ),
             totalAmount: amountToReceive,
             netInterestPaid: netInterestPaid.toString(),
             netInterestPaidHuman: ConvertCurrency.fromBase(
               netInterestPaid,
               cryptoSymbol,
-              decimalsOrNetwork,
             ),
           };
         });

@@ -8,7 +8,7 @@ import {
   WebhookStatus,
 } from '../../../infrastructure/databases/prisma';
 import { GetAdminTransactionsDto } from '../dto/get-admin-transactions.dto';
-import { TransactionFormatter } from '../../../shared';
+import { ConvertCurrency, TransactionFormatter } from '../../../shared';
 import { WebhookIdempotencyService } from '../../webhook/service/webhook-idempotency.service';
 import { QuidaxWebhookService } from '../../webhook/quidax/quidax-webhook-event.service';
 import { PaystackWebhookHandler } from '../../webhook/paystack';
@@ -401,14 +401,12 @@ export class AdminTransactionService {
         ? ConvertCurrency.fromBase(
             transaction.executedCryptoAmountBase.toString(),
             transaction.currency,
-            undefined,
           )
         : undefined,
       executedFiatAmount: transaction.executedFiatAmountBase
         ? ConvertCurrency.fromBase(
             transaction.executedFiatAmountBase.toString(),
             'ngn',
-            undefined,
           )
         : undefined,
       executionPrice: transaction.executionPrice || undefined,
@@ -452,14 +450,12 @@ export class AdminTransactionService {
             ? ConvertCurrency.fromBase(
                 tx.executedCryptoAmountBase.toString(),
                 tx.currency,
-                undefined,
               )
             : undefined,
           executedFiatAmount: tx.executedFiatAmountBase
             ? ConvertCurrency.fromBase(
                 tx.executedFiatAmountBase.toString(),
                 'ngn',
-                undefined,
               )
             : undefined,
           executionPrice: tx.executionPrice || undefined,

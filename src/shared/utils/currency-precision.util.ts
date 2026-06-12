@@ -13,6 +13,10 @@ import {
 } from '../constants/allowed-currencies';
 import Decimal from 'decimal.js';
 
+type DefaultCurrencyNetworkResolver = (
+  currency: string,
+) => Promise<CryptoNetwork | string | null | undefined>;
+
 export function getCurrencyDecimals(
   currency: string,
   networkOrDecimals?: CryptoNetwork | number,
@@ -64,6 +68,132 @@ export function getCurrencyDecimals(
 }
 
 export class ConvertCurrency {
+  private static defaultNetworkResolver?: DefaultCurrencyNetworkResolver;
+  private static readonly defaultNetworkCache = new Map<
+    string,
+    CryptoNetwork
+  >();
+
+  static setCachedDefaultNetwork(currency: string, network?: string | null) {
+    if (!network) return;
+
+    const normalizedCurrency = currency.toLowerCase();
+    const normalizedNetwork = network.toLowerCase() as CryptoNetwork;
+    const supportedNetworks =
+      CURRENCY_PRECISION[normalizedCurrency as CryptoCurrency];
+
+    if (
+      supportedNetworks?.length &&
+      !supportedNetworks.some((item) => item.id === normalizedNetwork)
+    ) {
+      return;
+    }
+
+    ConvertCurrency.defaultNetworkCache.set(
+      normalizedCurrency,
+      normalizedNetwork,
+    );
+  }
+
+  private static getCachedDefaultNetwork(
+    currency: string,
+  ): CryptoNetwork | undefined {
+    const normalizedCurrency = currency.toLowerCase();
+
+    return (
+      ConvertCurrency.defaultNetworkCache.get(normalizedCurrency) ??
+      (CURRENCY_PRECISION[normalizedCurrency as CryptoCurrency]?.[0]?.id as
+        | CryptoNetwork
+        | undefined)
+    );
+  }
+
+  static setDefaultNetworkResolver(resolver: DefaultCurrencyNetworkResolver) {
+    ConvertCurrency.defaultNetworkResolver = resolver;
+  }
+
+  static getDecimals(currency: string): number {
+    return getCurrencyDecimals(
+      currency,
+      ConvertCurrency.getCachedDefaultNetwork(currency),
+    );
+  }
+
+  private static async getDefaultNetwork(
+    currency: string,
+  ): Promise<CryptoNetwork | undefined> {
+    const normalizedCurrency = currency.toLowerCase();
+
+    if (normalizedCurrency in FIAT_DECIMALS) {
+      return undefined;
+    }
+
+    const network =
+      await ConvertCurrency.defaultNetworkResolver?.(normalizedCurrency);
+
+    if (network) {
+      ConvertCurrency.setCachedDefaultNetwork(normalizedCurrency, network);
+    }
+
+    return ConvertCurrency.getCachedDefaultNetwork(normalizedCurrency);
+  }
+
+  private static async resolveDecimalsOrNetwork(
+    currency: string,
+    decimalsOrNetwork?: number | CryptoNetwork,
+  ): Promise<number | CryptoNetwork | undefined> {
+    if (decimalsOrNetwork !== undefined) {
+      return decimalsOrNetwork;
+    }
+
+    return ConvertCurrency.getDefaultNetwork(currency);
+  }
+
+  static async toBaseAsync(
+    amount: string,
+    currency: string,
+    decimalsOrNetwork?: number | CryptoNetwork,
+  ): Promise<bigint> {
+    return ConvertCurrency.toBase(
+      amount,
+      currency,
+      await ConvertCurrency.resolveDecimalsOrNetwork(
+        currency,
+        decimalsOrNetwork,
+      ),
+    );
+  }
+
+  static async fromBaseAsync(
+    amount: any,
+    currency: string,
+    decimalsOrNetwork?: number | CryptoNetwork,
+  ): Promise<string> {
+    return ConvertCurrency.fromBase(
+      amount,
+      currency,
+      await ConvertCurrency.resolveDecimalsOrNetwork(
+        currency,
+        decimalsOrNetwork,
+      ),
+    );
+  }
+
+  static async formatCryptoForQuoteAsync(
+    amount: any,
+    currency: string,
+    decimalsOrNetwork?: number | CryptoNetwork,
+  ): Promise<string> {
+    return ConvertCurrency.formatCryptoForQuote(
+      amount,
+      currency,
+      await ConvertCurrency.resolveDecimalsOrNetwork(
+        currency,
+        decimalsOrNetwork,
+      ),
+    );
+  }
+
   static toBase(
     amount: string,
     currency: string,
@@ -76,7 +206,10 @@ export class ConvertCurrency {
     if (typeof decimalsOrNetwork === 'number') {
       decimals = decimalsOrNetwork;
     } else {
-      decimals = getCurrencyDecimals(currency, decimalsOrNetwork);
+      decimals = getCurrencyDecimals(
+        currency,
+        decimalsOrNetwork ?? ConvertCurrency.getCachedDefaultNetwork(currency),
+      );
     }
 
     // Normalize scientific notation and trim
@@ -152,7 +285,10 @@ export class ConvertCurrency {
     if (typeof decimalsOrNetwork === 'number') {
       decimals = decimalsOrNetwork;
     } else {
-      decimals = getCurrencyDecimals(currency, decimalsOrNetwork);
+      decimals = getCurrencyDecimals(
+        currency,
+        decimalsOrNetwork ?? ConvertCurrency.getCachedDefaultNetwork(currency),
+      );
     }
 
     const factor = 10n ** BigInt(decimals);
@@ -185,6 +321,17 @@ export class ConvertCurrency {
   ): string {
     currency = currency.toLowerCase();
 
+    let decimals: number;
+
+    if (typeof decimalsOrNetwork === 'number') {
+      decimals = decimalsOrNetwork;
+    } else {
+      decimals = getCurrencyDecimals(
+        currency,
+        decimalsOrNetwork ?? ConvertCurrency.getCachedDefaultNetwork(currency),
+      );
+    }
+
     let safeAmount: bigint;
     if (typeof amount === 'bigint') {
       safeAmount = amount;
@@ -193,7 +340,7 @@ export class ConvertCurrency {
     } else if (typeof amount === 'string') {
       if (amount.includes('.')) {
         const dec = new Decimal(amount);
-        const multiplier = new Decimal(10).pow(decimalsOrNetwork as number);
+        const multiplier = new Decimal(10).pow(decimals);
         const scaled = dec.mul(multiplier).floor();
         safeAmount = BigInt(scaled.toFixed(0));
       } else {
@@ -205,14 +352,6 @@ export class ConvertCurrency {
       safeAmount = 0n;
     }
 
-    let decimals: number;
-
-    if (typeof decimalsOrNetwork === 'number') {
-      decimals = decimalsOrNetwork;
-    } else {
-      decimals = getCurrencyDecimals(currency, decimalsOrNetwork);
-    }
-
     const factor = 10n ** BigInt(decimals);
     const absAmount = safeAmount < 0n ? -safeAmount : safeAmount;
     const whole = absAmount / factor;
@@ -220,22 +359,22 @@ export class ConvertCurrency {
 
     let result = whole.toString();
 
-     if (whole === 0n) {
-       let fractionStr = fraction.toString().padStart(decimals, '0');
-       fractionStr = fractionStr.replace(/0+$/, '');
-       if (fractionStr.length === 0) {
-         result = '0.00';
-       } else {
-         result = '0.' + fractionStr;
-       }
-     } else {
-       let fractionStr = fraction.toString().padStart(decimals, '0');
-       fractionStr = fractionStr.replace(/0+$/, '');
-       if (fractionStr.length === 0) fractionStr = '0';
-       if (fractionStr !== '0') {
-         result += '.' + fractionStr;
-       }
-     }
+    if (whole === 0n) {
+      let fractionStr = fraction.toString().padStart(decimals, '0');
+      fractionStr = fractionStr.replace(/0+$/, '');
+      if (fractionStr.length === 0) {
+        result = '0.00';
+      } else {
+        result = '0.' + fractionStr;
+      }
+    } else {
+      let fractionStr = fraction.toString().padStart(decimals, '0');
+      fractionStr = fractionStr.replace(/0+$/, '');
+      if (fractionStr.length === 0) fractionStr = '0';
+      if (fractionStr !== '0') {
+        result += '.' + fractionStr;
+      }
+    }
     return safeAmount < 0n ? '-' + result : result;
   }
 }

@@ -3,7 +3,7 @@ import { PrismaService } from '../../../infrastructure';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { EmailJobType, QueueName } from '../../../infrastructure/bullMQ/types';
 import { TransactionWithUser } from '../types';
-import { ConvertCurrency, CryptoNetwork } from '../../../shared';
+import { ConvertCurrency } from '../../../shared';
 
 @Injectable()
 export class TransactionNotificationService {
@@ -105,14 +105,12 @@ export class TransactionNotificationService {
           ? ConvertCurrency.fromBase(
               String(transaction.executedCryptoAmountBase),
               transaction.currency ?? '',
-              (transaction as any).network as CryptoNetwork,
             )
           : (transaction.cryptoAmountOriginal ?? '?');
         const fiatAmt = transaction.executedFiatAmountBase
           ? ConvertCurrency.fromBase(
               String(transaction.executedFiatAmountBase),
               'ngn',
-              undefined,
             )
           : (transaction.fiatAmountOriginal ?? '?');
 

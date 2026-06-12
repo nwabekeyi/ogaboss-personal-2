@@ -20,7 +20,7 @@
 //   QuidaxResponse,
 //   VerifyAddressResponse,
 // } from '../../infrastructure/providers/quidax';
-// import { ConvertCurrency, getCurrencyDecimals } from '../../shared';
+// import { ConvertCurrency } from '../../shared';
 
 // const buildOrderQuery = createModelQuery<Order>({
 //   defaultDateField: 'createdAt',
@@ -90,8 +90,8 @@
 //     }
 
 //     // Convert to base units using correct decimals
-//     const cryptoDecimals = getCurrencyDecimals(currency.symbol);
-//     const fiatDecimals = rest.fiatCurrency === 'NGN' ? 2 : getCurrencyDecimals(rest.fiatCurrency);
+//     const cryptoDecimals = ConvertCurrency.getDecimals(currency.symbol);
+//     const fiatDecimals = rest.fiatCurrency === 'NGN' ? 2 : ConvertCurrency.getDecimals(rest.fiatCurrency);
 
 //     const cryptoOriginal = cryptoAmount.toFixed(cryptoDecimals);
 //     const fiatOriginal = fiatAmount.toFixed(fiatDecimals);
@@ -102,9 +102,9 @@
 //         currency: { connect: { id: currency.id } },
 //         transactionId: generateTransactionId(),
 //         referenceNo: generateTxRef(),
-//         cryptoAmountBase: ConvertCurrency.toBase(cryptoOriginal, currency.symbol, undefined),
+//         cryptoAmountBase: ConvertCurrency.toBase(cryptoOriginal, currency.symbol),
 //         cryptoAmountOriginal: cryptoOriginal,
-//         fiatAmountBase: ConvertCurrency.toBase(fiatOriginal, rest.fiatCurrency || 'NGN', undefined),
+//         fiatAmountBase: ConvertCurrency.toBase(fiatOriginal, rest.fiatCurrency || 'NGN'),
 //         fiatAmountOriginal: fiatOriginal,
 //       },
 //     });
@@ -223,7 +223,7 @@
 
 //     if (!order) throw new NotFoundException('Order not found');
 
-//     const fiatDecimals = order.fiatCurrency === 'NGN' ? 2 : getCurrencyDecimals(order.fiatCurrency);
+//     const fiatDecimals = order.fiatCurrency === 'NGN' ? 2 : ConvertCurrency.getDecimals(order.fiatCurrency);
 //     const paymentAmountOriginal = (paymentDetails.paymentAmount / Math.pow(10, fiatDecimals)).toFixed(fiatDecimals);
 
 //     const updatedOrder = await this.prisma.order.update({

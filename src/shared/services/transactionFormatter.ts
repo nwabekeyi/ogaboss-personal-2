@@ -1,6 +1,5 @@
 import { Transaction, User } from '../../infrastructure';
 import { ConvertCurrency } from '../utils/currency-precision.util';
-import type { CryptoNetwork } from '../constants/currency-precision.constant';
 
 export interface FormattedTransaction {
   transactionId: string;
@@ -42,7 +41,6 @@ export class TransactionFormatter {
       ? ConvertCurrency.fromBase(
           transaction.executedCryptoAmountBase.toString(),
           transaction.currency,
-          transaction.network as CryptoNetwork,
         )
       : null;
 
@@ -50,7 +48,6 @@ export class TransactionFormatter {
       ? ConvertCurrency.fromBase(
           transaction.executedFiatAmountBase.toString(),
           'ngn',
-          undefined,
         )
       : null;
 

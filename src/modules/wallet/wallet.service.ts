@@ -43,9 +43,7 @@ export class WalletService {
       ? (defaultNetwork as CryptoNetwork | undefined)
       : undefined;
 
-    return Number(
-      ConvertCurrency.fromBase(toBigInt(amount as any), currency, walletScale),
-    );
+    return Number(ConvertCurrency.fromBase(toBigInt(amount as any), currency));
   }
 
   private getUsdPrice(tickers: Record<string, any>, currency: string): number {

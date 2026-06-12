@@ -5,7 +5,7 @@ import {
 } from '../infrastructure/databases/prisma/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import axios from 'axios';
-import { ALLOWED_CURRENCIES, ConvertCurrency, CryptoNetwork } from '../shared';
+import { ALLOWED_CURRENCIES, ConvertCurrency } from '../shared';
 
 interface QuidaxWallet {
   id: string;
@@ -134,11 +134,7 @@ async function reconcileWallets(): Promise<void> {
           }
 
           const balanceStr = quidaxWallet.balance ?? '0';
-          const baseBalance = ConvertCurrency.toBase(
-            balanceStr,
-            currency,
-            (quidaxWallet.default_network || currency) as CryptoNetwork,
-          );
+          const baseBalance = ConvertCurrency.toBase(balanceStr, currency);
 
           await prisma.wallet.upsert({
             where: {

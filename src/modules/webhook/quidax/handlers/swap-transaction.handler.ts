@@ -153,11 +153,7 @@ export class SwapTransactionHandler {
         }
 
         const expectedUsdtMinor = swapRecord.toAmountOriginal
-          ? ConvertCurrency.toBase(
-              String(swapRecord.toAmountOriginal),
-              'USDT',
-              6,
-            )
+          ? ConvertCurrency.toBase(String(swapRecord.toAmountOriginal), 'USDT')
           : BigInt(vault.amountLocked.toFixed(0));
         if (expectedUsdtMinor > 0n) {
           const usdtLiquidity = await tx.companyLiquidity.findFirst({
@@ -264,16 +260,11 @@ export class SwapTransactionHandler {
         }
 
         const expectedUsdtMinor = swapRecord.toAmountOriginal
-          ? ConvertCurrency.toBase(
-              String(swapRecord.toAmountOriginal),
-              'USDT',
-              6,
-            )
+          ? ConvertCurrency.toBase(String(swapRecord.toAmountOriginal), 'USDT')
           : BigInt(vault.amountLocked.toFixed(0));
         const receivedUsdtMinor = ConvertCurrency.toBase(
           data.received_amount,
           'USDT',
-          undefined,
         );
         const differenceMinor = receivedUsdtMinor - expectedUsdtMinor;
 
@@ -377,7 +368,6 @@ export class SwapTransactionHandler {
         const newBtcOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(newBtcBaseStr)),
           'BTC',
-          btcWallet.defaultNetwork as CryptoNetwork,
         );
         await tx.$executeRaw`
           UPDATE "wallets"
@@ -429,7 +419,6 @@ export class SwapTransactionHandler {
         const newUsdtOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(newUsdtBaseStr)),
           'USDT',
-          6,
         );
         await tx.$executeRaw`
           UPDATE "wallets"
@@ -608,7 +597,7 @@ export class SwapTransactionHandler {
 
     const exactFromMinorBooked = linkedTx
       ? toBigInt(linkedTx.cryptoAmountBase)
-      : ConvertCurrency.toBase(data.from_amount, fromCurrency, fromNet);
+      : ConvertCurrency.toBase(data.from_amount, fromCurrency);
 
     const txFeeBase = linkedTx ? toBigInt(linkedTx.platformFeeBase ?? 0) : 0n;
 
@@ -672,12 +661,10 @@ export class SwapTransactionHandler {
     const confirmedFromBase = ConvertCurrency.toBase(
       confirmedFromAmount,
       fromCurrency,
-      fromNet,
     );
     const confirmedToBase = ConvertCurrency.toBase(
       confirmedToAmount,
       toCurrency,
-      toNet,
     );
 
     // === Atomic Ledger Update ===
@@ -770,7 +757,6 @@ export class SwapTransactionHandler {
         const newFromOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(newFromBaseStr)),
           fromCurrency,
-          fromNet,
         );
         await tx.$executeRaw`
           UPDATE "wallets"
@@ -798,7 +784,6 @@ export class SwapTransactionHandler {
           const newToOriginalBalance = ConvertCurrency.fromBase(
             BigInt(String(newToBaseStr)),
             toCurrency,
-            toNet,
           );
 
           await tx.$executeRaw`
@@ -994,7 +979,6 @@ export class SwapTransactionHandler {
           const swapNgnBase = ConvertCurrency.toBase(
             swapNgnValue.toFixed(2),
             'ngn',
-            undefined,
           );
           swapNgnDec = toDecimal(swapNgnBase);
         }

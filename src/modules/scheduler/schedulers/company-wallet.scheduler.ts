@@ -6,11 +6,7 @@ import { QuidaxWalletService } from '../../../infrastructure/providers/quidax';
 import { PrismaService, RedisService } from '../../../infrastructure';
 import { Prisma } from '../../../infrastructure/databases/prisma/generated/prisma/client';
 import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
-import {
-  COMPANY_WALLETS_KEY,
-  ConvertCurrency,
-  CryptoNetwork,
-} from '../../../shared';
+import { COMPANY_WALLETS_KEY, ConvertCurrency } from '../../../shared';
 
 @Injectable()
 export class CompanyWalletScheduler implements OnModuleInit {
@@ -51,6 +47,7 @@ export class CompanyWalletScheduler implements OnModuleInit {
           wallet?.currency?.toLowerCase() ?? currencyKey.toLowerCase();
 
         const network = wallet?.default_network ?? currency;
+        ConvertCurrency.setCachedDefaultNetwork(currency, network);
 
         let depositAddress = wallet?.deposit_address ?? null;
         let destinationTag = wallet?.destination_tag ?? null;
@@ -119,7 +116,6 @@ export class CompanyWalletScheduler implements OnModuleInit {
       const totalBalanceBase = ConvertCurrency.toBase(
         balance,
         normalizedCurrency,
-        network as CryptoNetwork,
       );
 
       // Convert BigInt to string for SQL, then cast back in the query
@@ -151,7 +147,6 @@ export class CompanyWalletScheduler implements OnModuleInit {
               totalBalance: ConvertCurrency.toBase(
                 balance,
                 currency.toLowerCase(),
-                network as CryptoNetwork,
               ).toString(),
               updatedAt: new Date(),
             },

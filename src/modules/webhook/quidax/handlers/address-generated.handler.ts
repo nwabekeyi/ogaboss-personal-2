@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../../infrastructure/databases/prisma';
 import { PaymentAddressStatus } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
 import { QuidaxWalletService } from '../../../../infrastructure/providers/quidax/wallet.service';
-import { ConvertCurrency, CryptoNetwork } from '../../../../shared';
+import { ConvertCurrency } from '../../../../shared';
 
 @Injectable()
 export class AddressGeneratedHandler {
@@ -70,14 +70,11 @@ export class AddressGeneratedHandler {
 
     const confirmed = addressRes.data;
 
-    const networkForDecimals = confirmed.network || 'tagged';
-
     let totalPaymentsBigInt: bigint;
     if (confirmed.total_payments != null) {
       totalPaymentsBigInt = ConvertCurrency.toBase(
         confirmed.total_payments.toString(),
         currency,
-        networkForDecimals as CryptoNetwork,
       );
     } else {
       totalPaymentsBigInt = 0n;
