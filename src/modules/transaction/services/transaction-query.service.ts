@@ -95,7 +95,11 @@ export class TransactionQueryService {
           : null;
 
         const executedFiatAmountOriginal = executedFiatAmountBase
-          ? ConvertCurrency.fromBase(executedFiatAmountBase.toString(), 'ngn')
+          ? ConvertCurrency.fromBase(
+              executedFiatAmountBase.toString(),
+              'ngn',
+              undefined,
+            )
           : null;
 
         return {
@@ -190,7 +194,11 @@ export class TransactionQueryService {
         )
       : null;
     const executedFiatAmountOriginal = executedFiatAmountBase
-      ? ConvertCurrency.fromBase(executedFiatAmountBase.toString(), 'ngn')
+      ? ConvertCurrency.fromBase(
+          executedFiatAmountBase.toString(),
+          'ngn',
+          undefined,
+        )
       : null;
     const sanitized = {
       ...rest,
@@ -265,7 +273,11 @@ export class TransactionQueryService {
               )
             : null,
           executedFiatAmountOriginal: executedFiatAmountBase
-            ? ConvertCurrency.fromBase(executedFiatAmountBase.toString(), 'ngn')
+            ? ConvertCurrency.fromBase(
+                executedFiatAmountBase.toString(),
+                'ngn',
+                undefined,
+              )
             : null,
         }),
       ),

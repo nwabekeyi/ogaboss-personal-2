@@ -21,9 +21,22 @@ export class TransformedWalletDto {
 
   @ApiProperty({
     example: '0.025',
-    description: 'Current balance in the wallet (formatted string)',
+    description: 'Current available balance in the wallet (formatted string)',
   })
   balance: string;
+
+  @ApiProperty({
+    example: '0',
+    description: 'Reserved balance in display units (formatted string)',
+  })
+  reservedBalance: string;
+
+  @ApiProperty({
+    example: '0.025',
+    description:
+      'Total wallet balance in display units, including locked/stacked funds (formatted string)',
+  })
+  totalBalance: string;
 
   @ApiProperty({
     example: 145000,
@@ -61,9 +74,15 @@ export class TransformedWalletDto {
 export class WalletSummaryResponseDto {
   @ApiProperty({
     example: 156250,
-    description: 'Total balance across all wallets in NGN',
+    description: 'Total available balance across all wallets in NGN',
   })
   totalBalanceInNaira: number;
+
+  @ApiProperty({
+    example: 0,
+    description: 'Total reserved balance across all wallets in NGN',
+  })
+  totalReservedBalanceInNaira: number;
 
   @ApiProperty({
     example: 'NGN',

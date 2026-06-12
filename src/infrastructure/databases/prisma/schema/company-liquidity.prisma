@@ -10,6 +10,7 @@ model CompanyLiquidity {
   totalAmountStacked Decimal @default(0) @db.Decimal(78, 0)
   totalStackedInterestPaid Decimal @default(0) @db.Decimal(78, 0)
   currency        String   @unique
+  network         String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

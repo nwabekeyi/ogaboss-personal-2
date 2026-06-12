@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron} from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { BASE_CURRENCY, ConvertCurrency, toBigInt } from '../../../shared';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
@@ -27,7 +27,9 @@ export class DailyPercentageScheduler {
         QueueName.CLEANUP,
         'scheduler.daily-percentage',
         {},
-        { jobId: `scheduler.daily-percentage-${new Date().toISOString().slice(0, 10)}` },
+        {
+          jobId: `scheduler.daily-percentage-${new Date().toISOString().slice(0, 10)}`,
+        },
       );
       return;
     } catch {
@@ -142,7 +144,11 @@ export class DailyPercentageScheduler {
     for (const wallet of wallets) {
       if (wallet.baseBalance && toBigInt(wallet.baseBalance) > 0n) {
         const amountNgn = Number(
-          ConvertCurrency.fromBase(toBigInt(wallet.baseBalance), BASE_CURRENCY),
+          ConvertCurrency.fromBase(
+            toBigInt(wallet.baseBalance),
+            BASE_CURRENCY,
+            undefined,
+          ),
         );
         totalNaira += amountNgn;
       }

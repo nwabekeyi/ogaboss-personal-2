@@ -402,8 +402,8 @@ export class PaystackWebhookHandler {
         : null;
       const hasFreshAutostackProcessing = Boolean(
         currentMeta.autostackPaystackWebhookProcessing &&
-          buyOrderRequestedAt &&
-          Date.now() - buyOrderRequestedAt.getTime() < 15 * 60 * 1000,
+        buyOrderRequestedAt &&
+        Date.now() - buyOrderRequestedAt.getTime() < 15 * 60 * 1000,
       );
 
       if (
@@ -773,9 +773,7 @@ export class PaystackWebhookHandler {
       );
 
       const totalSentDec = toDecimal(totalSentBase);
-      const walletUpdates = await tx.$queryRaw<
-        { baseBalance: string }[]
-      >`
+      const walletUpdates = await tx.$queryRaw<{ baseBalance: string }[]>`
         UPDATE "wallets"
         SET "baseBalance" = "baseBalance" - ${totalSentDec}
         WHERE "userId" = ${transaction.userId}
@@ -792,6 +790,7 @@ export class PaystackWebhookHandler {
       const newOriginalBalance = ConvertCurrency.fromBase(
         BigInt(String(newBaseStr)),
         transaction.currency,
+        undefined,
       );
       await tx.$executeRaw`
         UPDATE "wallets"
@@ -808,13 +807,18 @@ export class PaystackWebhookHandler {
       if (sellNgnPrice && new Decimal(sellNgnPrice).gt(0)) {
         const cryptoAmountStr =
           transaction.cryptoAmountOriginal ||
-          ConvertCurrency.fromBase(totalSentBase, transaction.currency);
+          ConvertCurrency.fromBase(
+            totalSentBase,
+            transaction.currency,
+            undefined,
+          );
         const sellNgnValue = new Decimal(sellNgnPrice).mul(
           new Decimal(cryptoAmountStr),
         );
         const sellNgnBase = ConvertCurrency.toBase(
           sellNgnValue.toFixed(2),
           'ngn',
+          undefined,
         );
         sellNgnBaseDec = toDecimal(sellNgnBase);
       }

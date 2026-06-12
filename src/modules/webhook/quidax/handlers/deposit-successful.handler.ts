@@ -152,7 +152,7 @@ export class DepositSuccessfulHandler {
     const amountBase = ConvertCurrency.toBase(
       amountStr,
       currency,
-      toCryptoNetwork(network),
+      wallet.defaultNetwork as CryptoNetwork,
     );
 
     let createdTransactionId: string;
@@ -250,7 +250,7 @@ export class DepositSuccessfulHandler {
         const newOriginalBalance = ConvertCurrency.fromBase(
           BigInt(newBaseStr),
           currency,
-          toCryptoNetwork(network),
+          wallet.defaultNetwork as CryptoNetwork,
         );
 
         await tx.$executeRaw`
@@ -275,7 +275,11 @@ export class DepositSuccessfulHandler {
           const ngnValue = new Decimal(cryptoNgnPrice).mul(
             new Decimal(amountStr),
           );
-          ngnAmountBase = ConvertCurrency.toBase(ngnValue.toFixed(2), 'ngn');
+          ngnAmountBase = ConvertCurrency.toBase(
+            ngnValue.toFixed(2),
+            'ngn',
+            undefined,
+          );
         }
         const ngnDec = toDecimal(ngnAmountBase);
         await tx.$executeRaw`

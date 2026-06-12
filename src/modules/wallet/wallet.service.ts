@@ -33,6 +33,21 @@ export class WalletService {
     private readonly tickerService: QuidaxTickerService,
   ) {}
 
+  private fromStoredWalletBase(
+    amount: unknown,
+    currency: string,
+    isCrypto: boolean,
+    defaultNetwork?: string | null,
+  ): number {
+    const walletScale = isCrypto
+      ? (defaultNetwork as CryptoNetwork | undefined)
+      : undefined;
+
+    return Number(
+      ConvertCurrency.fromBase(toBigInt(amount as any), currency, walletScale),
+    );
+  }
+
   private getUsdPrice(tickers: Record<string, any>, currency: string): number {
     const curr = currency.toLowerCase();
 
@@ -120,44 +135,32 @@ export class WalletService {
     let totalReservedNaira = 0;
 
     const processed: TransformedWallet[] = wallets.map((w) => {
-      const balanceNum = Number(
-        ConvertCurrency.fromBase(
-          toBigInt(w.baseBalance),
-          w.currency,
-          w.isCrypto
-            ? (w.defaultNetwork as CryptoNetwork) || undefined
-            : undefined,
-        ),
+      const balanceNum = this.fromStoredWalletBase(
+        w.baseBalance,
+        w.currency,
+        w.isCrypto,
+        w.defaultNetwork,
       );
 
-      const reservedNum = Number(
-        ConvertCurrency.fromBase(
-          toBigInt(w.reservedBalance),
-          w.currency,
-          w.isCrypto
-            ? (w.defaultNetwork as CryptoNetwork) || undefined
-            : undefined,
-        ),
+      const reservedNum = this.fromStoredWalletBase(
+        w.reservedBalance,
+        w.currency,
+        w.isCrypto,
+        w.defaultNetwork,
       );
 
-      const lockedNum = Number(
-        ConvertCurrency.fromBase(
-          toBigInt(w.lockedAmount || 0),
-          w.currency,
-          w.isCrypto
-            ? (w.defaultNetwork as CryptoNetwork) || undefined
-            : undefined,
-        ),
+      const lockedNum = this.fromStoredWalletBase(
+        w.lockedAmount || 0,
+        w.currency,
+        w.isCrypto,
+        w.defaultNetwork,
       );
 
-      const stackedNum = Number(
-        ConvertCurrency.fromBase(
-          toBigInt(w.stackedAmount || 0),
-          w.currency,
-          w.isCrypto
-            ? (w.defaultNetwork as CryptoNetwork) || undefined
-            : undefined,
-        ),
+      const stackedNum = this.fromStoredWalletBase(
+        w.stackedAmount || 0,
+        w.currency,
+        w.isCrypto,
+        w.defaultNetwork,
       );
 
       const availableBalance = balanceNum - reservedNum;

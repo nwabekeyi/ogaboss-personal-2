@@ -28,7 +28,9 @@ export class AddressGeneratedHandler {
     });
 
     if (!localUser) {
-      this.logger.debug('Skipping address-generated webhook for unknown Quidax user');
+      this.logger.debug(
+        'Skipping address-generated webhook for unknown Quidax user',
+      );
       return;
     }
 

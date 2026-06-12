@@ -90,12 +90,17 @@ export class BillsService {
     const totalToPay = cryptoAmount
       .plus(feeAmount)
       .toDecimalPlaces(6, Decimal.ROUND_CEIL);
+    const walletNetwork = wallet.defaultNetwork as any;
     const cryptoMinor = ConvertCurrency.toBase(
       cryptoAmount.toFixed(6),
       'USDT',
-      6,
+      walletNetwork,
     );
-    const feeMinor = ConvertCurrency.toBase(feeAmount.toFixed(6), 'USDT', 6);
+    const feeMinor = ConvertCurrency.toBase(
+      feeAmount.toFixed(6),
+      'USDT',
+      walletNetwork,
+    );
     const totalMinor = cryptoMinor + feeMinor;
     const available =
       BigInt(wallet.baseBalance.toFixed(0)) -
@@ -113,6 +118,7 @@ export class BillsService {
       quoteId,
       userId,
       walletId: wallet.id,
+      walletNetwork: wallet.defaultNetwork,
       categoryId: category.id,
       category: category.key,
       billerCode: dto.billerCode,
@@ -175,6 +181,7 @@ export class BillsService {
     const netFiatBase = ConvertCurrency.toBase(
       String(quote.billAmountNgn),
       'NGN',
+      undefined,
     );
 
     const { transaction, billPayment } = await this.prisma.$transaction(
@@ -189,6 +196,7 @@ export class BillsService {
           userId,
           'USDT',
           totalMinor,
+          wallet.defaultNetwork,
         );
         const reserved = await this.companyLiquidityService.reserveLiquidity(
           BASE_CURRENCY,
@@ -339,7 +347,10 @@ export class BillsService {
           where: { id: transaction.id },
           select: { paymentMetadata: true },
         });
-        const currentMeta = (current?.paymentMetadata || {}) as Record<string, any>;
+        const currentMeta = (current?.paymentMetadata || {}) as Record<
+          string,
+          any
+        >;
 
         if (quidaxOrderAccepted) {
           await tx.transaction.update({
@@ -368,7 +379,8 @@ export class BillsService {
               status: 'PROCESSING' as any,
               paymentStatus: 'PENDING' as any,
               gatewayResponse: JSON.stringify({
-                error: (error as any)?.message || 'local_reference_persist_failed',
+                error:
+                  (error as any)?.message || 'local_reference_persist_failed',
                 quidaxOrderReference: providerReference,
                 quidaxOrderId,
                 reconciliationRequired: true,

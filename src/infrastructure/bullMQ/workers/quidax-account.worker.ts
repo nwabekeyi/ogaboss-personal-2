@@ -11,7 +11,10 @@ import {
   CryptoNetwork,
   SUPPORTED_CRYPTO_CURRENCIES,
 } from '../../../shared';
-import { PaymentAddressStatus, Prisma } from '../../databases/prisma/generated/prisma/client';
+import {
+  PaymentAddressStatus,
+  Prisma,
+} from '../../databases/prisma/generated/prisma/client';
 
 @Processor(QueueName.QUIDAX_ACCOUNT, { concurrency: 10 })
 export class QuidaxAccountWorker extends WorkerHost {
@@ -61,7 +64,7 @@ export class QuidaxAccountWorker extends WorkerHost {
     await this.handleWalletSync({ data: { userId, quidaxUserId } } as any);
   }
 
-    private async handleWalletSync(job: Job<any>) {
+  private async handleWalletSync(job: Job<any>) {
     const { userId, quidaxUserId } = job.data;
 
     // Run wallet synchronization in a transaction
@@ -91,10 +94,10 @@ export class QuidaxAccountWorker extends WorkerHost {
             where: {
               symbol: {
                 equals: currency.toUpperCase(),
-                mode: 'insensitive'
-              }
+                mode: 'insensitive',
+              },
             },
-            select: { id: true }
+            select: { id: true },
           });
 
           const wallet = await tx.wallet.upsert({
@@ -110,7 +113,9 @@ export class QuidaxAccountWorker extends WorkerHost {
               defaultNetwork: w.default_network ?? null,
               user: { connect: { id: userId } },
               // Set the relation instead of the foreign key directly
-              ...(currencyRecord ? { cryptoCurrency: { connect: { id: currencyRecord.id } } } : {}),
+              ...(currencyRecord
+                ? { cryptoCurrency: { connect: { id: currencyRecord.id } } }
+                : {}),
             },
             update: {
               baseBalance,
@@ -143,13 +148,16 @@ export class QuidaxAccountWorker extends WorkerHost {
     });
   }
 
-    private async ensurePaymentAddress(tx: Prisma.TransactionClient, params: {
-    walletId: string;
-    currency: string;
-    network: string;
-    networkName: string;
-    quidaxUserId: string;
-  }): Promise<void> {
+  private async ensurePaymentAddress(
+    tx: Prisma.TransactionClient,
+    params: {
+      walletId: string;
+      currency: string;
+      network: string;
+      networkName: string;
+      quidaxUserId: string;
+    },
+  ): Promise<void> {
     const { walletId, currency, network, networkName, quidaxUserId } = params;
 
     let addressRecord: {

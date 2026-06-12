@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../../infrastructure/databases/prisma/prisma.service';
-import { ALLOWED_CURRENCIES } from '../../../shared';
+import { ALLOWED_CURRENCIES, CURRENCY_PRECISION } from '../../../shared';
 import { CompanyLiquidityService } from '../../transaction/services/company-liquidity.service';
 import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 
@@ -42,16 +42,17 @@ export class InternalBalanceScheduler implements OnModuleInit {
         result._sum.stackedAmount,
         result._sum.totalStackedInterest,
         result._sum.totalLockedInterest,
-      ].reduce(
-        (total, value) => total + BigInt(value?.toFixed(0) || '0'),
-        0n,
-      );
+      ].reduce((total, value) => total + BigInt(value?.toFixed(0) || '0'), 0n);
 
       await this.prisma.companyLiquidity.upsert({
         where: { currency: currency.toLowerCase() },
         update: { internalBalance: totalInternalBalance.toString() },
         create: {
           currency: currency.toLowerCase(),
+          network:
+            CURRENCY_PRECISION[
+              currency.toLowerCase() as keyof typeof CURRENCY_PRECISION
+            ]?.[0]?.id ?? null,
           totalBalance: '0',
           reservedBalance: '0',
           internalBalance: totalInternalBalance.toString(),
