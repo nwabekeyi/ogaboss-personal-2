@@ -1,5 +1,8 @@
 import 'dotenv/config';
-import { PrismaClient, Status } from '../infrastructure/databases/prisma/generated/prisma/client';
+import {
+  PrismaClient,
+  Status,
+} from '../infrastructure/databases/prisma/generated/prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import axios from 'axios';
 import { ALLOWED_CURRENCIES, ConvertCurrency, CryptoNetwork } from '../shared';
@@ -34,24 +37,33 @@ class QuidaxApiClient {
   private apiKey: string;
 
   constructor() {
-    this.baseUrl = process.env.QUIDAX_API_URL || 'https://api.quidax.com/api/v1';
+    this.baseUrl =
+      process.env.QUIDAX_API_URL || 'https://api.quidax.com/api/v1';
     this.apiKey = process.env.QUIDAX_API_SECRET_KEY || '';
   }
 
-  async getUserWallet(userId: string, currency: string): Promise<QuidaxWallet | null> {
+  async getUserWallet(
+    userId: string,
+    currency: string,
+  ): Promise<QuidaxWallet | null> {
     try {
-      const response = await axios.get(`${this.baseUrl}/users/${userId}/wallets/${currency}`, {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
+      const response = await axios.get(
+        `${this.baseUrl}/users/${userId}/wallets/${currency}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiKey}`,
+          },
         },
-      });
+      );
       return response.data?.data || null;
     } catch (error: any) {
       if (error.response?.status === 404) {
         return null;
       }
-      throw new Error(`Failed to fetch wallet ${currency} for user ${userId}: ${error.message}`);
+      throw new Error(
+        `Failed to fetch wallet ${currency} for user ${userId}: ${error.message}`,
+      );
     }
   }
 }
@@ -80,18 +92,18 @@ async function reconcileWallets(): Promise<void> {
     errors: [],
   };
 
-   try {
-     const users = await prisma.user.findMany({
-       where: {
-         status: { not: Status.DELETED },
-         quidaxAccountId: { not: null },
-       },
-       select: {
-         id: true,
-         email: true,
-         quidaxAccountId: true,
-       },
-     });
+  try {
+    const users = await prisma.user.findMany({
+      where: {
+        status: { not: Status.DELETED },
+        quidaxAccountId: { not: null },
+      },
+      select: {
+        id: true,
+        email: true,
+        quidaxAccountId: true,
+      },
+    });
 
     summary.totalUsers = users.length;
     console.log(`Found ${users.length} users with Quidax accounts`);
@@ -110,11 +122,13 @@ async function reconcileWallets(): Promise<void> {
         try {
           const quidaxWallet = await quidaxClient.getUserWallet(
             user.quidaxAccountId,
-            currency
+            currency,
           );
 
           if (!quidaxWallet) {
-            console.log(`Skipping ${currency} for user ${user.email} - wallet not found in Quidax`);
+            console.log(
+              `Skipping ${currency} for user ${user.email} - wallet not found in Quidax`,
+            );
             summary.skipped++;
             continue;
           }
@@ -123,7 +137,7 @@ async function reconcileWallets(): Promise<void> {
           const baseBalance = ConvertCurrency.toBase(
             balanceStr,
             currency,
-            (quidaxWallet.default_network || currency) as CryptoNetwork
+            (quidaxWallet.default_network || currency) as CryptoNetwork,
           );
 
           await prisma.wallet.upsert({
@@ -150,7 +164,9 @@ async function reconcileWallets(): Promise<void> {
           });
 
           summary.upserted++;
-          console.log(`Upserted wallet ${currency} for user ${user.email} (balance: ${balanceStr})`);
+          console.log(
+            `Upserted wallet ${currency} for user ${user.email} (balance: ${balanceStr})`,
+          );
         } catch (error: any) {
           const errorMsg = `Failed to reconcile ${currency} for user ${user.email}: ${error.message}`;
           console.error(errorMsg);
@@ -177,7 +193,6 @@ async function reconcileWallets(): Promise<void> {
     }
 
     console.log(`\nCompleted at: ${new Date().toISOString()}`);
-
   } catch (error: any) {
     console.error('Fatal error during reconciliation:', error);
     summary.errors.push(`Fatal error: ${error.message}`);

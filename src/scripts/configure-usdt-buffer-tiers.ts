@@ -26,40 +26,114 @@ const CONFIGS: CurrencyBufferConfig[] = [
     symbol: 'BTC',
     defaultBufferPercent: 1.5,
     tiers: [
-      { orderType: 'BUY', minAmount: '0', maxAmount: '0.01', bufferPercent: 2.0 },
-      { orderType: 'BUY', minAmount: '0.01000001', maxAmount: '0.1', bufferPercent: 1.5 },
-      { orderType: 'BUY', minAmount: '0.10000001', maxAmount: '10', bufferPercent: 1.0 },
-      { orderType: 'SELL', minAmount: '0', maxAmount: '0.01', bufferPercent: 2.0 },
-      { orderType: 'SELL', minAmount: '0.01000001', maxAmount: '0.1', bufferPercent: 1.5 },
-      { orderType: 'SELL', minAmount: '0.10000001', maxAmount: '10', bufferPercent: 1.0 },
+      {
+        orderType: 'BUY',
+        minAmount: '0',
+        maxAmount: '0.01',
+        bufferPercent: 2.0,
+      },
+      {
+        orderType: 'BUY',
+        minAmount: '0.01000001',
+        maxAmount: '0.1',
+        bufferPercent: 1.5,
+      },
+      {
+        orderType: 'BUY',
+        minAmount: '0.10000001',
+        maxAmount: '10',
+        bufferPercent: 1.0,
+      },
+      {
+        orderType: 'SELL',
+        minAmount: '0',
+        maxAmount: '0.01',
+        bufferPercent: 2.0,
+      },
+      {
+        orderType: 'SELL',
+        minAmount: '0.01000001',
+        maxAmount: '0.1',
+        bufferPercent: 1.5,
+      },
+      {
+        orderType: 'SELL',
+        minAmount: '0.10000001',
+        maxAmount: '10',
+        bufferPercent: 1.0,
+      },
     ],
   },
   {
     symbol: 'USDT',
     defaultBufferPercent: 1.0,
     tiers: [
-      { orderType: 'BUY', minAmount: '0', maxAmount: '100', bufferPercent: 2.0 },
-      { orderType: 'BUY', minAmount: '100.000001', maxAmount: '500', bufferPercent: 1.5 },
-      { orderType: 'BUY', minAmount: '500.000001', maxAmount: '1000000', bufferPercent: 1.0 },
-      { orderType: 'SELL', minAmount: '0', maxAmount: '100', bufferPercent: 2.0 },
-      { orderType: 'SELL', minAmount: '100.000001', maxAmount: '500', bufferPercent: 1.5 },
-      { orderType: 'SELL', minAmount: '500.000001', maxAmount: '1000000', bufferPercent: 1.0 },
+      {
+        orderType: 'BUY',
+        minAmount: '0',
+        maxAmount: '100',
+        bufferPercent: 2.0,
+      },
+      {
+        orderType: 'BUY',
+        minAmount: '100.000001',
+        maxAmount: '500',
+        bufferPercent: 1.5,
+      },
+      {
+        orderType: 'BUY',
+        minAmount: '500.000001',
+        maxAmount: '1000000',
+        bufferPercent: 1.0,
+      },
+      {
+        orderType: 'SELL',
+        minAmount: '0',
+        maxAmount: '100',
+        bufferPercent: 2.0,
+      },
+      {
+        orderType: 'SELL',
+        minAmount: '100.000001',
+        maxAmount: '500',
+        bufferPercent: 1.5,
+      },
+      {
+        orderType: 'SELL',
+        minAmount: '500.000001',
+        maxAmount: '1000000',
+        bufferPercent: 1.0,
+      },
     ],
   },
 ];
 
-function assertValidTier(t: BufferTierInput, idx: number, symbol: string): void {
+function assertValidTier(
+  t: BufferTierInput,
+  idx: number,
+  symbol: string,
+): void {
   if (!t.minAmount || !t.maxAmount) {
-    throw new Error(`[${symbol}] tier #${idx + 1}: minAmount and maxAmount are required`);
+    throw new Error(
+      `[${symbol}] tier #${idx + 1}: minAmount and maxAmount are required`,
+    );
   }
 
   const min = new Decimal(t.minAmount);
   const max = new Decimal(t.maxAmount);
   if (!min.isFinite() || !max.isFinite() || min.lt(0) || max.lt(min)) {
-    throw new Error(`[${symbol}] tier #${idx + 1}: invalid range min=${t.minAmount}, max=${t.maxAmount}`);
+    throw new Error(
+      `[${symbol}] tier #${idx + 1}: invalid range min=${t.minAmount}, max=${t.maxAmount}`,
+    );
   }
-  if (!Number.isFinite(t.bufferPercent) || t.bufferPercent < 0 || t.bufferPercent > 100) {
-    throw new Error(`[${symbol}] tier #${idx + 1}: bufferPercent must be between 0 and 100`);
+  if (
+    !Number.isFinite(t.bufferPercent) ||
+    t.bufferPercent < 0 ||
+    t.bufferPercent > 100
+  ) {
+    throw new Error(
+      `[${symbol}] tier #${idx + 1}: bufferPercent must be between 0 and 100`,
+    );
   }
 }
 
@@ -70,27 +144,43 @@ async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
   });
 
   if (!crypto) {
-    throw new Error(`${config.symbol} cryptocurrency not found. Run seed first.`);
+    throw new Error(
+      `${config.symbol} cryptocurrency not found. Run seed first.`,
+    );
   }
 
   const network = (crypto.networks?.[0] as CryptoNetwork) || 'erc20';
 
   console.log(`\n=== Configuring ${config.symbol} buffer tiers ===`);
-  console.log(`cryptoId: ${crypto.id} | existing tiers: ${crypto.buffer_tiers.length}`);
+  console.log(
+    `cryptoId: ${crypto.id} | existing tiers: ${crypto.buffer_tiers.length}`,
+  );
 
   config.tiers.forEach((tier, i) => assertValidTier(tier, i, config.symbol));
 
   await prisma.$transaction(async (tx) => {
     await tx.cryptoCurrency.update({
       where: { id: crypto.id },
-      data: { defaultBufferPercent: new Decimal(config.defaultBufferPercent).toDecimalPlaces(2, Decimal.ROUND_HALF_UP) },
+      data: {
+        defaultBufferPercent: new Decimal(
+          config.defaultBufferPercent,
+        ).toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
+      },
     });
 
     await tx.bufferTier.deleteMany({ where: { cryptoId: crypto.id } });
 
     for (const tier of config.tiers) {
-      const minAmountBase = ConvertCurrency.toBase(tier.minAmount, config.symbol, network).toString();
-      const maxAmountBase = ConvertCurrency.toBase(tier.maxAmount, config.symbol, network).toString();
+      const minAmountBase = ConvertCurrency.toBase(
+        tier.minAmount,
+        config.symbol,
+        network,
+      ).toString();
+      const maxAmountBase = ConvertCurrency.toBase(
+        tier.maxAmount,
+        config.symbol,
+        network,
+      ).toString();
 
       await tx.bufferTier.create({
         data: {
@@ -98,7 +188,10 @@ async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
           orderType: tier.orderType,
           minAmount: minAmountBase,
           maxAmount: maxAmountBase,
-          bufferPercent: new Decimal(tier.bufferPercent).toDecimalPlaces(2, Decimal.ROUND_HALF_UP),
+          bufferPercent: new Decimal(tier.bufferPercent).toDecimalPlaces(
+            2,
+            Decimal.ROUND_HALF_UP,
+          ),
         },
       });
     }
@@ -111,9 +204,19 @@ async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
 
   console.log(`defaultBufferPercent: ${config.defaultBufferPercent}%`);
   for (const tier of updated) {
-    const minMajor = ConvertCurrency.fromBase(tier.minAmount.toString(), config.symbol, network);
-    const maxMajor = ConvertCurrency.fromBase(tier.maxAmount.toString(), config.symbol, network);
-    console.log(`  ${tier.orderType}: [${minMajor} - ${maxMajor}] => ${tier.bufferPercent}%`);
+    const minMajor = ConvertCurrency.fromBase(
+      tier.minAmount.toString(),
+      config.symbol,
+      network,
+    );
+    const maxMajor = ConvertCurrency.fromBase(
+      tier.maxAmount.toString(),
+      config.symbol,
+      network,
+    );
+    console.log(
+      `  ${tier.orderType}: [${minMajor} - ${maxMajor}] => ${tier.bufferPercent}%`,
+    );
   }
 }
 

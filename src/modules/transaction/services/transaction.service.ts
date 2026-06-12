@@ -43,13 +43,31 @@ export class TransactionService {
     userId: string,
     currency: string,
     amount: bigint,
+    walletDefaultNetwork?: string | null,
   ): Promise<void> {
+    const wallet = await tx.wallet.findFirst({
+      where: { userId, currency: { equals: currency, mode: 'insensitive' } },
+      select: { id: true, defaultNetwork: true },
+    });
+
+    if (!wallet) {
+      throw new BadRequestException(`${currency} wallet not found`);
+    }
+
+    if (
+      walletDefaultNetwork !== undefined &&
+      wallet.defaultNetwork !== walletDefaultNetwork
+    ) {
+      throw new BadRequestException(
+        `${currency} wallet network changed. Please request a new quote.`,
+      );
+    }
+
     const dec = toDecimal(amount);
     const result = await tx.$executeRaw`
       UPDATE "wallets"
       SET "reservedBalance" = "reservedBalance" + ${dec}
-      WHERE "userId" = ${userId}
-        AND LOWER("currency") = LOWER(${currency})
+      WHERE "id" = ${wallet.id}
         AND ("baseBalance" - "reservedBalance") >= ${dec}
     `;
 
@@ -63,13 +81,31 @@ export class TransactionService {
     userId: string,
     currency: string,
     amount: Decimalish,
+    walletDefaultNetwork?: string | null,
   ): Promise<void> {
+    const wallet = await tx.wallet.findFirst({
+      where: { userId, currency: { equals: currency, mode: 'insensitive' } },
+      select: { id: true, defaultNetwork: true },
+    });
+
+    if (!wallet) {
+      throw new BadRequestException(`${currency} wallet not found`);
+    }
+
+    if (
+      walletDefaultNetwork !== undefined &&
+      wallet.defaultNetwork !== walletDefaultNetwork
+    ) {
+      throw new BadRequestException(
+        `${currency} wallet network changed. Please retry this operation.`,
+      );
+    }
+
     const dec = toDecimal(toBigInt(amount));
     const result = await tx.$executeRaw`
       UPDATE "wallets"
       SET "reservedBalance" = "reservedBalance" - ${dec}
-      WHERE "userId" = ${userId}
-        AND LOWER("currency") = LOWER(${currency})
+      WHERE "id" = ${wallet.id}
         AND "reservedBalance" >= ${dec}
     `;
 
@@ -79,22 +115,22 @@ export class TransactionService {
   }
 
   async enforceConfirmationCooldown(userId: string): Promise<void> {
-      const cooldownKey = `${COOLDOWN_KEY_PREFIX}${userId}`;
+    const cooldownKey = `${COOLDOWN_KEY_PREFIX}${userId}`;
 
-      const lastConfirmationTimeStr = await this.tempStore.get(cooldownKey);
+    const lastConfirmationTimeStr = await this.tempStore.get(cooldownKey);
 
-      if (lastConfirmationTimeStr) {
-          const lastTime = parseInt(lastConfirmationTimeStr, 10);
-          const now = Date.now();
-          const secondsSinceLast = (now - lastTime) / 1000;
+    if (lastConfirmationTimeStr) {
+      const lastTime = parseInt(lastConfirmationTimeStr, 10);
+      const now = Date.now();
+      const secondsSinceLast = (now - lastTime) / 1000;
 
-          if (secondsSinceLast < QUOTE_COOLDOWN_SECONDS) {
-              const remaining = Math.ceil(QUOTE_COOLDOWN_SECONDS - secondsSinceLast);
-              throw new BadRequestException(
-                  `Please wait ${remaining} second${remaining > 1 ? 's' : ''} before making another confirmation.`,
-              );
-          }
+      if (secondsSinceLast < QUOTE_COOLDOWN_SECONDS) {
+        const remaining = Math.ceil(QUOTE_COOLDOWN_SECONDS - secondsSinceLast);
+        throw new BadRequestException(
+          `Please wait ${remaining} second${remaining > 1 ? 's' : ''} before making another confirmation.`,
+        );
       }
+    }
   }
 
   /**
@@ -106,41 +142,44 @@ export class TransactionService {
    * @throws BadRequestException if price has slipped beyond acceptable limits
    */
   async checkPriceSlippage(
-      cryptoSymbol: string,
-      fiatSymbol: string,
-      quotedPrice: string,
-      isBuy: boolean
+    cryptoSymbol: string,
+    fiatSymbol: string,
+    quotedPrice: string,
+    isBuy: boolean,
   ): Promise<void> {
-      const pair = `${cryptoSymbol.toLowerCase()}${fiatSymbol.toLowerCase()}`;
-      let currentPriceStr = await this.quidaxTickerService.fetchSingleTicker(pair);
-      
-      if (!currentPriceStr) {
-          // Fallback to getPrice method if fetchSingleTicker fails
-          const price = await this.quidaxTickerService.getPrice(pair);
-          if (!price || parseFloat(price) <= 0) {
-              throw new BadRequestException('Unable to fetch current market price for slippage protection');
-          }
-          currentPriceStr = price;
-      }
+    const pair = `${cryptoSymbol.toLowerCase()}${fiatSymbol.toLowerCase()}`;
+    let currentPriceStr =
+      await this.quidaxTickerService.fetchSingleTicker(pair);
 
-      const currentPriceDec = new Decimal(currentPriceStr);
-      const quotedPriceDec = new Decimal(quotedPrice);
-
-      if (isBuy) {
-          // For buy: current price should not exceed quoted buffered price
-          if (currentPriceDec.gt(quotedPriceDec)) {
-              throw new BadRequestException(
-                  `Price has slipped beyond the guaranteed rate. Current price: ${currentPriceStr}, guaranteed rate: ${quotedPrice}. Please request a new quote.`,
-              );
-          }
-      } else {
-          // For sell: current price should not go below quoted buffered price
-          if (currentPriceDec.lt(quotedPriceDec)) {
-              throw new BadRequestException(
-                  `Price has slipped below the guaranteed rate. Current price: ${currentPriceStr}, guaranteed rate: ${quotedPrice}. Please request a new quote.`,
-              );
-          }
+    if (!currentPriceStr) {
+      // Fallback to getPrice method if fetchSingleTicker fails
+      const price = await this.quidaxTickerService.getPrice(pair);
+      if (!price || parseFloat(price) <= 0) {
+        throw new BadRequestException(
+          'Unable to fetch current market price for slippage protection',
+        );
       }
+      currentPriceStr = price;
+    }
+
+    const currentPriceDec = new Decimal(currentPriceStr);
+    const quotedPriceDec = new Decimal(quotedPrice);
+
+    if (isBuy) {
+      // For buy: current price should not exceed quoted buffered price
+      if (currentPriceDec.gt(quotedPriceDec)) {
+        throw new BadRequestException(
+          `Price has slipped beyond the guaranteed rate. Current price: ${currentPriceStr}, guaranteed rate: ${quotedPrice}. Please request a new quote.`,
+        );
+      }
+    } else {
+      // For sell: current price should not go below quoted buffered price
+      if (currentPriceDec.lt(quotedPriceDec)) {
+        throw new BadRequestException(
+          `Price has slipped below the guaranteed rate. Current price: ${currentPriceStr}, guaranteed rate: ${quotedPrice}. Please request a new quote.`,
+        );
+      }
+    }
   }
 
   /**

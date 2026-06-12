@@ -60,9 +60,6 @@ export class QuotationService {
     symbol: string,
     requestedNetwork?: string,
   ): Promise<CryptoNetwork | undefined> {
-    const trimmedNetwork = requestedNetwork?.trim();
-    if (trimmedNetwork) return trimmedNetwork as CryptoNetwork;
-
     const wallet = await this.prisma.wallet.findFirst({
       where: {
         userId,
@@ -114,15 +111,15 @@ export class QuotationService {
     amount: Decimal,
     fromSymbol: string,
   ): Promise<void> {
-     // If swapping FROM USDT, the amount is already in USDT
-     if (fromSymbol.toUpperCase() === 'USDT') {
-       if (amount.lt(MIN_TRANSACTION_USDT)) {
-         throw new BadRequestException(
-           `Minimum swap amount is ${MIN_TRANSACTION_USDT} USDT equivalent`,
-         );
-       }
-       return;
-     }
+    // If swapping FROM USDT, the amount is already in USDT
+    if (fromSymbol.toUpperCase() === 'USDT') {
+      if (amount.lt(MIN_TRANSACTION_USDT)) {
+        throw new BadRequestException(
+          `Minimum swap amount is ${MIN_TRANSACTION_USDT} USDT equivalent`,
+        );
+      }
+      return;
+    }
 
     const usdtPair = `${fromSymbol.toLowerCase()}usdt`;
     const usdtPrice = await this.tickerService.getPrice(usdtPair);
@@ -173,15 +170,19 @@ export class QuotationService {
         ? new Decimal(crypto.maxBufferPercent)
         : new Decimal(0),
 
-       buffer_tiers: (crypto.buffer_tiers ?? []).map((t: any) => ({
-         ...t,
-         bufferPercent: t.bufferPercent
-           ? new Decimal(t.bufferPercent)
-           : new Decimal(0),
+      buffer_tiers: (crypto.buffer_tiers ?? []).map((t: any) => ({
+        ...t,
+        bufferPercent: t.bufferPercent
+          ? new Decimal(t.bufferPercent)
+          : new Decimal(0),
 
-         minAmount: t.minAmount ? BigInt(new Decimal(t.minAmount).toFixed(0)) : null,
-         maxAmount: t.maxAmount ? BigInt(new Decimal(t.maxAmount).toFixed(0)) : null,
-       })),
+        minAmount: t.minAmount
+          ? BigInt(new Decimal(t.minAmount).toFixed(0))
+          : null,
+        maxAmount: t.maxAmount
+          ? BigInt(new Decimal(t.maxAmount).toFixed(0))
+          : null,
+      })),
     };
   }
 
@@ -281,14 +282,18 @@ export class QuotationService {
     await this.tempStore.set(cooldownKey, now, QUOTE_COOLDOWN_SECONDS + 10);
   }
 
-   // ===================================================================
-   // BUY QUOTE
-   // ===================================================================
-   async getBuyQuote(userId: string, dto: BuyQuoteDto & { network?: string }) {
-     const { crypto, amount, network } = dto;
+  // ===================================================================
+  // BUY QUOTE
+  // ===================================================================
+  async getBuyQuote(userId: string, dto: BuyQuoteDto & { network?: string }) {
+    const { crypto, amount, network } = dto;
 
     const symbol = crypto.toUpperCase();
-    const quoteNetwork = await this.resolveQuoteNetwork(userId, symbol, network);
+    const quoteNetwork = await this.resolveQuoteNetwork(
+      userId,
+      symbol,
+      network,
+    );
     const fiat = await this.getBaseFiat();
     const cryptoDecimals = getCurrencyDecimals(symbol, quoteNetwork);
 
@@ -304,28 +309,28 @@ export class QuotationService {
       throw new NotFoundException(`No valid price for ${marketPair}`);
     }
 
-     const marketPriceDec = new Decimal(marketPriceStr);
-     const bufferFactor = await this.getEffectiveBufferPercent(
-       symbol,
-       'buy',
-       volumeCryptoMinor,
-       quoteNetwork,
-     );
+    const marketPriceDec = new Decimal(marketPriceStr);
+    const bufferFactor = await this.getEffectiveBufferPercent(
+      symbol,
+      'buy',
+      volumeCryptoMinor,
+      quoteNetwork,
+    );
 
-     // bufferedPrice: the rate ceiling the company will execute at
-     const bufferedPriceDec = marketPriceDec.mul(
-       new Decimal(1).add(bufferFactor),
-     );
-     const bufferSpreadDec = bufferedPriceDec.sub(marketPriceDec);
+    // bufferedPrice: the rate ceiling the company will execute at
+    const bufferedPriceDec = marketPriceDec.mul(
+      new Decimal(1).add(bufferFactor),
+    );
+    const bufferSpreadDec = bufferedPriceDec.sub(marketPriceDec);
 
-     // baseFiat: value of crypto at buffered price (before platform fee)
-     const baseFiatDec = new Decimal(amount).mul(bufferedPriceDec);
-     const platformFeeDec = baseFiatDec.mul(PLATFORM_SPREAD);
-     // totalFiat: full cost to user = baseFiat + platformFee
-     const totalFiatDec = baseFiatDec.add(platformFeeDec);
+    // baseFiat: value of crypto at buffered price (before platform fee)
+    const baseFiatDec = new Decimal(amount).mul(bufferedPriceDec);
+    const platformFeeDec = baseFiatDec.mul(PLATFORM_SPREAD);
+    // totalFiat: full cost to user = baseFiat + platformFee
+    const totalFiatDec = baseFiatDec.add(platformFeeDec);
 
-     // Validate the base transaction amount (excludes platform fee)
-     await this.validateMinimumAmount(baseFiatDec, symbol);
+    // Validate the base transaction amount (excludes platform fee)
+    await this.validateMinimumAmount(baseFiatDec, symbol);
 
     const marketPriceMinor = this.toMinorString(marketPriceDec, fiat.code);
     const bufferedPriceMinor = this.toMinorString(bufferedPriceDec, fiat.code);
@@ -374,40 +379,61 @@ export class QuotationService {
           symbol,
           quoteNetwork,
         ),
-        marketRate: ConvertCurrency.fromBase(marketPriceMinor, fiat.code),
-        bufferedRate: ConvertCurrency.fromBase(bufferedPriceMinor, fiat.code),
-        bufferSpread: ConvertCurrency.fromBase(bufferSpreadMinor, fiat.code),
-        transactionFee: ConvertCurrency.fromBase(platformFeeMinor, fiat.code),
-        totalToPay: ConvertCurrency.fromBase(totalFiatMinor, fiat.code),
+        marketRate: ConvertCurrency.fromBase(
+          marketPriceMinor,
+          fiat.code,
+          undefined,
+        ),
+        bufferedRate: ConvertCurrency.fromBase(
+          bufferedPriceMinor,
+          fiat.code,
+          undefined,
+        ),
+        bufferSpread: ConvertCurrency.fromBase(
+          bufferSpreadMinor,
+          fiat.code,
+          undefined,
+        ),
+        transactionFee: ConvertCurrency.fromBase(
+          platformFeeMinor,
+          fiat.code,
+          undefined,
+        ),
+        totalToPay: ConvertCurrency.fromBase(
+          totalFiatMinor,
+          fiat.code,
+          undefined,
+        ),
         bufferPercent: bufferFactor.mul(100).toFixed(2),
         expiresIn: `${QUOTE_TTL_SECONDS}s`,
       },
     };
   }
 
-   // ===================================================================
-   // SELL QUOTE
-   // ===================================================================
-   async getSellQuote(userId: string, dto: SellQuoteDto & { network?: string }) {
-     const { crypto, amount, network } = dto;
+  // ===================================================================
+  // SELL QUOTE
+  // ===================================================================
+  async getSellQuote(userId: string, dto: SellQuoteDto & { network?: string }) {
+    const { crypto, amount, network } = dto;
 
     const symbol = crypto.toUpperCase();
     const fiat = await this.getBaseFiat();
-    const cryptoDecimals = getCurrencyDecimals(
-      symbol,
-      network as CryptoNetwork,
-    );
-
     await this.transactionService.validateNetworkExists(
       userId,
       symbol,
       network,
     );
+    const quoteNetwork = await this.resolveQuoteNetwork(
+      userId,
+      symbol,
+      network,
+    );
+    const cryptoDecimals = getCurrencyDecimals(symbol, quoteNetwork);
 
     const exactCryptoMinor = ConvertCurrency.toBase(
       new Decimal(amount).toFixed(cryptoDecimals),
       symbol,
-      network as CryptoNetwork,
+      quoteNetwork,
     );
 
     const marketPair = `${symbol.toLowerCase()}${fiat.code.toLowerCase()}`;
@@ -415,25 +441,25 @@ export class QuotationService {
     if (!marketPriceStr || parseFloat(marketPriceStr) <= 0) {
       throw new NotFoundException(`No valid price for ${marketPair}`);
     }
-     const marketPriceDec = new Decimal(marketPriceStr);
+    const marketPriceDec = new Decimal(marketPriceStr);
 
-     const bufferFactor = await this.getEffectiveBufferPercent(
-       symbol,
-       'sell',
-       exactCryptoMinor,
-       network as CryptoNetwork,
-     );
+    const bufferFactor = await this.getEffectiveBufferPercent(
+      symbol,
+      'sell',
+      exactCryptoMinor,
+      quoteNetwork,
+    );
 
-     const bufferedPriceDec = marketPriceDec.mul(
-       new Decimal(1).sub(bufferFactor),
-     );
-     const bufferSpreadDec = marketPriceDec.sub(bufferedPriceDec);
-     const grossFiatDec = new Decimal(amount).mul(bufferedPriceDec);
-     const platformFeeCryptoDec = new Decimal(amount).mul(PLATFORM_SPREAD);
-     const netFiatDec = grossFiatDec;
+    const bufferedPriceDec = marketPriceDec.mul(
+      new Decimal(1).sub(bufferFactor),
+    );
+    const bufferSpreadDec = marketPriceDec.sub(bufferedPriceDec);
+    const grossFiatDec = new Decimal(amount).mul(bufferedPriceDec);
+    const platformFeeCryptoDec = new Decimal(amount).mul(PLATFORM_SPREAD);
+    const netFiatDec = grossFiatDec;
 
-     // Validate the gross transaction amount (before platform fee deduction)
-     await this.validateMinimumAmount(grossFiatDec, symbol, new Decimal(amount));
+    // Validate the gross transaction amount (before platform fee deduction)
+    await this.validateMinimumAmount(grossFiatDec, symbol, new Decimal(amount));
 
     const marketPriceMinor = this.toMinorString(marketPriceDec, fiat.code);
     const bufferedPriceMinor = this.toMinorString(bufferedPriceDec, fiat.code);
@@ -442,7 +468,7 @@ export class QuotationService {
     const platformFeeMinor = ConvertCurrency.toBase(
       platformFeeCryptoDec.toFixed(cryptoDecimals),
       symbol,
-      network as CryptoNetwork,
+      quoteNetwork,
     ).toString();
     const netFiatMinor = this.toMinorString(netFiatDec, fiat.code);
 
@@ -486,18 +512,38 @@ export class QuotationService {
         cryptoAmount: ConvertCurrency.formatCryptoForQuote(
           exactCryptoMinor.toString(),
           symbol,
-          network as CryptoNetwork,
+          quoteNetwork,
         ),
-        marketRate: ConvertCurrency.fromBase(marketPriceMinor, fiat.code),
-        bufferedRate: ConvertCurrency.fromBase(bufferedPriceMinor, fiat.code),
-        bufferSpread: ConvertCurrency.fromBase(bufferSpreadMinor, fiat.code),
-        grossFiat: ConvertCurrency.fromBase(grossFiatMinor, fiat.code),
+        marketRate: ConvertCurrency.fromBase(
+          marketPriceMinor,
+          fiat.code,
+          undefined,
+        ),
+        bufferedRate: ConvertCurrency.fromBase(
+          bufferedPriceMinor,
+          fiat.code,
+          undefined,
+        ),
+        bufferSpread: ConvertCurrency.fromBase(
+          bufferSpreadMinor,
+          fiat.code,
+          undefined,
+        ),
+        grossFiat: ConvertCurrency.fromBase(
+          grossFiatMinor,
+          fiat.code,
+          undefined,
+        ),
         transactionFee: ConvertCurrency.fromBase(
           platformFeeMinor,
           symbol,
-          network as CryptoNetwork,
+          quoteNetwork,
         ),
-        estimatedFiat: ConvertCurrency.fromBase(netFiatMinor, fiat.code),
+        estimatedFiat: ConvertCurrency.fromBase(
+          netFiatMinor,
+          fiat.code,
+          undefined,
+        ),
         bufferPercent: bufferFactor.mul(100).toFixed(2),
         expiresIn: `${QUOTE_TTL_SECONDS}s`,
       },
@@ -567,16 +613,12 @@ export class QuotationService {
 
     const quotationData = swapQuotation?.data;
     if (!quotationData?.id) {
-      throw new BadRequestException(
-        `Swapping is unavailable at the moment`,
-      );
+      throw new BadRequestException(`Swapping is unavailable at the moment`);
     }
 
     const pairPriceStr = quotationData.quoted_price;
     if (!pairPriceStr || parseFloat(pairPriceStr) <= 0) {
-      throw new BadRequestException(
-        `Swap not available at the moment`,
-      );
+      throw new BadRequestException(`Swap not available at the moment`);
     }
 
     // Quidax quoted_price is already the target-currency amount per one

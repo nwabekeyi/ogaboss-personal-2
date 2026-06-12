@@ -553,7 +553,11 @@ export class AutoStackService {
             principalUsdtAmount: principalUsdtOriginal,
             principalUsdtAmountBase: principalUsdtMinor.toString(),
             transactionFeeBase: transactionFeeMinor.toString(),
-            transactionFee: ConvertCurrency.fromBase(transactionFeeMinor, 'USDT', 6),
+            transactionFee: ConvertCurrency.fromBase(
+              transactionFeeMinor,
+              'USDT',
+              6,
+            ),
             sourceAmount: sourceAmountOriginal,
             sourceAmountBase: sourceAmountMinor.toString(),
             autostackInitiationStatus: 'PENDING',
@@ -916,11 +920,13 @@ export class AutoStackService {
                 platformFeeOriginal: ConvertCurrency.fromBase(
                   sourceFeeBase,
                   sourceAsset,
+                  undefined,
                 ),
                 totalAmountSentBase: totalSourceWalletDeductionBase.toString(),
                 totalAmountSentOriginal: ConvertCurrency.fromBase(
                   totalSourceWalletDeductionBase,
                   sourceAsset,
+                  undefined,
                 ),
                 fiatAmountBase: principalUsdtBase.toString(),
                 fiatAmountOriginal: principalUsdtOriginal,
@@ -955,7 +961,8 @@ export class AutoStackService {
               throw new Error(
                 `USDT wallet not found for autostack ${stack.id}`,
               );
-            const totalWalletDeductionBase = sourceAmountBase + transactionFeeBase;
+            const totalWalletDeductionBase =
+              sourceAmountBase + transactionFeeBase;
             const walletUpdateResult = await tx.$queryRaw<
               { baseBalance: string }[]
             >`
@@ -1099,11 +1106,17 @@ export class AutoStackService {
       const totalUsdtChargeOriginal = new Decimal(principalUsdtOriginal).add(
         ConvertCurrency.fromBase(transactionFeeBase, 'USDT', 6),
       );
-      const principalNgnAmount = new Decimal(principalUsdtOriginal).mul(usdtNgnRate);
+      const principalNgnAmount = new Decimal(principalUsdtOriginal).mul(
+        usdtNgnRate,
+      );
       const ngnAmount = totalUsdtChargeOriginal.mul(usdtNgnRate);
       const companyLiquidityAmountBase = this.toNgnBase(principalNgnAmount);
       const ngnAmountBase = this.toNgnBase(ngnAmount);
-      const ngnAmountOriginal = ConvertCurrency.fromBase(ngnAmountBase, 'NGN');
+      const ngnAmountOriginal = ConvertCurrency.fromBase(
+        ngnAmountBase,
+        'NGN',
+        undefined,
+      );
       const chargeReference = configTx.transactionUniqueId;
 
       await this.prisma.$transaction(async (tx) => {

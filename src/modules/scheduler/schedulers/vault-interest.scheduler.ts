@@ -22,30 +22,32 @@ export class VaultInterestScheduler {
     private readonly schedulerState: SchedulerExecutionStateService,
   ) {}
 
-@Cron('35 */12 * * *') // Staggered: every 12h at :35
-    async calculateVaultInterests() {
-      if (!isDedicatedSchedulerRuntime()) return;
-      try {
-        await this.queueService.add(
-          QueueName.CLEANUP,
-          'scheduler.vault-interest.dispatch',
-          {},
-          { jobId: `scheduler.vault-interest.dispatch-${new Date().toISOString().slice(0,16)}` },
-        );
-        return;
-      } catch {
-        // fallback to local execution
-      }
-      return this.execute();
+  @Cron('35 */12 * * *') // Staggered: every 12h at :35
+  async calculateVaultInterests() {
+    if (!isDedicatedSchedulerRuntime()) return;
+    try {
+      await this.queueService.add(
+        QueueName.CLEANUP,
+        'scheduler.vault-interest.dispatch',
+        {},
+        {
+          jobId: `scheduler.vault-interest.dispatch-${new Date().toISOString().slice(0, 16)}`,
+        },
+      );
+      return;
+    } catch {
+      // fallback to local execution
     }
+    return this.execute();
+  }
 
-   async execute() {
+  async execute() {
     const now = new Date();
     if (!(await this.schedulerState.isDue(this.JOB_NAME, now))) return;
     return this.dispatchDueMaturityShards();
-   }
+  }
 
-   async dispatchDueMaturityShards() {
+  async dispatchDueMaturityShards() {
     const now = new Date();
     const runKey = `lock:scheduler:vault-interest:dispatch:${now.toISOString().slice(0, 13)}`;
     const lockAcquired = await this.tempStore.setNx(runKey, '1', 60 * 20);
@@ -64,21 +66,23 @@ export class VaultInterestScheduler {
       if (page.length === 0) break;
       const ids = page.map((p) => p.id);
       cursor = ids[ids.length - 1];
-        await this.queueService.add(
-          QueueName.CLEANUP,
-          'scheduler.vault-interest.shard',
-          { ids, asOf: now.toISOString() },
-          { jobId: `scheduler.vault-interest.shard-${now.toISOString().slice(0, 13)}-${shardIndex++}` },
-        );
+      await this.queueService.add(
+        QueueName.CLEANUP,
+        'scheduler.vault-interest.shard',
+        { ids, asOf: now.toISOString() },
+        {
+          jobId: `scheduler.vault-interest.shard-${now.toISOString().slice(0, 13)}-${shardIndex++}`,
+        },
+      );
     }
     await this.schedulerState.markExecuted(
       this.JOB_NAME,
       now,
       new Date(now.getTime() + 12 * 60 * 60 * 1000),
     );
-   }
+  }
 
-   async executeShard(ids: string[], asOfIso: string) {
+  async executeShard(ids: string[], asOfIso: string) {
     this.logger.log('Starting vault maturity/interest scheduler shard...');
 
     const asOf = new Date(asOfIso);
@@ -130,9 +134,12 @@ export class VaultInterestScheduler {
           const amountLocked = BigInt(vault.amountLocked.toFixed(0));
           const totalGain = BigInt(vault.totalGain.toFixed(0));
           const amountToReceive = BigInt(vault.amountToReceive.toFixed(0));
-          const cryptoSymbol = crypto?.symbol?.toUpperCase() || vault.currencyId;
+          const cryptoSymbol =
+            crypto?.symbol?.toUpperCase() || vault.currencyId;
           const netInterestPaid =
-            amountToReceive > amountLocked ? amountToReceive - amountLocked : 0n;
+            amountToReceive > amountLocked
+              ? amountToReceive - amountLocked
+              : 0n;
 
           const [walletUpdate] = await tx.$queryRaw<{ baseBalance: string }[]>`
             UPDATE "wallets"
@@ -168,7 +175,8 @@ export class VaultInterestScheduler {
             },
           });
 
-          const companyCurrency = cryptoSymbol === 'BTC' ? 'USDT' : cryptoSymbol;
+          const companyCurrency =
+            cryptoSymbol === 'BTC' ? 'USDT' : cryptoSymbol;
           if (companyCurrency === 'USDT' || companyCurrency === 'USDC') {
             await tx.$executeRaw`
               UPDATE "company_liquidity"

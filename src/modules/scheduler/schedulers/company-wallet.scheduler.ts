@@ -1,7 +1,7 @@
 // src/infrastructure/scheduler/schedulers/company-wallets.scheduler.ts
 
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Cron} from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { QuidaxWalletService } from '../../../infrastructure/providers/quidax';
 import { PrismaService, RedisService } from '../../../infrastructure';
 import { Prisma } from '../../../infrastructure/databases/prisma/generated/prisma/client';
@@ -27,8 +27,8 @@ export class CompanyWalletScheduler implements OnModuleInit {
     await this.syncCompanyWallets();
   }
 
-   @Cron('* * * * *') // Run every minute
-   async syncCompanyWalletsCron() {
+  @Cron('* * * * *') // Run every minute
+  async syncCompanyWalletsCron() {
     if (!isDedicatedSchedulerRuntime()) return;
     await this.syncCompanyWallets();
   }
@@ -128,13 +128,15 @@ export class CompanyWalletScheduler implements OnModuleInit {
       // Use unsafe raw to bypass Prisma's BigInt serialization
       // Use gen_random_uuid() for PostgreSQL to generate the id
       await this.prisma.$executeRawUnsafe(
-        `INSERT INTO "company_liquidity" (id, currency, "totalBalance", "reservedBalance", "createdAt", "updatedAt")
-         VALUES (gen_random_uuid(), $1, $2, '0', NOW(), NOW())
+        `INSERT INTO "company_liquidity" (id, currency, network, "totalBalance", "reservedBalance", "createdAt", "updatedAt")
+         VALUES (gen_random_uuid(), $1, $3, $2, '0', NOW(), NOW())
          ON CONFLICT (currency) DO UPDATE SET
+           "network" = COALESCE("company_liquidity"."network", $3),
            "totalBalance" = $2,
            "updatedAt" = NOW()`,
         normalizedCurrency,
         totalBalanceStr,
+        network,
       );
     } catch (error) {
       if (
@@ -145,6 +147,7 @@ export class CompanyWalletScheduler implements OnModuleInit {
           await this.prisma.companyLiquidity.update({
             where: { currency: currency.toLowerCase() },
             data: {
+              network: network,
               totalBalance: ConvertCurrency.toBase(
                 balance,
                 currency.toLowerCase(),

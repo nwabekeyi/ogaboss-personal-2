@@ -3,6 +3,7 @@ import { Prisma, PrismaService, RedisService } from '../../../infrastructure';
 import {
   ALLOWED_CURRENCIES,
   COMPANY_LIQUIDITY_KEY,
+  CURRENCY_PRECISION,
   toBigInt,
   toDecimal,
 } from '../../../shared';
@@ -15,6 +16,7 @@ interface LiquidityCache {
   internalBalance: string;
   totalLockedPrincipal: string;
   totalAccruedLockedInterest: string;
+  network: string | null;
   updatedAt: string;
 }
 
@@ -27,6 +29,14 @@ export class CompanyLiquidityService {
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
   ) {}
+
+  private getDefaultLiquidityNetwork(currency: string): string | null {
+    const lower = currency.toLowerCase();
+    return (
+      CURRENCY_PRECISION[lower as keyof typeof CURRENCY_PRECISION]?.[0]?.id ??
+      null
+    );
+  }
 
   private verifyCurrency(currency: string) {
     const lower = currency.toLowerCase();
@@ -93,6 +103,9 @@ export class CompanyLiquidityService {
       totalLockedPrincipal: liquidity.totalLockedPrincipal.toString(),
       totalAccruedLockedInterest:
         liquidity.totalAccruedLockedInterest.toString(),
+      network:
+        liquidity.network ??
+        this.getDefaultLiquidityNetwork(liquidity.currency),
       updatedAt: liquidity.updatedAt.toISOString(),
     });
   }
@@ -107,6 +120,7 @@ export class CompanyLiquidityService {
         internalBalance: item.internalBalance.toString(),
         totalLockedPrincipal: item.totalLockedPrincipal.toString(),
         totalAccruedLockedInterest: item.totalAccruedLockedInterest.toString(),
+        network: item.network ?? this.getDefaultLiquidityNetwork(item.currency),
         updatedAt: item.updatedAt.toISOString(),
       });
     }
@@ -146,6 +160,9 @@ export class CompanyLiquidityService {
           totalLockedPrincipal: liquidity.totalLockedPrincipal.toString(),
           totalAccruedLockedInterest:
             liquidity.totalAccruedLockedInterest.toString(),
+          network:
+            liquidity.network ??
+            this.getDefaultLiquidityNetwork(liquidity.currency),
           updatedAt: liquidity.updatedAt.toISOString(),
         };
       }
@@ -328,6 +345,7 @@ export class CompanyLiquidityService {
       await client.companyLiquidity.create({
         data: {
           currency: normalizedCurrency.toLowerCase(),
+          network: this.getDefaultLiquidityNetwork(normalizedCurrency),
           totalBalance: dec,
           reservedBalance: toDecimal(0n),
         },
@@ -408,6 +426,7 @@ export class CompanyLiquidityService {
       await client.companyLiquidity.create({
         data: {
           currency: normalizedCurrency.toLowerCase(),
+          network: this.getDefaultLiquidityNetwork(normalizedCurrency),
           internalBalance: amount,
           totalBalance: toDecimal(0n),
           reservedBalance: toDecimal(0n),
@@ -415,7 +434,9 @@ export class CompanyLiquidityService {
       });
 
       if (!tx) {
-        await this.syncCurrencyToCache(normalizedCurrency).catch(() => undefined);
+        await this.syncCurrencyToCache(normalizedCurrency).catch(
+          () => undefined,
+        );
       }
       return;
     }

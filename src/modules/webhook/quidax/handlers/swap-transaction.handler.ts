@@ -153,7 +153,11 @@ export class SwapTransactionHandler {
         }
 
         const expectedUsdtMinor = swapRecord.toAmountOriginal
-          ? ConvertCurrency.toBase(String(swapRecord.toAmountOriginal), 'USDT', 6)
+          ? ConvertCurrency.toBase(
+              String(swapRecord.toAmountOriginal),
+              'USDT',
+              6,
+            )
           : BigInt(vault.amountLocked.toFixed(0));
         if (expectedUsdtMinor > 0n) {
           const usdtLiquidity = await tx.companyLiquidity.findFirst({
@@ -260,11 +264,16 @@ export class SwapTransactionHandler {
         }
 
         const expectedUsdtMinor = swapRecord.toAmountOriginal
-          ? ConvertCurrency.toBase(String(swapRecord.toAmountOriginal), 'USDT', 6)
+          ? ConvertCurrency.toBase(
+              String(swapRecord.toAmountOriginal),
+              'USDT',
+              6,
+            )
           : BigInt(vault.amountLocked.toFixed(0));
         const receivedUsdtMinor = ConvertCurrency.toBase(
           data.received_amount,
           'USDT',
+          undefined,
         );
         const differenceMinor = receivedUsdtMinor - expectedUsdtMinor;
 
@@ -349,9 +358,7 @@ export class SwapTransactionHandler {
           : 0n;
 
         // === BTC Wallet: final deduction with atomic RETURNING update ===
-        const btcWalletUpdates = await tx.$queryRaw<
-          { baseBalance: string }[]
-        >`
+        const btcWalletUpdates = await tx.$queryRaw<{ baseBalance: string }[]>`
           UPDATE "wallets"
           SET
             "baseBalance" = "baseBalance" - ${toDecimal(totalBtcChargeMinor)},
@@ -362,7 +369,9 @@ export class SwapTransactionHandler {
           RETURNING "baseBalance"
         `;
         if (btcWalletUpdates.length === 0) {
-          throw new Error(`Vault swap ${swapId}: insufficient reserved BTC balance to finalize`);
+          throw new Error(
+            `Vault swap ${swapId}: insufficient reserved BTC balance to finalize`,
+          );
         }
         const [{ baseBalance: newBtcBaseStr }] = btcWalletUpdates;
         const newBtcOriginalBalance = ConvertCurrency.fromBase(
@@ -682,7 +691,9 @@ export class SwapTransactionHandler {
         `;
 
         if (!freshSwap) {
-          this.logger.warn(`Swap ${swapRecord.id} disappeared during processing`);
+          this.logger.warn(
+            `Swap ${swapRecord.id} disappeared during processing`,
+          );
           return false;
         }
 
@@ -694,7 +705,9 @@ export class SwapTransactionHandler {
         }
 
         if (linkedTx) {
-          const [freshLinkedTx] = await tx.$queryRaw<{ status: TransactionStatus }[]>`
+          const [freshLinkedTx] = await tx.$queryRaw<
+            { status: TransactionStatus }[]
+          >`
             SELECT "status"
             FROM "transactions"
             WHERE "id" = ${linkedTx.id}
@@ -739,9 +752,7 @@ export class SwapTransactionHandler {
         }
 
         // FROM wallet: deduct full reserved amount and reconcile originalBalance
-        const fromWalletUpdates = await tx.$queryRaw<
-          { baseBalance: string }[]
-        >`
+        const fromWalletUpdates = await tx.$queryRaw<{ baseBalance: string }[]>`
           UPDATE "wallets"
           SET "baseBalance" = "baseBalance" - ${reservedDec},
               "reservedBalance" = "reservedBalance" - ${reservedDec}
@@ -751,7 +762,9 @@ export class SwapTransactionHandler {
           RETURNING "baseBalance"
         `;
         if (fromWalletUpdates.length === 0) {
-          throw new Error(`Swap ${swapId}: insufficient reserved ${fromCurrency} balance to finalize`);
+          throw new Error(
+            `Swap ${swapId}: insufficient reserved ${fromCurrency} balance to finalize`,
+          );
         }
         const [{ baseBalance: newFromBaseStr }] = fromWalletUpdates;
         const newFromOriginalBalance = ConvertCurrency.fromBase(
@@ -895,7 +908,8 @@ export class SwapTransactionHandler {
                 data: {
                   paymentMetadata: {
                     ...meta,
-                    liquidityReservationStatus: LiquidityReservationStatus.CONSUMED,
+                    liquidityReservationStatus:
+                      LiquidityReservationStatus.CONSUMED,
                     liquidityConsumedAt: new Date().toISOString(),
                     liquidityConsumedReason: 'autostack_swap_completed',
                     actualReceivedAmountBase: confirmedToBase.toString(),
@@ -980,6 +994,7 @@ export class SwapTransactionHandler {
           const swapNgnBase = ConvertCurrency.toBase(
             swapNgnValue.toFixed(2),
             'ngn',
+            undefined,
           );
           swapNgnDec = toDecimal(swapNgnBase);
         }

@@ -102,9 +102,9 @@
 //         currency: { connect: { id: currency.id } },
 //         transactionId: generateTransactionId(),
 //         referenceNo: generateTxRef(),
-//         cryptoAmountBase: ConvertCurrency.toBase(cryptoOriginal, currency.symbol),
+//         cryptoAmountBase: ConvertCurrency.toBase(cryptoOriginal, currency.symbol, undefined),
 //         cryptoAmountOriginal: cryptoOriginal,
-//         fiatAmountBase: ConvertCurrency.toBase(fiatOriginal, rest.fiatCurrency || 'NGN'),
+//         fiatAmountBase: ConvertCurrency.toBase(fiatOriginal, rest.fiatCurrency || 'NGN', undefined),
 //         fiatAmountOriginal: fiatOriginal,
 //       },
 //     });

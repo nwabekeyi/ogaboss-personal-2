@@ -90,6 +90,7 @@ export class DashboardStatsService implements OnModuleInit {
             totalValueKobo = ConvertCurrency.toBase(
               meta.totalValue,
               BASE_CURRENCY,
+              undefined,
             );
           } catch (e) {
             this.logger.error(
@@ -106,6 +107,7 @@ export class DashboardStatsService implements OnModuleInit {
             dailyValueKobo = ConvertCurrency.toBase(
               meta.dailyValue,
               BASE_CURRENCY,
+              undefined,
             );
           } catch (e) {
             this.logger.error(
@@ -130,10 +132,12 @@ export class DashboardStatsService implements OnModuleInit {
         const newTotalValue = ConvertCurrency.fromBase(
           BigInt(newTotalValueKobo),
           BASE_CURRENCY,
+          undefined,
         );
         const newDailyValue = ConvertCurrency.fromBase(
           BigInt(newDailyValueKobo),
           BASE_CURRENCY,
+          undefined,
         );
 
         await redis.hset(META_KEY, {
@@ -280,8 +284,16 @@ export class DashboardStatsService implements OnModuleInit {
           : 0n;
 
         pipeline.hset(META_KEY, {
-          totalValue: ConvertCurrency.fromBase(totalValueKobo, BASE_CURRENCY),
-          dailyValue: ConvertCurrency.fromBase(dailyValueKobo, BASE_CURRENCY),
+          totalValue: ConvertCurrency.fromBase(
+            totalValueKobo,
+            BASE_CURRENCY,
+            undefined,
+          ),
+          dailyValue: ConvertCurrency.fromBase(
+            dailyValueKobo,
+            BASE_CURRENCY,
+            undefined,
+          ),
           totalVolume: totalVolume.toString(),
           dailyVolume: dailyCount.toString(),
           totalUsers,
@@ -306,7 +318,11 @@ export class DashboardStatsService implements OnModuleInit {
                   )
                 : 'N/A',
               fiatAmount: t.fiatAmountBase
-                ? ConvertCurrency.fromBase(t.fiatAmountBase, BASE_CURRENCY)
+                ? ConvertCurrency.fromBase(
+                    t.fiatAmountBase,
+                    BASE_CURRENCY,
+                    undefined,
+                  )
                 : '0',
               cryptocurrency: t.currency,
               walletAddress: t.senderWalletAddress || t.receiverWalletAddress,

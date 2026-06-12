@@ -306,17 +306,28 @@ export class AdminUserService {
           totalTransactions: ConvertCurrency.fromBase(
             totalTransactions,
             BASE_CURRENCY,
+            undefined,
           ),
-          amountSent: ConvertCurrency.fromBase(user.amountSent, BASE_CURRENCY),
+          amountSent: ConvertCurrency.fromBase(
+            user.amountSent,
+            BASE_CURRENCY,
+            undefined,
+          ),
           amountReceived: ConvertCurrency.fromBase(
             user.amountReceived,
             BASE_CURRENCY,
+            undefined,
           ),
           amountBought: ConvertCurrency.fromBase(
             user.amountBought,
             BASE_CURRENCY,
+            undefined,
           ),
-          amountSold: ConvertCurrency.fromBase(user.amountSold, BASE_CURRENCY),
+          amountSold: ConvertCurrency.fromBase(
+            user.amountSold,
+            BASE_CURRENCY,
+            undefined,
+          ),
         },
       },
     };

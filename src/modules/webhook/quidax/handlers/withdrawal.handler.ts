@@ -166,14 +166,26 @@ export class WithdrawalWebhookHandler {
       return;
     }
 
-    // Convert amounts from Quidax confirmation
+    const walletForScale = !isCompany
+      ? await this.prisma.wallet.findFirst({
+          where: {
+            userId,
+            currency: { equals: currency, mode: 'insensitive' },
+          },
+          select: { defaultNetwork: true },
+        })
+      : null;
+    const canonicalNetwork = (walletForScale?.defaultNetwork ??
+      network) as CryptoNetwork;
+
+    // Convert amounts using the wallet's stored defaultNetwork as canonical scale.
     const amountBase = ConvertCurrency.toBase(
       confirmed.amount,
       currency,
-      network,
+      canonicalNetwork,
     );
     const feeBase = confirmed.fee
-      ? ConvertCurrency.toBase(confirmed.fee, currency, network)
+      ? ConvertCurrency.toBase(confirmed.fee, currency, canonicalNetwork)
       : 0n;
 
     const confirmedPayload = confirmed as any;
@@ -284,7 +296,7 @@ export class WithdrawalWebhookHandler {
             const newOriginalBalance = ConvertCurrency.fromBase(
               BigInt(String(newBaseStr)),
               currency,
-              network as CryptoNetwork,
+              wallet.defaultNetwork as CryptoNetwork,
             );
             await tx.$executeRaw`
               UPDATE "wallets"
@@ -483,12 +495,16 @@ export class WithdrawalWebhookHandler {
           const totalDeductedHuman = ConvertCurrency.fromBase(
             totalAmountSentBase,
             currency,
-            network as CryptoNetwork,
+            canonicalNetwork,
           );
           const ngnValue = new Decimal(cryptoNgnPrice).mul(
             new Decimal(totalDeductedHuman),
           );
-          ngnAmountBase = ConvertCurrency.toBase(ngnValue.toFixed(2), 'ngn');
+          ngnAmountBase = ConvertCurrency.toBase(
+            ngnValue.toFixed(2),
+            'ngn',
+            undefined,
+          );
         }
       } catch (priceErr: any) {
         this.logger.warn(

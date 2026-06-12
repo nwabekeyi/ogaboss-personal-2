@@ -139,7 +139,7 @@ export class SellService {
       if (existingOrder?.status !== OrderStatus.COMPLETED) {
         const cryptoDebit = toDecimal(totalUserDebitBase);
         const updatedCryptoWallet = await tx.$queryRaw<
-          { baseBalance: string }[]
+          { baseBalance: string; defaultNetwork: string | null }[]
         >`
           UPDATE "wallets"
           SET
@@ -149,7 +149,7 @@ export class SellService {
             AND LOWER("currency") = LOWER(${normalizedCrypto})
             AND "baseBalance" >= ${cryptoDebit}
             AND "reservedBalance" >= ${cryptoDebit}
-          RETURNING "baseBalance"
+          RETURNING "baseBalance", "defaultNetwork"
         `;
 
         if (updatedCryptoWallet.length === 0) {
@@ -161,7 +161,7 @@ export class SellService {
         const newCryptoOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(updatedCryptoWallet[0].baseBalance)),
           normalizedCrypto,
-          cryptoDecimals,
+          updatedCryptoWallet[0].defaultNetwork as CryptoNetwork,
         );
 
         await tx.wallet.updateMany({
@@ -198,6 +198,7 @@ export class SellService {
           executionPrice: ConvertCurrency.fromBase(
             quote.bufferedPriceMinor,
             quote.fiatCurrency,
+            undefined,
           ),
           executedAt: new Date(),
           paymentMetadata: {
@@ -257,6 +258,7 @@ export class SellService {
         grossFiat: ConvertCurrency.fromBase(
           quote.grossFiatMinor,
           quote.fiatCurrency,
+          undefined,
         ),
         platformFee: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
@@ -266,18 +268,22 @@ export class SellService {
         bufferSpread: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.fiatCurrency,
+          undefined,
         ),
         estimatedNgn: ConvertCurrency.fromBase(
           quote.netFiatMinor,
           quote.fiatCurrency,
+          undefined,
         ),
         marketRate: ConvertCurrency.fromBase(
           quote.marketPriceMinor,
           quote.fiatCurrency,
+          undefined,
         ),
         bufferedRate: ConvertCurrency.fromBase(
           quote.bufferedPriceMinor,
           quote.fiatCurrency,
+          undefined,
         ),
         bufferPercent: quote.bufferPercent,
         expiresIn: Math.max(
@@ -318,11 +324,23 @@ export class SellService {
         ? quote.cryptoDecimals
         : getCurrencyDecimals(normalizedCrypto, quoteNetwork);
 
+    const userWallet = await this.prisma.wallet.findFirst({
+      where: {
+        userId,
+        currency: { equals: normalizedCrypto, mode: 'insensitive' },
+      },
+      select: { quidaxWalletId: true, defaultNetwork: true },
+    });
+
+    if (!userWallet?.quidaxWalletId) {
+      throw new BadRequestException(`Wallet not found for ${quote.crypto}`);
+    }
+
     if (normalizedCrypto === 'USDT') {
       const minUsdtBase = ConvertCurrency.toBase(
         MIN_TRANSACTION_USDT.toString(),
         normalizedCrypto,
-        cryptoDecimals,
+        userWallet.defaultNetwork as CryptoNetwork,
       );
       if (BigInt(quote.exactCryptoMinor) < minUsdtBase) {
         throw new BadRequestException(
@@ -339,7 +357,11 @@ export class SellService {
       await this.transactionService.checkPriceSlippage(
         normalizedCrypto,
         quote.fiatCurrency,
-        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
+        ConvertCurrency.fromBase(
+          quote.bufferedPriceMinor,
+          quote.fiatCurrency,
+          undefined,
+        ),
         false, // isBuy (false for sell)
       );
     }
@@ -353,11 +375,12 @@ export class SellService {
     const cryptoOriginal = ConvertCurrency.fromBase(
       quote.exactCryptoMinor,
       normalizedCrypto,
-      cryptoDecimals,
+      userWallet.defaultNetwork as CryptoNetwork,
     );
     const estimatedNgn = ConvertCurrency.fromBase(
       quote.netFiatMinor,
       quote.fiatCurrency,
+      undefined,
     );
 
     const existingTransaction = await this.prisma.transaction.findFirst({
@@ -409,18 +432,6 @@ export class SellService {
       throw new BadRequestException('No bank account found for payout');
     }
 
-    const userWallet = await this.prisma.wallet.findFirst({
-      where: {
-        userId,
-        currency: { equals: normalizedCrypto, mode: 'insensitive' },
-      },
-      select: { quidaxWalletId: true },
-    });
-
-    if (!userWallet?.quidaxWalletId) {
-      throw new BadRequestException(`Wallet not found for ${quote.crypto}`);
-    }
-
     const marketPair =
       `${quote.crypto.toLowerCase()}${BASE_CURRENCY}` as TradingPair;
 
@@ -444,6 +455,7 @@ export class SellService {
         userId,
         quote.crypto,
         totalUserDebitBase,
+        userWallet.defaultNetwork,
       );
 
       const availableLiquidity = bypassProviders
@@ -469,18 +481,19 @@ export class SellService {
         platformFeeOriginal: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
           normalizedCrypto,
-          cryptoDecimals,
+          userWallet.defaultNetwork as CryptoNetwork,
         ),
         bufferAmountBase: bufferSpreadBase,
         bufferAmountOriginal: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.fiatCurrency,
+          undefined,
         ),
         totalAmountSentBase: totalUserDebitBase,
         totalAmountSentOriginal: ConvertCurrency.fromBase(
           totalUserDebitBase,
           normalizedCrypto,
-          cryptoDecimals,
+          userWallet.defaultNetwork as CryptoNetwork,
         ),
         transactionType: TransactionType.DEBIT,
         transactionContext: TransactionContext.SELL,
@@ -635,7 +648,7 @@ export class SellService {
         const newCryptoOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(updatedCryptoWallet[0].baseBalance)),
           normalizedCrypto,
-          cryptoDecimals,
+          userWallet.defaultNetwork as CryptoNetwork,
         );
 
         await tx.wallet.updateMany({
@@ -669,6 +682,7 @@ export class SellService {
             executionPrice: ConvertCurrency.fromBase(
               quote.bufferedPriceMinor,
               quote.fiatCurrency,
+              undefined,
             ),
             executedAt: new Date(),
             paymentMetadata: {

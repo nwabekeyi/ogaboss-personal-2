@@ -226,6 +226,19 @@ export class OrderDoneHandler {
     }
 
     const network = transaction.network ?? undefined;
+    const walletForScale = await this.prisma.wallet.findFirst({
+      where: {
+        userId: transaction.userId,
+        currency: { equals: crypto, mode: 'insensitive' },
+      },
+      select: { defaultNetwork: true },
+    });
+    if (!walletForScale?.defaultNetwork) {
+      throw new Error(
+        `Order ${order.id}: wallet default network not found for ${transaction.userId} ${crypto}`,
+      );
+    }
+    const walletDefaultNetwork = walletForScale.defaultNetwork as CryptoNetwork;
 
     // --- Convert executed amounts from webhook ---
     const executedVolumeStr = data.executed_volume?.amount || '0';
@@ -234,12 +247,13 @@ export class OrderDoneHandler {
     const executedCryptoAmountBase = ConvertCurrency.toBase(
       executedVolumeStr,
       crypto,
-      toCryptoNetwork(network),
+      walletDefaultNetwork,
     );
 
     const executedFiatAmountBase = ConvertCurrency.toBase(
       new Decimal(executedVolumeStr).mul(new Decimal(avgPriceStr)).toString(),
       fiat,
+      undefined,
     );
 
     const executionPrice = new Decimal(avgPriceStr);
@@ -475,7 +489,7 @@ export class OrderDoneHandler {
             const newOriginalBalance = ConvertCurrency.fromBase(
               BigInt(String(newBaseStr)),
               crypto,
-              toCryptoNetwork(network),
+              wallet.defaultNetwork as CryptoNetwork,
             );
             await tx.$executeRaw`
               UPDATE "wallets"

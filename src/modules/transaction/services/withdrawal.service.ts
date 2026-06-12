@@ -80,6 +80,18 @@ export class WithdrawalService {
       normalizedNetwork,
     );
 
+    const wallet = await this.prisma.wallet.findFirst({
+      where: {
+        userId,
+        currency: { equals: normalizedCurrency, mode: 'insensitive' },
+      },
+      select: { id: true, defaultNetwork: true },
+    });
+
+    if (!wallet) throw new NotFoundException('Wallet not found');
+
+    const walletNetwork = wallet.defaultNetwork as CryptoNetwork;
+
     // ── EARLY CURRENCY & NETWORK VALIDATION (BEFORE QUIDAX CALL) ──────────────
     // Validate that the currency is supported for withdrawals
     if (!CURRENCY_PRECISION[currencyKey as keyof typeof CURRENCY_PRECISION]) {
@@ -115,15 +127,12 @@ export class WithdrawalService {
     }
     // ────────────────────────────────────────────────────────────────────────────
 
-    const decimals = getCurrencyDecimals(
-      normalizedCurrency,
-      networkKey as CryptoNetwork,
-    );
+    const decimals = getCurrencyDecimals(normalizedCurrency, walletNetwork);
 
     const requestedAmountBase = ConvertCurrency.toBase(
       amount.toString(),
       normalizedCurrency,
-      networkKey as CryptoNetwork,
+      walletNetwork,
     );
 
     const feeRes = await axios
@@ -166,7 +175,7 @@ export class WithdrawalService {
     const networkFeeBase = ConvertCurrency.toBase(
       networkFeeHuman,
       normalizedCurrency,
-      networkKey as CryptoNetwork,
+      walletNetwork,
     );
 
     const platformFeeBase = BigInt(
@@ -196,13 +205,14 @@ export class WithdrawalService {
       platformFee: ConvertCurrency.fromBase(
         platformFeeBase.toString(),
         normalizedCurrency,
-        networkKey as CryptoNetwork,
+        walletNetwork,
       ),
       platformFeeBase: platformFeeBase.toString(),
+      walletDefaultNetwork: wallet.defaultNetwork,
       totalDeduction: ConvertCurrency.fromBase(
         totalDeductionBase.toString(),
         normalizedCurrency,
-        networkKey as CryptoNetwork,
+        walletNetwork,
       ),
       totalDeductionBase: totalDeductionBase.toString(),
       pinVerified: false,
@@ -263,7 +273,7 @@ export class WithdrawalService {
       const minUsdtBase = ConvertCurrency.toBase(
         MIN_TRANSACTION_USDT.toString(),
         'usdt',
-        preview.network as CryptoNetwork,
+        preview.walletDefaultNetwork as CryptoNetwork,
       );
       if (requestedAmountBase < minUsdtBase) {
         throw new BadRequestException(
@@ -296,6 +306,7 @@ export class WithdrawalService {
           userId,
           preview.currency,
           totalDeductionBase,
+          preview.walletDefaultNetwork,
         );
 
         const wallet = await tx.wallet.findFirst({
@@ -559,6 +570,7 @@ export class WithdrawalService {
           userId,
           transaction.currency,
           transaction.totalAmountSentBase,
+          transaction.network,
         );
 
         // Release company liquidity if it was reserved (PROCESSING status)
@@ -617,6 +629,7 @@ export class WithdrawalService {
         userId,
         transaction.currency,
         transaction.totalAmountSentBase,
+        transaction.network,
       );
 
       await this.companyLiquidityService.releaseLiquidity(

@@ -112,6 +112,7 @@ export class TransactionNotificationService {
           ? ConvertCurrency.fromBase(
               String(transaction.executedFiatAmountBase),
               'ngn',
+              undefined,
             )
           : (transaction.fiatAmountOriginal ?? '?');
 

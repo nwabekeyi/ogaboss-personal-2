@@ -50,6 +50,7 @@ export class TransactionFormatter {
       ? ConvertCurrency.fromBase(
           transaction.executedFiatAmountBase.toString(),
           'ngn',
+          undefined,
         )
       : null;
 
