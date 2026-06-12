@@ -98,35 +98,23 @@ export class SwapService {
         to: quote.to,
         fromNetwork: quote.fromNetwork,
         toNetwork: quote.toNetwork,
-        amountIn: ConvertCurrency.fromBase(
-          quote.exactFromMinor,
-          quote.from,
-          fromNet,
-        ),
+        amountIn: ConvertCurrency.fromBase(quote.exactFromMinor, quote.from),
         platformFee: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
           quote.from,
-          fromNet,
         ),
         estimatedOut: ConvertCurrency.fromBase(
           quote.estimatedOutMinor,
           quote.to,
-          toNet,
         ),
-        marketRate: ConvertCurrency.fromBase(
-          quote.marketRateMinor,
-          quote.to,
-          toNet,
-        ),
+        marketRate: ConvertCurrency.fromBase(quote.marketRateMinor, quote.to),
         protectedRate: ConvertCurrency.fromBase(
           quote.protectedRateMinor,
           quote.to,
-          toNet,
         ),
         bufferSpread: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.to,
-          toNet,
         ),
         bufferPercent: quote.bufferPercent,
         totalBufferPercent: quote.totalBufferPercent,
@@ -178,11 +166,7 @@ export class SwapService {
     const minimumSwapAmount = new Decimal(MIN_TRANSACTION_USDT);
     if (q.from.toUpperCase() === 'USDT') {
       const fromAmount = new Decimal(
-        ConvertCurrency.fromBase(
-          q.exactFromMinor,
-          q.from,
-          fromWallet.defaultNetwork as CryptoNetwork,
-        ),
+        ConvertCurrency.fromBase(q.exactFromMinor, q.from),
       );
       if (fromAmount.lt(minimumSwapAmount)) {
         throw new BadRequestException(
@@ -211,11 +195,7 @@ export class SwapService {
     const quidaxAccountId =
       await this.transactionService.getQuidaxUserId(userId);
 
-    const fromAmountHuman = ConvertCurrency.fromBase(
-      q.exactFromMinor,
-      q.from,
-      fromNet,
-    );
+    const fromAmountHuman = ConvertCurrency.fromBase(q.exactFromMinor, q.from);
 
     const exactFromMinor = BigInt(q.exactFromMinor);
     const platformFeeMinor = BigInt(q.platformFeeMinor);
@@ -256,7 +236,7 @@ export class SwapService {
 
       const quotedPriceDec = new Decimal(refreshedData.quoted_price);
       const protectedRateDec = new Decimal(
-        ConvertCurrency.fromBase(q.protectedRateMinor, q.to, toNet),
+        ConvertCurrency.fromBase(q.protectedRateMinor, q.to),
       );
       if (quotedPriceDec.lt(protectedRateDec)) {
         throw new BadRequestException(
@@ -288,13 +268,11 @@ export class SwapService {
             platformFeeOriginal: ConvertCurrency.fromBase(
               q.platformFeeMinor,
               q.from,
-              fromNet,
             ),
             totalAmountSentBase: reservedAmount,
             totalAmountSentOriginal: ConvertCurrency.fromBase(
               reservedAmount,
               q.from,
-              fromNet,
             ),
             fiatAmountBase: 0n,
             fiatAmountOriginal: '0',
@@ -453,12 +431,9 @@ export class SwapService {
             platformFeeOriginal: ConvertCurrency.fromBase(
               q.platformFeeMinor,
               q.from,
-              fromNet,
             ),
             totalAmountSentOriginal: new Decimal(confirmedSwap.from_amount)
-              .add(
-                ConvertCurrency.fromBase(q.platformFeeMinor, q.from, fromNet),
-              )
+              .add(ConvertCurrency.fromBase(q.platformFeeMinor, q.from))
               .toString(),
             executedCryptoAmountBase: toDecimal(exactFromMinor),
             executionPrice: confirmedSwap.execution_price,
@@ -478,14 +453,9 @@ export class SwapService {
             quotedPriceOriginal: ConvertCurrency.fromBase(
               q.protectedRateMinor,
               q.to,
-              toNet,
             ),
             toAmountOriginal: confirmedSwap.received_amount,
-            feeOriginal: ConvertCurrency.fromBase(
-              q.platformFeeMinor,
-              q.from,
-              fromNet,
-            ),
+            feeOriginal: ConvertCurrency.fromBase(q.platformFeeMinor, q.from),
             quoteId,
             swapId: confirmedSwap.id,
             executionPriceOriginal: confirmedSwap.execution_price,

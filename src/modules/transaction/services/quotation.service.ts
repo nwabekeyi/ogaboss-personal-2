@@ -17,12 +17,7 @@ import {
   MIN_TRANSACTION_USDT,
   QUIDAX_COMPANY_USERID,
 } from '../constants';
-import {
-  BASE_CURRENCY,
-  ConvertCurrency,
-  CryptoNetwork,
-  getCurrencyDecimals,
-} from '../../../shared';
+import { BASE_CURRENCY, ConvertCurrency, CryptoNetwork } from '../../../shared';
 import Decimal from 'decimal.js';
 import { TransactionService } from './transaction.service';
 import { QuidaxTickerService } from '../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
@@ -52,7 +47,7 @@ export class QuotationService {
   ) {}
 
   private getFiatDecimals(code: string): number {
-    return getCurrencyDecimals(code.toLowerCase());
+    return ConvertCurrency.getDecimals(code.toLowerCase());
   }
 
   private async resolveQuoteNetwork(
@@ -267,12 +262,8 @@ export class QuotationService {
     currency: string,
     network?: CryptoNetwork,
   ): string {
-    const decimals = getCurrencyDecimals(currency.toLowerCase(), network);
-    return ConvertCurrency.toBase(
-      value.toFixed(decimals),
-      currency,
-      network,
-    ).toString();
+    const decimals = ConvertCurrency.getDecimals(currency.toLowerCase());
+    return ConvertCurrency.toBase(value.toFixed(decimals), currency).toString();
   }
 
   private async setSwapQuoteCooldown(userId: string): Promise<void> {
@@ -295,12 +286,11 @@ export class QuotationService {
       network,
     );
     const fiat = await this.getBaseFiat();
-    const cryptoDecimals = getCurrencyDecimals(symbol, quoteNetwork);
+    const cryptoDecimals = ConvertCurrency.getDecimals(symbol);
 
     const volumeCryptoMinor = ConvertCurrency.toBase(
       new Decimal(amount).toFixed(cryptoDecimals),
       symbol,
-      quoteNetwork,
     );
 
     const marketPair = `${symbol.toLowerCase()}${fiat.code.toLowerCase()}`;
@@ -377,33 +367,12 @@ export class QuotationService {
         cryptoVolume: ConvertCurrency.formatCryptoForQuote(
           volumeCryptoMinor.toString(),
           symbol,
-          quoteNetwork,
         ),
-        marketRate: ConvertCurrency.fromBase(
-          marketPriceMinor,
-          fiat.code,
-          undefined,
-        ),
-        bufferedRate: ConvertCurrency.fromBase(
-          bufferedPriceMinor,
-          fiat.code,
-          undefined,
-        ),
-        bufferSpread: ConvertCurrency.fromBase(
-          bufferSpreadMinor,
-          fiat.code,
-          undefined,
-        ),
-        transactionFee: ConvertCurrency.fromBase(
-          platformFeeMinor,
-          fiat.code,
-          undefined,
-        ),
-        totalToPay: ConvertCurrency.fromBase(
-          totalFiatMinor,
-          fiat.code,
-          undefined,
-        ),
+        marketRate: ConvertCurrency.fromBase(marketPriceMinor, fiat.code),
+        bufferedRate: ConvertCurrency.fromBase(bufferedPriceMinor, fiat.code),
+        bufferSpread: ConvertCurrency.fromBase(bufferSpreadMinor, fiat.code),
+        transactionFee: ConvertCurrency.fromBase(platformFeeMinor, fiat.code),
+        totalToPay: ConvertCurrency.fromBase(totalFiatMinor, fiat.code),
         bufferPercent: bufferFactor.mul(100).toFixed(2),
         expiresIn: `${QUOTE_TTL_SECONDS}s`,
       },
@@ -428,12 +397,11 @@ export class QuotationService {
       symbol,
       network,
     );
-    const cryptoDecimals = getCurrencyDecimals(symbol, quoteNetwork);
+    const cryptoDecimals = ConvertCurrency.getDecimals(symbol);
 
     const exactCryptoMinor = ConvertCurrency.toBase(
       new Decimal(amount).toFixed(cryptoDecimals),
       symbol,
-      quoteNetwork,
     );
 
     const marketPair = `${symbol.toLowerCase()}${fiat.code.toLowerCase()}`;
@@ -468,7 +436,6 @@ export class QuotationService {
     const platformFeeMinor = ConvertCurrency.toBase(
       platformFeeCryptoDec.toFixed(cryptoDecimals),
       symbol,
-      quoteNetwork,
     ).toString();
     const netFiatMinor = this.toMinorString(netFiatDec, fiat.code);
 
@@ -512,38 +479,13 @@ export class QuotationService {
         cryptoAmount: ConvertCurrency.formatCryptoForQuote(
           exactCryptoMinor.toString(),
           symbol,
-          quoteNetwork,
         ),
-        marketRate: ConvertCurrency.fromBase(
-          marketPriceMinor,
-          fiat.code,
-          undefined,
-        ),
-        bufferedRate: ConvertCurrency.fromBase(
-          bufferedPriceMinor,
-          fiat.code,
-          undefined,
-        ),
-        bufferSpread: ConvertCurrency.fromBase(
-          bufferSpreadMinor,
-          fiat.code,
-          undefined,
-        ),
-        grossFiat: ConvertCurrency.fromBase(
-          grossFiatMinor,
-          fiat.code,
-          undefined,
-        ),
-        transactionFee: ConvertCurrency.fromBase(
-          platformFeeMinor,
-          symbol,
-          quoteNetwork,
-        ),
-        estimatedFiat: ConvertCurrency.fromBase(
-          netFiatMinor,
-          fiat.code,
-          undefined,
-        ),
+        marketRate: ConvertCurrency.fromBase(marketPriceMinor, fiat.code),
+        bufferedRate: ConvertCurrency.fromBase(bufferedPriceMinor, fiat.code),
+        bufferSpread: ConvertCurrency.fromBase(bufferSpreadMinor, fiat.code),
+        grossFiat: ConvertCurrency.fromBase(grossFiatMinor, fiat.code),
+        transactionFee: ConvertCurrency.fromBase(platformFeeMinor, symbol),
+        estimatedFiat: ConvertCurrency.fromBase(netFiatMinor, fiat.code),
         bufferPercent: bufferFactor.mul(100).toFixed(2),
         expiresIn: `${QUOTE_TTL_SECONDS}s`,
       },
@@ -585,14 +527,13 @@ export class QuotationService {
     const fromNet = (fromWallet.defaultNetwork as CryptoNetwork) || undefined;
     const toNet = (toWallet.defaultNetwork as CryptoNetwork) || undefined;
 
-    const fromDecimals = getCurrencyDecimals(fromSymbol, fromNet);
-    const toDecimals = getCurrencyDecimals(toSymbol, toNet);
+    const fromDecimals = ConvertCurrency.getDecimals(fromSymbol);
+    const toDecimals = ConvertCurrency.getDecimals(toSymbol);
 
     const amountDec = new Decimal(amount);
     const exactFromMinor = ConvertCurrency.toBase(
       amountDec.toFixed(fromDecimals),
       fromSymbol,
-      fromNet,
     );
 
     const swapQuotation = await this.quidaxSwapService.createInstantSwapRequest(
@@ -643,7 +584,6 @@ export class QuotationService {
     const estimatedOutAtMarketMinor = ConvertCurrency.toBase(
       estimatedOutAtMarketDec.toFixed(toDecimals),
       toSymbol,
-      toNet,
     );
 
     const buyBufferFactor = await this.getEffectiveBufferPercent(
@@ -669,32 +609,27 @@ export class QuotationService {
     const platformFeeMinor = ConvertCurrency.toBase(
       platformFeeDec.toFixed(fromDecimals),
       fromSymbol,
-      fromNet,
     ).toString();
 
     const estimatedOutMinor = ConvertCurrency.toBase(
       estimatedOutDec.toFixed(toDecimals),
       toSymbol,
-      toNet,
     ).toString();
 
     const marketRateMinor = ConvertCurrency.toBase(
       marketRateDec.toFixed(toDecimals),
       toSymbol,
-      toNet,
     ).toString();
 
     // protectedRateMinor is the slippage floor used in confirmSwap comparison
     const protectedRateMinor = ConvertCurrency.toBase(
       protectedRateDec.toFixed(toDecimals),
       toSymbol,
-      toNet,
     ).toString();
 
     const bufferSpreadMinor = ConvertCurrency.toBase(
       bufferSpreadDec.toFixed(toDecimals),
       toSymbol,
-      toNet,
     ).toString();
 
     const quoteId = uuidv4();
@@ -741,13 +676,8 @@ export class QuotationService {
         estimatedOut: ConvertCurrency.fromBase(
           estimatedOutMinor.toString(),
           toSymbol,
-          toNet,
         ),
-        conversionFee: ConvertCurrency.fromBase(
-          platformFeeMinor,
-          fromSymbol,
-          fromNet,
-        ),
+        conversionFee: ConvertCurrency.fromBase(platformFeeMinor, fromSymbol),
         marketRate: pairPriceStr,
         protectedRate: protectedRateDec.toFixed(toDecimals),
         bufferAmount: bufferAmountDec.toFixed(toDecimals),

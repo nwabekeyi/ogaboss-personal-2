@@ -155,7 +155,6 @@ export class XpresspayWebhookHandler {
         const newOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(newBaseStr)),
           latest.currency,
-          6,
         );
         await db.$executeRaw`
           UPDATE "wallets"

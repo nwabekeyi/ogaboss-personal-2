@@ -9,6 +9,7 @@ import { FiatCurrencyCacheService } from './fiat-currency-cache.service';
 import { AutoStackingSettingsCacheService } from './auto-stacking-cache.service';
 import { UrgentLiquiditySettingsCacheService } from './urgent-liquidity-cache.service';
 import { CryptoCurrencyRateCacheService } from './crypto-currency-rate-cache.service';
+import { CompanyWalletNetworkCacheService } from './company-wallet-network-cache.service';
 
 @Global()
 @Module({
@@ -22,6 +23,7 @@ import { CryptoCurrencyRateCacheService } from './crypto-currency-rate-cache.ser
      AutoStackingSettingsCacheService,
      UrgentLiquiditySettingsCacheService,
      CryptoCurrencyRateCacheService,
+     CompanyWalletNetworkCacheService,
    ],
    exports: [
      RedisService,
@@ -32,7 +34,8 @@ import { CryptoCurrencyRateCacheService } from './crypto-currency-rate-cache.ser
      CryptoCurrencyCacheService,
      AutoStackingSettingsCacheService,
      UrgentLiquiditySettingsCacheService,
-     CryptoCurrencyRateCacheService
+     CryptoCurrencyRateCacheService,
+     CompanyWalletNetworkCacheService
    ],
 })
 export class RedisModule {}

@@ -20,8 +20,6 @@ import {
 import {
   BASE_CURRENCY,
   ConvertCurrency,
-  CryptoNetwork,
-  getCurrencyDecimals,
   LiquidityReservationStatus,
   toDecimal,
 } from '../../../shared';
@@ -168,7 +166,6 @@ export class BuyService {
         const newOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(updatedWallet[0].baseBalance)),
           normalizedCrypto,
-          updatedWallet[0].defaultNetwork as CryptoNetwork,
         );
 
         await tx.wallet.updateMany({
@@ -223,7 +220,6 @@ export class BuyService {
           executionPrice: ConvertCurrency.fromBase(
             quote.bufferedPriceMinor,
             quote.fiatCurrency,
-            undefined,
           ),
           executedAt: new Date(),
           paymentMetadata: {
@@ -322,32 +318,26 @@ export class BuyService {
         fiatAmount: ConvertCurrency.fromBase(
           quote.totalFiatMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         estimatedCrypto: ConvertCurrency.fromBase(
           quote.volumeCryptoMinor,
           quote.crypto,
-          quote.cryptoDecimals,
         ),
         platformFee: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         bufferSpread: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         marketRate: ConvertCurrency.fromBase(
           quote.marketPriceMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         bufferedRate: ConvertCurrency.fromBase(
           quote.bufferedPriceMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         bufferPercent: quote.bufferPercent,
         expiresIn: Math.max(
@@ -391,21 +381,15 @@ export class BuyService {
     if (!userCryptoWallet?.quidaxWalletId) {
       throw new NotFoundException(`Wallet not found for ${quote.crypto}`);
     }
-
-    const quoteNetwork =
-      quote.network && quote.network !== 'N/A'
-        ? (quote.network as CryptoNetwork)
-        : (userCryptoWallet.defaultNetwork as CryptoNetwork | undefined);
     const cryptoDecimals =
       typeof quote.cryptoDecimals === 'number'
         ? quote.cryptoDecimals
-        : getCurrencyDecimals(normalizedCrypto, quoteNetwork);
+        : ConvertCurrency.getDecimals(normalizedCrypto);
 
     if (normalizedCrypto === 'USDT') {
       const minUsdtBase = ConvertCurrency.toBase(
         MIN_TRANSACTION_USDT.toString(),
         normalizedCrypto,
-        userCryptoWallet.defaultNetwork as CryptoNetwork,
       );
       if (BigInt(quote.volumeCryptoMinor) < minUsdtBase) {
         throw new BadRequestException(
@@ -422,11 +406,7 @@ export class BuyService {
       await this.transactionService.checkPriceSlippage(
         normalizedCrypto,
         quote.fiatCurrency,
-        ConvertCurrency.fromBase(
-          quote.bufferedPriceMinor,
-          quote.fiatCurrency,
-          undefined,
-        ),
+        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
         true, // isBuy
       );
     }
@@ -452,12 +432,10 @@ export class BuyService {
     const fiatOriginal = ConvertCurrency.fromBase(
       quote.totalFiatMinor,
       quote.fiatCurrency,
-      undefined,
     );
     const cryptoOriginal = ConvertCurrency.fromBase(
       quote.volumeCryptoMinor,
       normalizedCrypto,
-      userCryptoWallet.defaultNetwork as CryptoNetwork,
     );
     const companyDepositReference = `company-deposit-${previewId}`;
 
@@ -555,13 +533,11 @@ export class BuyService {
         bufferAmountOriginal: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         platformFeeBase: platformFeeMinor,
         platformFeeOriginal: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         status: TransactionStatus.PENDING,
       });
@@ -659,7 +635,6 @@ export class BuyService {
         const newOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(updatedWallet[0].baseBalance)),
           normalizedCrypto,
-          userCryptoWallet.defaultNetwork as CryptoNetwork,
         );
 
         await tx.wallet.updateMany({
@@ -713,7 +688,6 @@ export class BuyService {
             executionPrice: ConvertCurrency.fromBase(
               quote.bufferedPriceMinor,
               quote.fiatCurrency,
-              undefined,
             ),
             executedAt: new Date(),
             paymentMetadata: {

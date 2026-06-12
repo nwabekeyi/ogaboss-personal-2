@@ -27,8 +27,6 @@ import {
   COMPANY_PAYSTACK_LIQUIDITY_CACHE_KEY,
   COMPANY_PAYSTACK_NGN_WALLET_ID,
   ConvertCurrency,
-  CryptoNetwork,
-  getCurrencyDecimals,
   LiquidityReservationStatus,
   toDecimal,
 } from '../../../shared';
@@ -161,7 +159,6 @@ export class SellService {
         const newCryptoOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(updatedCryptoWallet[0].baseBalance)),
           normalizedCrypto,
-          updatedCryptoWallet[0].defaultNetwork as CryptoNetwork,
         );
 
         await tx.wallet.updateMany({
@@ -198,7 +195,6 @@ export class SellService {
           executionPrice: ConvertCurrency.fromBase(
             quote.bufferedPriceMinor,
             quote.fiatCurrency,
-            undefined,
           ),
           executedAt: new Date(),
           paymentMetadata: {
@@ -253,37 +249,30 @@ export class SellService {
         cryptoAmount: ConvertCurrency.fromBase(
           quote.exactCryptoMinor,
           quote.crypto,
-          quote.cryptoDecimals,
         ),
         grossFiat: ConvertCurrency.fromBase(
           quote.grossFiatMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         platformFee: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
           quote.crypto,
-          quote.cryptoDecimals,
         ),
         bufferSpread: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         estimatedNgn: ConvertCurrency.fromBase(
           quote.netFiatMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         marketRate: ConvertCurrency.fromBase(
           quote.marketPriceMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         bufferedRate: ConvertCurrency.fromBase(
           quote.bufferedPriceMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         bufferPercent: quote.bufferPercent,
         expiresIn: Math.max(
@@ -315,14 +304,10 @@ export class SellService {
     if (!quote.pinVerified) throw new UnauthorizedException('PIN not verified');
 
     const normalizedCrypto = quote.crypto.toUpperCase();
-    const quoteNetwork =
-      quote.network && quote.network !== 'N/A'
-        ? (quote.network as CryptoNetwork)
-        : undefined;
     const cryptoDecimals =
       typeof quote.cryptoDecimals === 'number'
         ? quote.cryptoDecimals
-        : getCurrencyDecimals(normalizedCrypto, quoteNetwork);
+        : ConvertCurrency.getDecimals(normalizedCrypto);
 
     const userWallet = await this.prisma.wallet.findFirst({
       where: {
@@ -340,7 +325,6 @@ export class SellService {
       const minUsdtBase = ConvertCurrency.toBase(
         MIN_TRANSACTION_USDT.toString(),
         normalizedCrypto,
-        userWallet.defaultNetwork as CryptoNetwork,
       );
       if (BigInt(quote.exactCryptoMinor) < minUsdtBase) {
         throw new BadRequestException(
@@ -357,11 +341,7 @@ export class SellService {
       await this.transactionService.checkPriceSlippage(
         normalizedCrypto,
         quote.fiatCurrency,
-        ConvertCurrency.fromBase(
-          quote.bufferedPriceMinor,
-          quote.fiatCurrency,
-          undefined,
-        ),
+        ConvertCurrency.fromBase(quote.bufferedPriceMinor, quote.fiatCurrency),
         false, // isBuy (false for sell)
       );
     }
@@ -375,12 +355,10 @@ export class SellService {
     const cryptoOriginal = ConvertCurrency.fromBase(
       quote.exactCryptoMinor,
       normalizedCrypto,
-      userWallet.defaultNetwork as CryptoNetwork,
     );
     const estimatedNgn = ConvertCurrency.fromBase(
       quote.netFiatMinor,
       quote.fiatCurrency,
-      undefined,
     );
 
     const existingTransaction = await this.prisma.transaction.findFirst({
@@ -481,19 +459,16 @@ export class SellService {
         platformFeeOriginal: ConvertCurrency.fromBase(
           quote.platformFeeMinor,
           normalizedCrypto,
-          userWallet.defaultNetwork as CryptoNetwork,
         ),
         bufferAmountBase: bufferSpreadBase,
         bufferAmountOriginal: ConvertCurrency.fromBase(
           quote.bufferSpreadMinor,
           quote.fiatCurrency,
-          undefined,
         ),
         totalAmountSentBase: totalUserDebitBase,
         totalAmountSentOriginal: ConvertCurrency.fromBase(
           totalUserDebitBase,
           normalizedCrypto,
-          userWallet.defaultNetwork as CryptoNetwork,
         ),
         transactionType: TransactionType.DEBIT,
         transactionContext: TransactionContext.SELL,
@@ -648,7 +623,6 @@ export class SellService {
         const newCryptoOriginalBalance = ConvertCurrency.fromBase(
           BigInt(String(updatedCryptoWallet[0].baseBalance)),
           normalizedCrypto,
-          userWallet.defaultNetwork as CryptoNetwork,
         );
 
         await tx.wallet.updateMany({
@@ -682,7 +656,6 @@ export class SellService {
             executionPrice: ConvertCurrency.fromBase(
               quote.bufferedPriceMinor,
               quote.fiatCurrency,
-              undefined,
             ),
             executedAt: new Date(),
             paymentMetadata: {

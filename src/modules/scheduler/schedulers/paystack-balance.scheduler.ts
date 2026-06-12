@@ -58,7 +58,6 @@ export class CompanyPaystackScheduler implements OnModuleInit {
       const totalBalanceBase = ConvertCurrency.toBase(
         balanceInNaira.toString(),
         BASE_CURRENCY,
-        undefined,
       ).toString();
 
       const paystackLiquidity = await this.prisma.companyLiquidity.upsert({

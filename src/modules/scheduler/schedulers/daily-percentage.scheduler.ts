@@ -144,11 +144,7 @@ export class DailyPercentageScheduler {
     for (const wallet of wallets) {
       if (wallet.baseBalance && toBigInt(wallet.baseBalance) > 0n) {
         const amountNgn = Number(
-          ConvertCurrency.fromBase(
-            toBigInt(wallet.baseBalance),
-            BASE_CURRENCY,
-            undefined,
-          ),
+          ConvertCurrency.fromBase(toBigInt(wallet.baseBalance), BASE_CURRENCY),
         );
         totalNaira += amountNgn;
       }

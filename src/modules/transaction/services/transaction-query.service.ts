@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { GetUserTransactionsDto } from '../dto/get-user-transactions.dto';
-import { ConvertCurrency, CryptoNetwork } from '../../../shared';
+import { ConvertCurrency } from '../../../shared';
 
 @Injectable()
 export class TransactionQueryService {
@@ -90,16 +90,11 @@ export class TransactionQueryService {
           ? ConvertCurrency.fromBase(
               executedCryptoAmountBase.toString(),
               currency,
-              network as CryptoNetwork,
             )
           : null;
 
         const executedFiatAmountOriginal = executedFiatAmountBase
-          ? ConvertCurrency.fromBase(
-              executedFiatAmountBase.toString(),
-              'ngn',
-              undefined,
-            )
+          ? ConvertCurrency.fromBase(executedFiatAmountBase.toString(), 'ngn')
           : null;
 
         return {
@@ -187,18 +182,10 @@ export class TransactionQueryService {
       ...rest
     } = transaction;
     const executedCryptoAmountOriginal = executedCryptoAmountBase
-      ? ConvertCurrency.fromBase(
-          executedCryptoAmountBase.toString(),
-          currency,
-          network as CryptoNetwork,
-        )
+      ? ConvertCurrency.fromBase(executedCryptoAmountBase.toString(), currency)
       : null;
     const executedFiatAmountOriginal = executedFiatAmountBase
-      ? ConvertCurrency.fromBase(
-          executedFiatAmountBase.toString(),
-          'ngn',
-          undefined,
-        )
+      ? ConvertCurrency.fromBase(executedFiatAmountBase.toString(), 'ngn')
       : null;
     const sanitized = {
       ...rest,
@@ -269,15 +256,10 @@ export class TransactionQueryService {
             ? ConvertCurrency.fromBase(
                 executedCryptoAmountBase.toString(),
                 currency,
-                network as CryptoNetwork,
               )
             : null,
           executedFiatAmountOriginal: executedFiatAmountBase
-            ? ConvertCurrency.fromBase(
-                executedFiatAmountBase.toString(),
-                'ngn',
-                undefined,
-              )
+            ? ConvertCurrency.fromBase(executedFiatAmountBase.toString(), 'ngn')
             : null,
         }),
       ),

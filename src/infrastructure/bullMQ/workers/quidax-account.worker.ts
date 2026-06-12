@@ -8,7 +8,6 @@ import { Logger } from '@nestjs/common';
 import {
   ALLOWED_CURRENCIES,
   ConvertCurrency,
-  CryptoNetwork,
   SUPPORTED_CRYPTO_CURRENCIES,
 } from '../../../shared';
 import {
@@ -86,7 +85,6 @@ export class QuidaxAccountWorker extends WorkerHost {
           const baseBalance = ConvertCurrency.toBase(
             balanceStr,
             currency,
-            w.default_network as CryptoNetwork,
           ).toString();
 
           // Find currency record (case-insensitive)

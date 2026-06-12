@@ -22,10 +22,7 @@ import {
   VaultQuoteDto,
   VaultPreviewDto,
 } from '../dto/vault.dto';
-import {
-  ConvertCurrency,
-  getCurrencyDecimals,
-} from '../../../shared/utils/currency-precision.util';
+import { ConvertCurrency } from '../../../shared/utils/currency-precision.util';
 import {
   VAULT_TRANSACTION_FEE,
   VAULT_QUOTE_TTL_SECONDS,
@@ -163,7 +160,6 @@ export class VaultService {
     const principalMinor = ConvertCurrency.toBase(
       dto.amount.toString(),
       symbol,
-      wallet.defaultNetwork as CryptoNetwork,
     ).toString();
 
     // Calculate buffer (BTC only)
@@ -208,9 +204,7 @@ export class VaultService {
     // For BTC, rate will be set after swap execution in webhook (default 0)
     // For stablecoins, rate is 1:1
     const rateMinor =
-      symbol === 'BTC'
-        ? '0'
-        : ConvertCurrency.toBase('1', 'USDT', usdtNetwork).toString();
+      symbol === 'BTC' ? '0' : ConvertCurrency.toBase('1', 'USDT').toString();
 
     const maturityDate = new Date();
     maturityDate.setDate(maturityDate.getDate() + dto.durationDays);
@@ -243,28 +237,22 @@ export class VaultService {
 
     const rateDisplay =
       symbol === 'BTC'
-        ? ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork)
-        : ConvertCurrency.fromBase(rateMinor, 'USDT', usdtNetwork);
+        ? ConvertCurrency.fromBase(rateMinor, 'USDT')
+        : ConvertCurrency.fromBase(rateMinor, 'USDT');
 
     return {
       success: true,
       data: {
         id: quoteId,
         currency: symbol,
-        principalAmount: ConvertCurrency.fromBase(
-          principalMinor,
-          symbol,
-          wallet.defaultNetwork as CryptoNetwork,
-        ),
+        principalAmount: ConvertCurrency.fromBase(principalMinor, symbol),
         bufferAmount: ConvertCurrency.fromBase(
           bufferAmountMinor.toString(),
           symbol,
-          wallet.defaultNetwork as CryptoNetwork,
         ),
         totalCharge: ConvertCurrency.fromBase(
           totalChargeMinor.toString(),
           symbol,
-          wallet.defaultNetwork as CryptoNetwork,
         ),
         duration: dto.durationDays.toString(),
         rate: rateDisplay,
@@ -352,7 +340,7 @@ export class VaultService {
       Math.ceil((quote.expiresAt - Date.now()) / 1000),
     );
 
-    const decimals = getCurrencyDecimals(symbol, network);
+    const decimals = ConvertCurrency.getDecimals(symbol);
     // Get USDT network for rate display
     const usdtWallet = await this.prisma.wallet.findFirst({
       where: { userId, currency: { equals: 'USDT', mode: 'insensitive' } },
@@ -364,13 +352,12 @@ export class VaultService {
       symbol === 'BTC'
         ? quote.rateMinor === '0'
           ? '0'
-          : ConvertCurrency.fromBase(quote.rateMinor, 'USDT', usdtNetwork)
+          : ConvertCurrency.fromBase(quote.rateMinor, 'USDT')
         : '1';
 
     const transactionFee = ConvertCurrency.fromBase(
       transactionFeeMinor.toString(),
       symbol,
-      decimals,
     );
     return {
       success: true,
@@ -380,29 +367,24 @@ export class VaultService {
         principalAmount: ConvertCurrency.fromBase(
           principalMinor.toString(),
           symbol,
-          decimals,
         ),
         bufferAmount: ConvertCurrency.fromBase(
           bufferAmountMinor.toString(),
           symbol,
-          decimals,
         ),
         totalCharge: ConvertCurrency.fromBase(
           totalChargeMinor.toString(),
           symbol,
-          decimals,
         ),
         interestRate: preview.interestRatePerAnum,
         expectedInterest: ConvertCurrency.fromBase(
           expectedInterestMinor.toString(),
           symbol,
-          decimals,
         ),
         transactionFee: transactionFee,
         amountToReceive: ConvertCurrency.fromBase(
           amountToReceiveMinor.toString(),
           symbol,
-          decimals,
         ),
         rate: rateDisplay,
         rateSymbol: 'USDT',
@@ -484,7 +466,6 @@ export class VaultService {
               originalBalance: ConvertCurrency.fromBase(
                 newBaseBalance.toString(),
                 preview.currencySymbol,
-                wallet.defaultNetwork as CryptoNetwork,
               ),
             },
           });
@@ -569,19 +550,16 @@ export class VaultService {
               cryptoAmountOriginal: ConvertCurrency.fromBase(
                 preview.amountMinor,
                 'BTC',
-                wallet.defaultNetwork as CryptoNetwork,
               ),
               platformFeeBase: toDecimal(bufferAmountMinor),
               platformFeeOriginal: ConvertCurrency.fromBase(
                 preview.bufferAmountMinor,
                 'BTC',
-                wallet.defaultNetwork as CryptoNetwork,
               ),
               totalAmountSentBase: toDecimal(totalChargeMinor),
               totalAmountSentOriginal: ConvertCurrency.fromBase(
                 totalChargeMinor.toString(),
                 'BTC',
-                wallet.defaultNetwork as CryptoNetwork,
               ),
               status: TransactionStatus.PENDING,
               description: `Vault Protection Swap: BTC to USDT`,
@@ -597,7 +575,6 @@ export class VaultService {
               amountOriginal: ConvertCurrency.fromBase(
                 totalChargeMinor.toString(),
                 'BTC',
-                wallet.defaultNetwork as CryptoNetwork,
               ),
               quoteId: quoteId,
               status: TransactionStatus.PENDING,
@@ -621,7 +598,6 @@ export class VaultService {
               from_amount: ConvertCurrency.fromBase(
                 preview.totalChargeMinor,
                 'BTC',
-                result.wallet.defaultNetwork as CryptoNetwork,
               ),
             },
           );
@@ -635,7 +611,6 @@ export class VaultService {
           reservedExpectedUsdtMinor = ConvertCurrency.toBase(
             String(quotedToAmount),
             'USDT',
-            6,
           );
           const reservedCompanyLiquidity =
             await this.companyLiquidityService.reserveLiquidity(
@@ -712,10 +687,7 @@ export class VaultService {
       const crypto = await this.prisma.cryptoCurrency.findUnique({
         where: { id: result.vault.currencyId },
       });
-      const decimals = getCurrencyDecimals(
-        crypto.symbol,
-        result.wallet.defaultNetwork as CryptoNetwork,
-      );
+      const decimals = ConvertCurrency.getDecimals(crypto.symbol);
       await this.tempStore.del(quoteKey);
 
       // Send FCM notification for vault creation
@@ -723,12 +695,11 @@ export class VaultService {
         const amountToReceive = ConvertCurrency.fromBase(
           result.vault.amountToReceive.toFixed(0),
           crypto.symbol,
-          decimals,
         );
         await this.queueService.sendPushNotification({
           userId,
           title: 'Vault Created Successfully',
-          body: `Your ${crypto.symbol.toUpperCase()} vault has been created. Amount locked: ${ConvertCurrency.fromBase(result.vault.amountLocked.toFixed(0), crypto.symbol, decimals)} ${crypto.symbol.toUpperCase()}. You will receive ${amountToReceive} ${crypto.symbol.toUpperCase()} at maturity.`,
+          body: `Your ${crypto.symbol.toUpperCase()} vault has been created. Amount locked: ${ConvertCurrency.fromBase(result.vault.amountLocked.toFixed(0), crypto.symbol)} ${crypto.symbol.toUpperCase()}. You will receive ${amountToReceive} ${crypto.symbol.toUpperCase()} at maturity.`,
           data: {
             type: 'vault_created',
             vaultId: result.vault.id,
@@ -736,7 +707,6 @@ export class VaultService {
             amountLocked: ConvertCurrency.fromBase(
               result.vault.amountLocked.toFixed(0),
               crypto.symbol,
-              decimals,
             ),
             maturityDate: result.vault.maturityDate.toISOString(),
           },
@@ -759,7 +729,6 @@ export class VaultService {
           amountLocked: ConvertCurrency.fromBase(
             result.vault.amountLocked.toFixed(0),
             crypto.symbol,
-            decimals,
           ),
           interestRate: `${result.vault.interestRatePerAnum}%`,
           maturityDate: result.vault.maturityDate,
@@ -887,7 +856,6 @@ export class VaultService {
             originalBalance: ConvertCurrency.fromBase(
               newBaseBalance.toString(),
               lockedVault.cryptoCurrency.symbol,
-              wallet.defaultNetwork as CryptoNetwork,
             ),
           },
         });
@@ -916,18 +884,11 @@ export class VaultService {
         };
       });
 
-      const decimals = getCurrencyDecimals(
-        vault.cryptoCurrency.symbol,
-        userVaultWallet.defaultNetwork as CryptoNetwork,
-      );
+      const decimals = ConvertCurrency.getDecimals(vault.cryptoCurrency.symbol);
       const penalty = result.penalty?.toString() || '0';
 
       const penaltyAmount = isEarlyTermination
-        ? ConvertCurrency.fromBase(
-            penalty,
-            vault.cryptoCurrency.symbol,
-            decimals,
-          )
+        ? ConvertCurrency.fromBase(penalty, vault.cryptoCurrency.symbol)
         : '0';
 
       // Send FCM notification for vault unlock/maturity
@@ -938,8 +899,8 @@ export class VaultService {
             ? 'Vault Terminated Early'
             : 'Vault Unlocked Successfully',
           body: isEarlyTermination
-            ? `Your ${vault.cryptoCurrency.symbol.toUpperCase()} vault was terminated early. Amount returned: ${ConvertCurrency.fromBase(result.amount.toString(), vault.cryptoCurrency.symbol, decimals)} ${vault.cryptoCurrency.symbol.toUpperCase()}. Penalty charged: ${penaltyAmount} ${vault.cryptoCurrency.symbol.toUpperCase()}.`
-            : `Your ${vault.cryptoCurrency.symbol.toUpperCase()} vault has matured. Total amount received: ${ConvertCurrency.fromBase(result.amount.toString(), vault.cryptoCurrency.symbol, decimals)} ${vault.cryptoCurrency.symbol.toUpperCase()}. Interest earned: ${ConvertCurrency.fromBase(result.gain.toString(), vault.cryptoCurrency.symbol, decimals)} ${vault.cryptoCurrency.symbol.toUpperCase()}.`,
+            ? `Your ${vault.cryptoCurrency.symbol.toUpperCase()} vault was terminated early. Amount returned: ${ConvertCurrency.fromBase(result.amount.toString(), vault.cryptoCurrency.symbol)} ${vault.cryptoCurrency.symbol.toUpperCase()}. Penalty charged: ${penaltyAmount} ${vault.cryptoCurrency.symbol.toUpperCase()}.`
+            : `Your ${vault.cryptoCurrency.symbol.toUpperCase()} vault has matured. Total amount received: ${ConvertCurrency.fromBase(result.amount.toString(), vault.cryptoCurrency.symbol)} ${vault.cryptoCurrency.symbol.toUpperCase()}. Interest earned: ${ConvertCurrency.fromBase(result.gain.toString(), vault.cryptoCurrency.symbol)} ${vault.cryptoCurrency.symbol.toUpperCase()}.`,
           data: {
             type: isEarlyTermination ? 'vault_terminated' : 'vault_matured',
             vaultId: vault.id,
@@ -947,12 +908,10 @@ export class VaultService {
             amountUnlocked: ConvertCurrency.fromBase(
               result.amount.toString(),
               vault.cryptoCurrency.symbol,
-              decimals,
             ),
             interestEarned: ConvertCurrency.fromBase(
               result.gain.toString(),
               vault.cryptoCurrency.symbol,
-              decimals,
             ),
             penaltyCharged: penaltyAmount,
             isEarlyTermination: isEarlyTermination ? 'true' : 'false',
@@ -973,12 +932,10 @@ export class VaultService {
           unlockedAmount: ConvertCurrency.fromBase(
             result.amount.toString(),
             vault.cryptoCurrency.symbol,
-            decimals,
           ),
           interestEarned: ConvertCurrency.fromBase(
             result.gain.toString(),
             vault.cryptoCurrency.symbol,
-            decimals,
           ),
           penaltyCharged: penaltyAmount,
         },
@@ -1074,14 +1031,12 @@ export class VaultService {
             ConvertCurrency.fromBase(
               amountLocked.toString(),
               vault.cryptoCurrency.symbol,
-              vaultWallet.defaultNetwork as CryptoNetwork,
             ),
           );
           const totalGainMajor = new Decimal(
             ConvertCurrency.fromBase(
               totalGainVal.toString(),
               vault.cryptoCurrency.symbol,
-              vaultWallet.defaultNetwork as CryptoNetwork,
             ),
           );
 
@@ -1089,9 +1044,8 @@ export class VaultService {
           totalGainNgn = totalGainNgn.plus(totalGainMajor.mul(ngnRate));
         }
 
-        const decimals = getCurrencyDecimals(
+        const decimals = ConvertCurrency.getDecimals(
           vault.cryptoCurrency.symbol,
-          vaultWallet.defaultNetwork as CryptoNetwork,
         );
 
         return {
@@ -1101,34 +1055,25 @@ export class VaultService {
           amountLocked: ConvertCurrency.fromBase(
             vault.amountLocked.toFixed(0),
             vault.cryptoCurrency.symbol,
-            vaultWallet.defaultNetwork as CryptoNetwork,
           ),
           maturityDate: vault.maturityDate,
           totalGain: ConvertCurrency.fromBase(
             vault.totalGain.toFixed(0),
             vault.cryptoCurrency.symbol,
-            vaultWallet.defaultNetwork as CryptoNetwork,
           ),
           interestRatePerAnum: vault.interestRatePerAnum.toString(),
           transactionFee: ConvertCurrency.fromBase(
             vault.transactionFee.toFixed(0),
             vault.cryptoCurrency.symbol,
-            vaultWallet.defaultNetwork as CryptoNetwork,
           ),
-          rate: ConvertCurrency.fromBase(
-            vault.rate.toFixed(0),
-            'USDT',
-            usdtNetwork,
-          ),
+          rate: ConvertCurrency.fromBase(vault.rate.toFixed(0), 'USDT'),
           amountToReceive: ConvertCurrency.fromBase(
             vault.amountToReceive.toFixed(0),
             vault.cryptoCurrency.symbol,
-            vaultWallet.defaultNetwork as CryptoNetwork,
           ),
           bufferAmount: ConvertCurrency.fromBase(
             vault.bufferAmount.toFixed(0),
             vault.cryptoCurrency.symbol,
-            vaultWallet.defaultNetwork as CryptoNetwork,
           ),
           bufferPercent: vault.bufferPercent.toString(),
           status: vault.status,
@@ -1181,10 +1126,7 @@ export class VaultService {
       throw new BadRequestException('Wallet default network not configured');
     }
 
-    const decimals = getCurrencyDecimals(
-      vault.cryptoCurrency.symbol,
-      wallet.defaultNetwork as CryptoNetwork,
-    );
+    const decimals = ConvertCurrency.getDecimals(vault.cryptoCurrency.symbol);
     const usdtNetwork =
       (userUsdtWallet?.defaultNetwork as CryptoNetwork) || 'erc20';
 
@@ -1198,34 +1140,25 @@ export class VaultService {
         amountLocked: ConvertCurrency.fromBase(
           vault.amountLocked.toFixed(0),
           vault.cryptoCurrency.symbol,
-          decimals,
         ),
         maturityDate: vault.maturityDate,
         totalGain: ConvertCurrency.fromBase(
           vault.totalGain.toFixed(0),
           vault.cryptoCurrency.symbol,
-          decimals,
         ),
         interestRatePerAnum: vault.interestRatePerAnum.toString(),
         transactionFee: ConvertCurrency.fromBase(
           vault.transactionFee.toFixed(0),
           vault.cryptoCurrency.symbol,
-          decimals,
         ),
-        rate: ConvertCurrency.fromBase(
-          vault.rate.toFixed(0),
-          'USDT',
-          usdtNetwork,
-        ),
+        rate: ConvertCurrency.fromBase(vault.rate.toFixed(0), 'USDT'),
         amountToReceive: ConvertCurrency.fromBase(
           vault.amountToReceive.toFixed(0),
           vault.cryptoCurrency.symbol,
-          decimals,
         ),
         bufferAmount: ConvertCurrency.fromBase(
           vault.bufferAmount.toFixed(0),
           vault.cryptoCurrency.symbol,
-          decimals,
         ),
         bufferPercent: vault.bufferPercent.toString(),
         status: vault.status,
@@ -1284,7 +1217,7 @@ export class VaultService {
         if (swapTx?.toAmountOriginal) {
           await this.companyLiquidityService.releaseLiquidity(
             'USDT',
-            ConvertCurrency.toBase(String(swapTx.toAmountOriginal), 'USDT', 6),
+            ConvertCurrency.toBase(String(swapTx.toAmountOriginal), 'USDT'),
             tx as any,
           );
         }

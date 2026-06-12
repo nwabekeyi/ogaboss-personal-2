@@ -174,12 +174,10 @@ async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
       const minAmountBase = ConvertCurrency.toBase(
         tier.minAmount,
         config.symbol,
-        network,
       ).toString();
       const maxAmountBase = ConvertCurrency.toBase(
         tier.maxAmount,
         config.symbol,
-        network,
       ).toString();
 
       await tx.bufferTier.create({
@@ -207,12 +205,10 @@ async function configureCurrencyBuffer(config: CurrencyBufferConfig) {
     const minMajor = ConvertCurrency.fromBase(
       tier.minAmount.toString(),
       config.symbol,
-      network,
     );
     const maxMajor = ConvertCurrency.fromBase(
       tier.maxAmount.toString(),
       config.symbol,
-      network,
     );
     console.log(
       `  ${tier.orderType}: [${minMajor} - ${maxMajor}] => ${tier.bufferPercent}%`,

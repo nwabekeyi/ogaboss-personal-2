@@ -91,16 +91,8 @@ export class BillsService {
       .plus(feeAmount)
       .toDecimalPlaces(6, Decimal.ROUND_CEIL);
     const walletNetwork = wallet.defaultNetwork as any;
-    const cryptoMinor = ConvertCurrency.toBase(
-      cryptoAmount.toFixed(6),
-      'USDT',
-      walletNetwork,
-    );
-    const feeMinor = ConvertCurrency.toBase(
-      feeAmount.toFixed(6),
-      'USDT',
-      walletNetwork,
-    );
+    const cryptoMinor = ConvertCurrency.toBase(cryptoAmount.toFixed(6), 'USDT');
+    const feeMinor = ConvertCurrency.toBase(feeAmount.toFixed(6), 'USDT');
     const totalMinor = cryptoMinor + feeMinor;
     const available =
       BigInt(wallet.baseBalance.toFixed(0)) -
@@ -181,7 +173,6 @@ export class BillsService {
     const netFiatBase = ConvertCurrency.toBase(
       String(quote.billAmountNgn),
       'NGN',
-      undefined,
     );
 
     const { transaction, billPayment } = await this.prisma.$transaction(

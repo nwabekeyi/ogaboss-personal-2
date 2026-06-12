@@ -16,8 +16,6 @@ import {
 import { CreateSendPreviewDto, ConfirmSendDto } from '../dto';
 import {
   ConvertCurrency,
-  CryptoNetwork,
-  getCurrencyDecimals,
   toDecimal,
   CURRENCY_PRECISION,
 } from '../../../shared';
@@ -90,8 +88,6 @@ export class WithdrawalService {
 
     if (!wallet) throw new NotFoundException('Wallet not found');
 
-    const walletNetwork = wallet.defaultNetwork as CryptoNetwork;
-
     // ── EARLY CURRENCY & NETWORK VALIDATION (BEFORE QUIDAX CALL) ──────────────
     // Validate that the currency is supported for withdrawals
     if (!CURRENCY_PRECISION[currencyKey as keyof typeof CURRENCY_PRECISION]) {
@@ -127,12 +123,11 @@ export class WithdrawalService {
     }
     // ────────────────────────────────────────────────────────────────────────────
 
-    const decimals = getCurrencyDecimals(normalizedCurrency, walletNetwork);
+    const decimals = ConvertCurrency.getDecimals(normalizedCurrency);
 
     const requestedAmountBase = ConvertCurrency.toBase(
       amount.toString(),
       normalizedCurrency,
-      walletNetwork,
     );
 
     const feeRes = await axios
@@ -175,7 +170,6 @@ export class WithdrawalService {
     const networkFeeBase = ConvertCurrency.toBase(
       networkFeeHuman,
       normalizedCurrency,
-      walletNetwork,
     );
 
     const platformFeeBase = BigInt(
@@ -205,14 +199,12 @@ export class WithdrawalService {
       platformFee: ConvertCurrency.fromBase(
         platformFeeBase.toString(),
         normalizedCurrency,
-        walletNetwork,
       ),
       platformFeeBase: platformFeeBase.toString(),
       walletDefaultNetwork: wallet.defaultNetwork,
       totalDeduction: ConvertCurrency.fromBase(
         totalDeductionBase.toString(),
         normalizedCurrency,
-        walletNetwork,
       ),
       totalDeductionBase: totalDeductionBase.toString(),
       pinVerified: false,
@@ -273,7 +265,6 @@ export class WithdrawalService {
       const minUsdtBase = ConvertCurrency.toBase(
         MIN_TRANSACTION_USDT.toString(),
         'usdt',
-        preview.walletDefaultNetwork as CryptoNetwork,
       );
       if (requestedAmountBase < minUsdtBase) {
         throw new BadRequestException(

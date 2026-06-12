@@ -247,13 +247,11 @@ export class OrderDoneHandler {
     const executedCryptoAmountBase = ConvertCurrency.toBase(
       executedVolumeStr,
       crypto,
-      walletDefaultNetwork,
     );
 
     const executedFiatAmountBase = ConvertCurrency.toBase(
       new Decimal(executedVolumeStr).mul(new Decimal(avgPriceStr)).toString(),
       fiat,
-      undefined,
     );
 
     const executionPrice = new Decimal(avgPriceStr);
@@ -489,7 +487,6 @@ export class OrderDoneHandler {
             const newOriginalBalance = ConvertCurrency.fromBase(
               BigInt(String(newBaseStr)),
               crypto,
-              wallet.defaultNetwork as CryptoNetwork,
             );
             await tx.$executeRaw`
               UPDATE "wallets"

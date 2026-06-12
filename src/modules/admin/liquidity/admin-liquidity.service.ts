@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure';
 import { FailedCompanyLiquidityService } from '../../transaction/services';
-import { ConvertCurrency, CryptoNetwork } from '../../../shared';
+import { ConvertCurrency } from '../../../shared';
 
 @Injectable()
 export class AdminLiquidityService {
@@ -105,11 +105,7 @@ export class AdminLiquidityService {
   ): string {
     const code = currency.toLowerCase();
 
-    return ConvertCurrency.fromBase(
-      amount,
-      code,
-      network ? (network.toLowerCase() as CryptoNetwork) : undefined,
-    );
+    return ConvertCurrency.fromBase(amount, code);
   }
 
   private formatLiquidity(liquidity: any) {

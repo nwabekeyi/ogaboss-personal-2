@@ -179,13 +179,9 @@ export class WithdrawalWebhookHandler {
       network) as CryptoNetwork;
 
     // Convert amounts using the wallet's stored defaultNetwork as canonical scale.
-    const amountBase = ConvertCurrency.toBase(
-      confirmed.amount,
-      currency,
-      canonicalNetwork,
-    );
+    const amountBase = ConvertCurrency.toBase(confirmed.amount, currency);
     const feeBase = confirmed.fee
-      ? ConvertCurrency.toBase(confirmed.fee, currency, canonicalNetwork)
+      ? ConvertCurrency.toBase(confirmed.fee, currency)
       : 0n;
 
     const confirmedPayload = confirmed as any;
@@ -296,7 +292,6 @@ export class WithdrawalWebhookHandler {
             const newOriginalBalance = ConvertCurrency.fromBase(
               BigInt(String(newBaseStr)),
               currency,
-              wallet.defaultNetwork as CryptoNetwork,
             );
             await tx.$executeRaw`
               UPDATE "wallets"
@@ -495,16 +490,11 @@ export class WithdrawalWebhookHandler {
           const totalDeductedHuman = ConvertCurrency.fromBase(
             totalAmountSentBase,
             currency,
-            canonicalNetwork,
           );
           const ngnValue = new Decimal(cryptoNgnPrice).mul(
             new Decimal(totalDeductedHuman),
           );
-          ngnAmountBase = ConvertCurrency.toBase(
-            ngnValue.toFixed(2),
-            'ngn',
-            undefined,
-          );
+          ngnAmountBase = ConvertCurrency.toBase(ngnValue.toFixed(2), 'ngn');
         }
       } catch (priceErr: any) {
         this.logger.warn(

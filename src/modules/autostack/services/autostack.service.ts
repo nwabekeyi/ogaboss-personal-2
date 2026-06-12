@@ -52,11 +52,11 @@ type AutoStackPaymentSource =
 @Injectable()
 export class AutoStackService {
   private toUsdtBase(amount: Decimal.Value): bigint {
-    return ConvertCurrency.toBase(new Decimal(amount).toString(), 'USDT', 6);
+    return ConvertCurrency.toBase(new Decimal(amount).toString(), 'USDT');
   }
 
   private toNgnBase(amount: Decimal.Value): bigint {
-    return ConvertCurrency.toBase(new Decimal(amount).toString(), 'NGN', 2);
+    return ConvertCurrency.toBase(new Decimal(amount).toString(), 'NGN');
   }
 
   private toBaseString(amount: unknown): string {
@@ -69,7 +69,7 @@ export class AutoStackService {
   }
 
   private fromUsdtBase(amount: unknown): string {
-    return ConvertCurrency.fromBase(this.toBaseString(amount), 'USDT', 6);
+    return ConvertCurrency.fromBase(this.toBaseString(amount), 'USDT');
   }
 
   private fromWalletBase(
@@ -77,11 +77,7 @@ export class AutoStackService {
     currency: string,
     network?: string | null,
   ): string {
-    return ConvertCurrency.fromBase(
-      this.toBaseString(amount),
-      currency,
-      network as any,
-    );
+    return ConvertCurrency.fromBase(this.toBaseString(amount), currency);
   }
 
   private fromAutoStackAmountBase(
@@ -91,7 +87,7 @@ export class AutoStackService {
   ): string {
     const baseAmount = BigInt(this.toBaseString(amount));
     const defaultConverted = new Decimal(
-      ConvertCurrency.fromBase(baseAmount, currency, 6),
+      ConvertCurrency.fromBase(baseAmount, currency),
     );
 
     if (
@@ -99,7 +95,7 @@ export class AutoStackService {
       network &&
       defaultConverted.gte(1_000_000)
     ) {
-      return ConvertCurrency.fromBase(baseAmount, currency, network as any);
+      return ConvertCurrency.fromBase(baseAmount, currency);
     }
 
     return defaultConverted.toString();
@@ -484,11 +480,7 @@ export class AutoStackService {
       sourceAmountMinor =
         sourceAsset === 'USDT' && !sourceWallet.defaultNetwork
           ? this.toUsdtBase(sourceAmountOriginal)
-          : ConvertCurrency.toBase(
-              sourceAmountOriginal,
-              sourceAsset,
-              sourceWallet.defaultNetwork as any,
-            );
+          : ConvertCurrency.toBase(sourceAmountOriginal, sourceAsset);
     } else if (!preview.paymentCardId) {
       throw new BadRequestException(
         'Payment card is required for card autostack',
@@ -556,7 +548,6 @@ export class AutoStackService {
             transactionFee: ConvertCurrency.fromBase(
               transactionFeeMinor,
               'USDT',
-              6,
             ),
             sourceAmount: sourceAmountOriginal,
             sourceAmountBase: sourceAmountMinor.toString(),
@@ -705,7 +696,7 @@ export class AutoStackService {
     const principalUsdtOriginal = String(
       configMeta.principalUsdtAmount ||
         configTx.cryptoAmountOriginal ||
-        ConvertCurrency.fromBase(BigInt(principalUsdtBase), 'USDT', 6),
+        ConvertCurrency.fromBase(BigInt(principalUsdtBase), 'USDT'),
     );
     let sourceAmountOriginal = principalUsdtOriginal;
     let sourceAmountBase = principalUsdtBase;
@@ -728,7 +719,6 @@ export class AutoStackService {
       sourceAmountBase = ConvertCurrency.toBase(
         sourceAmountOriginal,
         sourceAsset,
-        sourceWallet?.defaultNetwork as any,
       ).toString();
     }
 
@@ -862,7 +852,7 @@ export class AutoStackService {
     const principalUsdtOriginal = String(
       meta.principalUsdtAmount ||
         configTx.cryptoAmountOriginal ||
-        ConvertCurrency.fromBase(principalUsdtBase, 'USDT', 6),
+        ConvertCurrency.fromBase(principalUsdtBase, 'USDT'),
     );
     const transactionFeeBase = BigInt(String(meta.transactionFeeBase || 0));
     const sourceAmountBase = BigInt(
@@ -920,13 +910,11 @@ export class AutoStackService {
                 platformFeeOriginal: ConvertCurrency.fromBase(
                   sourceFeeBase,
                   sourceAsset,
-                  undefined,
                 ),
                 totalAmountSentBase: totalSourceWalletDeductionBase.toString(),
                 totalAmountSentOriginal: ConvertCurrency.fromBase(
                   totalSourceWalletDeductionBase,
                   sourceAsset,
-                  undefined,
                 ),
                 fiatAmountBase: principalUsdtBase.toString(),
                 fiatAmountOriginal: principalUsdtOriginal,
@@ -979,7 +967,6 @@ export class AutoStackService {
             const newOriginalBalance = ConvertCurrency.fromBase(
               BigInt(String(walletUpdateResult[0].baseBalance)),
               'USDT',
-              6,
             );
             await tx.$executeRaw`
               UPDATE "wallets"
@@ -1014,13 +1001,11 @@ export class AutoStackService {
                 platformFeeOriginal: ConvertCurrency.fromBase(
                   transactionFeeBase,
                   'USDT',
-                  6,
                 ),
                 totalAmountSentBase: totalWalletDeductionBase.toString(),
                 totalAmountSentOriginal: ConvertCurrency.fromBase(
                   totalWalletDeductionBase,
                   'USDT',
-                  6,
                 ),
                 paymentMetadata: {
                   ...processingMetadata,
@@ -1028,13 +1013,11 @@ export class AutoStackService {
                   actualReceivedAmountOriginal: ConvertCurrency.fromBase(
                     sourceAmountBase,
                     'USDT',
-                    6,
                   ),
                   principalUsdtAmountBase: sourceAmountBase.toString(),
                   principalUsdtAmount: ConvertCurrency.fromBase(
                     sourceAmountBase,
                     'USDT',
-                    6,
                   ),
                   sourceFeeAmountBase: transactionFeeBase.toString(),
                   totalSourceWalletDeductionBase:
@@ -1104,7 +1087,7 @@ export class AutoStackService {
       if (!usdtNgnRate)
         throw new Error('Unable to fetch USDT/NGN rate for autostack');
       const totalUsdtChargeOriginal = new Decimal(principalUsdtOriginal).add(
-        ConvertCurrency.fromBase(transactionFeeBase, 'USDT', 6),
+        ConvertCurrency.fromBase(transactionFeeBase, 'USDT'),
       );
       const principalNgnAmount = new Decimal(principalUsdtOriginal).mul(
         usdtNgnRate,
@@ -1112,11 +1095,7 @@ export class AutoStackService {
       const ngnAmount = totalUsdtChargeOriginal.mul(usdtNgnRate);
       const companyLiquidityAmountBase = this.toNgnBase(principalNgnAmount);
       const ngnAmountBase = this.toNgnBase(ngnAmount);
-      const ngnAmountOriginal = ConvertCurrency.fromBase(
-        ngnAmountBase,
-        'NGN',
-        undefined,
-      );
+      const ngnAmountOriginal = ConvertCurrency.fromBase(ngnAmountBase, 'NGN');
       const chargeReference = configTx.transactionUniqueId;
 
       await this.prisma.$transaction(async (tx) => {
@@ -1590,7 +1569,6 @@ export class AutoStackService {
       const newOriginalBalance = ConvertCurrency.fromBase(
         BigInt(String(newBaseBalance)),
         'USDT',
-        6,
       );
       await tx.$executeRaw`
         UPDATE "wallets"
