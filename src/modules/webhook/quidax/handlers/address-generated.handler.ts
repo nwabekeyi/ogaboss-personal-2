@@ -34,7 +34,7 @@ export class AddressGeneratedHandler {
       return;
     }
 
-    const wallet = await this.prisma.wallet.findFirst({
+    let wallet = await this.prisma.wallet.findFirst({
       where: {
         userId: localUser.id,
         currency: {
@@ -45,10 +45,23 @@ export class AddressGeneratedHandler {
     });
 
     if (!wallet) {
-      this.logger.debug(
-        `Skipping address-generated webhook; wallet not found: ${currency.toUpperCase()} for user ${localUser.email}`,
+      this.logger.log(
+        `Creating wallet for ${currency.toUpperCase()} for user ${localUser.email}`,
       );
-      return;
+      wallet = await this.prisma.wallet.create({
+        data: {
+          userId: localUser.id,
+          quidaxWalletId: `qw_${currency}_${Date.now()}`,
+          currency,
+          name: `${currency.charAt(0).toUpperCase() + currency.slice(1)} Wallet`,
+          baseBalance: '0',
+          reservedBalance: '0',
+          originalBalance: '0',
+          isCrypto: true,
+          blockchainEnabled: false,
+          defaultNetwork: data.network || 'mainnet',
+        },
+      });
     }
 
     // Re-query the confirmed payment address from Quidax
