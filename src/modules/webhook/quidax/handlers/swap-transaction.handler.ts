@@ -18,7 +18,6 @@ import {
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import { CompanyLiquidityService } from '../../../../modules/transaction/services/company-liquidity.service';
 import { TransactionService } from '../../../../modules/transaction/services/transaction.service';
-import { QuidaxSwapService } from '../../../../infrastructure/providers/quidax';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import Decimal from 'decimal.js';
 import { SwapWebhookDataDto } from '../dtos/swap-webhook.dto';
@@ -26,6 +25,7 @@ import { TransactionNotificationService } from '../../../../modules/transaction/
 import { Prisma } from '../../../../infrastructure/databases/prisma/generated/prisma/browser';
 import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 import { VAULT_TRANSACTION_FEE } from '../../../transaction/constants';
+import axios from 'axios';
 
 @Injectable()
 export class SwapTransactionHandler {
@@ -40,13 +40,25 @@ export class SwapTransactionHandler {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly quidaxSwapService: QuidaxSwapService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly dashboardStatsQueueService: DashboardStatsQueueService,
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly tickerService: QuidaxTickerService,
     private readonly transactionService: TransactionService,
   ) {}
+
+  private async getSwapTransactionDirectly(userId: string, swapId: string) {
+    const { data } = await axios.get(
+      `${process.env.QUIDAX_API_URL}/users/${userId}/swap_transactions/${swapId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return data;
+  }
 
   async process(data: SwapWebhookDataDto, event: string): Promise<void> {
     const swapId = data.id;
@@ -639,9 +651,9 @@ export class SwapTransactionHandler {
     let confirmedExecutionPrice: string;
 
     try {
-      const quidaxRes = await this.quidaxSwapService.getSwapTransaction(
-        { user_id: QUIDAX_COMPANY_USERID, swap_transaction_id: swapId },
-        { skipCircuitBreaker: true },
+      const quidaxRes = await this.getSwapTransactionDirectly(
+        QUIDAX_COMPANY_USERID,
+        swapId,
       );
 
       const confirmed = quidaxRes?.data;

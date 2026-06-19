@@ -27,22 +27,67 @@ import {
   TransactionService,
   TransactionNotificationService,
 } from '../../../../modules/transaction/services';
-import { PaystackService } from '../../../../infrastructure/providers/paystack';
 import { CompensatedError } from '../../compensated-error';
-import { XpresspayService } from '../../../../infrastructure/providers/xpresspay/xpresspay.service';
+import axios from 'axios';
 
 @Injectable()
 export class OrderDoneHandler {
   private readonly logger = new Logger(OrderDoneHandler.name);
 
+  private getPaystackSecretKey(): string {
+    return process.env.NODE_ENV === 'development'
+      ? process.env.PAYSTACK_SECRET_KEY_TEST
+      : process.env.PAYSTACK_SECRET_KEY_LIVE;
+  }
+
+  private paystackHeaders() {
+    return {
+      Authorization: `Bearer ${this.getPaystackSecretKey()}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  private xpresspayHeaders() {
+    return {
+      Authorization: `Bearer ${process.env.XPRESSPAY_API_KEY ?? ''}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+  }
+
+  private async createTransferRecipient(payload: Record<string, any>) {
+    const { data } = await axios.post(
+      'https://api.paystack.co/transferrecipient',
+      payload,
+      { headers: this.paystackHeaders() },
+    );
+    return data;
+  }
+
+  private async initiateTransfer(payload: Record<string, any>) {
+    const { data } = await axios.post(
+      'https://api.paystack.co/transfer',
+      payload,
+      { headers: this.paystackHeaders() },
+    );
+    return data;
+  }
+
+  private async payBill(payload: Record<string, any>) {
+    const { data } = await axios.post(
+      `${process.env.XPRESSPAY_BASE_URL ?? ''}/bills/pay`,
+      payload,
+      { headers: this.xpresspayHeaders() },
+    );
+    return data;
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly dashboardStatsQueueService: DashboardStatsQueueService,
     private readonly companyLiquidityService: CompanyLiquidityService,
-    private readonly paystackService: PaystackService,
     private readonly transactionService: TransactionService,
     private readonly transactionNotificationService: TransactionNotificationService,
-    private readonly xpresspayService: XpresspayService,
   ) {}
 
   private frequencyDays(frequency?: string): number {
@@ -647,7 +692,7 @@ export class OrderDoneHandler {
             return;
           }
 
-          const providerResponse = await this.xpresspayService.payBill({
+          const providerResponse = await this.payBill({
             amount: new Decimal(billingMeta.billAmountNgn || 0).toString(),
             category: billingMeta.category,
             billerCode: billingMeta.billerCode,
@@ -856,17 +901,14 @@ export class OrderDoneHandler {
           return updatedMeta;
         });
 
-        const recipient = await this.paystackService.createTransferRecipient(
-          {
-            type: 'nuban',
-            name: freshAccountName,
-            account_number: freshAccountNumber,
-            bank_code: freshBankCode,
-            currency: BASE_CURRENCY.toUpperCase(),
-            metadata: { transactionId: transaction.id, orderId: order.id },
-          },
-          { skipCircuitBreaker: true },
-        );
+        const recipient = await this.createTransferRecipient({
+          type: 'nuban',
+          name: freshAccountName,
+          account_number: freshAccountNumber,
+          bank_code: freshBankCode,
+          currency: BASE_CURRENCY.toUpperCase(),
+          metadata: { transactionId: transaction.id, orderId: order.id },
+        });
 
         if (!recipient?.status || !recipient?.data?.recipient_code) {
           throw new Error(
@@ -874,15 +916,12 @@ export class OrderDoneHandler {
           );
         }
 
-        const transfer = await this.paystackService.initiateTransfer(
-          {
-            source: 'balance',
-            amount: String(transaction.fiatAmountBase ?? '0'),
-            recipient: recipient.data.recipient_code,
-            reason: `Sell payout ${transaction.id}`,
-          },
-          { skipCircuitBreaker: true },
-        );
+        const transfer = await this.initiateTransfer({
+          source: 'balance',
+          amount: String(transaction.fiatAmountBase ?? '0'),
+          recipient: recipient.data.recipient_code,
+          reason: `Sell payout ${transaction.id}`,
+        });
 
         if (!transfer?.status || !transfer?.data?.reference) {
           throw new Error(
