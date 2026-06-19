@@ -18,9 +18,7 @@ import {
   TransactionStatus,
   TransactionType,
 } from '../../../../infrastructure/databases/prisma';
-import { PaystackService } from '../../../../infrastructure/providers/paystack';
 import { PaystackWebhookEvent } from '../../../../infrastructure/providers/paystack/type';
-import { QuidaxOrderService } from '../../../../infrastructure/providers/quidax';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import {
   CompanyLiquidityService,
@@ -38,17 +36,66 @@ import {
   toDecimal,
 } from '../../../../shared';
 import Decimal from 'decimal.js';
+import axios from 'axios';
 import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 
 @Injectable()
 export class PaystackWebhookHandler {
   private readonly logger = new Logger(PaystackWebhookHandler.name);
   private readonly baseCurrency = BASE_CURRENCY.toUpperCase();
+  private readonly quidaxBaseUrl = process.env.QUIDAX_API_URL;
+
+  private getPaystackSecretKey(): string {
+    return process.env.NODE_ENV === 'development'
+      ? process.env.PAYSTACK_SECRET_KEY_TEST
+      : process.env.PAYSTACK_SECRET_KEY_LIVE;
+  }
+
+  private paystackHeaders() {
+    return {
+      Authorization: `Bearer ${this.getPaystackSecretKey()}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  private quidaxHeaders() {
+    return {
+      Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  private async verifyPaystackTransaction(reference: string) {
+    const { data } = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      { headers: this.paystackHeaders() },
+    );
+    return data;
+  }
+
+  private async refundPaystackTransaction(payload: Record<string, any>) {
+    const { data } = await axios.post(
+      'https://api.paystack.co/refund',
+      payload,
+      { headers: this.paystackHeaders() },
+    );
+    return data;
+  }
+
+  private async createQuidaxOrder(
+    userId: string,
+    payload: Record<string, any>,
+  ) {
+    const { data } = await axios.post(
+      `${this.quidaxBaseUrl}/users/${userId}/orders`,
+      payload,
+      { headers: this.quidaxHeaders() },
+    );
+    return data;
+  }
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly paystackService: PaystackService,
-    private readonly quidaxOrderService: QuidaxOrderService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionService: TransactionService,
     private readonly transactionNotificationService: TransactionNotificationService,
@@ -108,10 +155,7 @@ export class PaystackWebhookHandler {
         return;
       }
 
-      const verification = await this.paystackService.verifyTransaction(
-        reference,
-        { skipCircuitBreaker: true },
-      );
+      const verification = await this.verifyPaystackTransaction(reference);
       if (!verification.status || !verification.data) {
         throw new BadRequestException(
           `Verification failed: ${verification.message}`,
@@ -280,16 +324,12 @@ export class PaystackWebhookHandler {
 
     if (!shouldProceed) return;
 
-    const response = await this.quidaxOrderService.buyOrSellOrderRequest(
-      companyUserId,
-      {
-        market,
-        side: 'buy',
-        ord_type: 'market',
-        volume: executedCryptoVolume.toString(),
-      },
-      { skipCircuitBreaker: true },
-    );
+    const response = await this.createQuidaxOrder(companyUserId, {
+      market,
+      side: 'buy',
+      ord_type: 'market',
+      volume: executedCryptoVolume.toString(),
+    });
 
     if (response.status !== 'success') {
       await this.prisma.transaction.update({
@@ -539,10 +579,9 @@ export class PaystackWebhookHandler {
     }
 
     try {
-      const refund = await this.paystackService.refundTransaction(
-        { transaction: data.reference },
-        { skipCircuitBreaker: true },
-      );
+      const refund = await this.refundPaystackTransaction({
+        transaction: data.reference,
+      });
 
       if (!refund?.status) {
         throw new Error(refund?.message || 'Refund request failed');

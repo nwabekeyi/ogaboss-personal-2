@@ -18,10 +18,7 @@ import {
   isTransientPrismaError,
 } from '../../../../shared';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
-import {
-  QuidaxDepositService,
-  QuidaxWithdrawalService,
-} from '../../../../infrastructure/providers/quidax';
+import { QuidaxWithdrawalService } from '../../../../infrastructure/providers/quidax';
 import { Prisma } from '../../../../infrastructure/databases/prisma/generated/prisma/browser';
 import Decimal from 'decimal.js';
 import { Company_withdrawal_type } from '../../../../shared';
@@ -29,6 +26,7 @@ import { TransactionNotificationService } from '../../../../modules/transaction/
 import { TransactionService } from '../../../../modules/transaction/services/transaction.service';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import { CompanyLiquidityService } from '../../../../modules/transaction/services/company-liquidity.service';
+import axios from 'axios';
 
 @Injectable()
 export class DepositSuccessfulHandler {
@@ -37,13 +35,25 @@ export class DepositSuccessfulHandler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly dashboardStatsQueueService: DashboardStatsQueueService,
-    private readonly quidaxDepositService: QuidaxDepositService,
     private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly tickerService: QuidaxTickerService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionService: TransactionService,
   ) {}
+
+  private async fetchDepositDirectly(userId: string, depositId: string) {
+    const { data } = await axios.get(
+      `${process.env.QUIDAX_API_URL}/users/${userId}/deposits/${depositId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return data;
+  }
 
   async process(data: any): Promise<void> {
     const quidaxUserId = data.wallet?.user?.id || data.user?.id;
@@ -60,10 +70,9 @@ export class DepositSuccessfulHandler {
 
     let depositResponse;
     try {
-      depositResponse = await this.quidaxDepositService.fetchDeposit(
+      depositResponse = await this.fetchDepositDirectly(
         quidaxUserId,
         providerDepositId,
-        { skipCircuitBreaker: true },
       );
     } catch (error: any) {
       this.logger.error(

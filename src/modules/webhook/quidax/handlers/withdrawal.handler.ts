@@ -15,8 +15,6 @@ import {
   isTransientPrismaError,
 } from '../../../../shared';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
-import { QuidaxWithdrawalService } from '../../../../infrastructure/providers/quidax/withdrawal.service';
-import { QuidaxWalletService } from '../../../../infrastructure/providers/quidax/wallet.service';
 import {
   CompanyLiquidityService,
   TransactionService,
@@ -24,6 +22,7 @@ import {
 } from '../../../../modules/transaction/services';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import Decimal from 'decimal.js';
+import axios from 'axios';
 
 @Injectable()
 export class WithdrawalWebhookHandler {
@@ -32,13 +31,24 @@ export class WithdrawalWebhookHandler {
   constructor(
     private readonly prisma: PrismaService,
     private readonly dashboardStatsQueueService: DashboardStatsQueueService,
-    private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
-    private readonly quidaxWalletService: QuidaxWalletService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionService: TransactionService,
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly tickerService: QuidaxTickerService,
   ) {}
+
+  private async getWithdrawalByReference(reference: string) {
+    const { data } = await axios.get(
+      `${process.env.QUIDAX_API_URL}/users/me/withdraws/reference/${reference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return data;
+  }
 
   async process(event: string, data: any): Promise<void> {
     this.logger.log(`Processing ${event} webhook`);
@@ -137,14 +147,7 @@ export class WithdrawalWebhookHandler {
 
     let confirmation;
     try {
-      confirmation =
-        await this.quidaxWithdrawalService.getWithdrawerByReference(
-          {
-            user_id: 'me',
-            reference,
-          },
-          { skipCircuitBreaker: true },
-        );
+      confirmation = await this.getWithdrawalByReference(reference);
     } catch (error) {
       this.logger.error(
         `Error fetching Quidax withdrawal for ${reference}: ${error}`,

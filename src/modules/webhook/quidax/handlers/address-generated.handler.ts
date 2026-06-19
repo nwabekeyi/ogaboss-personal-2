@@ -1,17 +1,31 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../../../infrastructure/databases/prisma';
 import { PaymentAddressStatus } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
-import { QuidaxWalletService } from '../../../../infrastructure/providers/quidax/wallet.service';
 import { ConvertCurrency } from '../../../../shared';
+import axios from 'axios';
 
 @Injectable()
 export class AddressGeneratedHandler {
   private readonly logger = new Logger(AddressGeneratedHandler.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly quidaxWalletService: QuidaxWalletService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
+
+  private async getPaymentAddressById(
+    userId: string,
+    currency: string,
+    addressId: string,
+  ) {
+    const { data } = await axios.get(
+      `${process.env.QUIDAX_API_URL}/users/${userId}/wallets/${currency}/addresses/${addressId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+    return data;
+  }
 
   async process(data: any): Promise<void> {
     const { id: addressId, currency: rawCurrency, user: quidaxUser } = data;
@@ -65,13 +79,10 @@ export class AddressGeneratedHandler {
     }
 
     // Re-query the confirmed payment address from Quidax
-    const addressRes = await this.quidaxWalletService.getPaymentAddressById(
-      {
-        user_id: quidaxUser.id,
-        currency,
-        address_id: addressId,
-      },
-      { skipCircuitBreaker: true },
+    const addressRes = await this.getPaymentAddressById(
+      quidaxUser.id,
+      currency,
+      addressId,
     );
 
     if (addressRes.status !== 'success' || !addressRes.data) {
