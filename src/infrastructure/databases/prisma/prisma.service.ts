@@ -18,16 +18,13 @@ export class PrismaService
       min: 1,
       max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 10000,
+      connectionTimeoutMillis: 50000,
     });
 
     super({
       adapter,
       log: ['error', 'warn'],
       errorFormat: 'minimal',
-      transactionOptions: {
-        timeout: 30000,
-      },
     });
   }
 

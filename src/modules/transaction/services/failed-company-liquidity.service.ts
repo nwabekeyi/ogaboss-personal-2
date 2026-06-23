@@ -281,21 +281,32 @@ export class FailedCompanyLiquidityService {
     const market =
       `${transaction.currency.toLowerCase()}${BASE_CURRENCY}` as TradingPair;
 
-    const orderResponse = await axios.post(
-      `${process.env.QUIDAX_API_URL}/users/me/orders`,
-      {
-        market,
-        side: 'sell',
-        ord_type: 'market',
-        volume: Number(order.cryptoAmountOriginal),
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+    let orderResponse;
+    try {
+      orderResponse = await axios.post(
+        `${process.env.QUIDAX_API_URL}/users/me/orders`,
+        {
+          market,
+          side: 'sell',
+          ord_type: 'market',
+          volume: Number(order.cryptoAmountOriginal),
         },
-      },
-    ).then((res) => res.data);
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          },
+        },
+      ).then((res) => res.data);
+
+      this.logger.log(`Quidax sell order response: ${JSON.stringify(orderResponse)}`);
+    } catch (error: any) {
+      this.logger.error(
+        `Quidax sell order API call failed for ${transactionId}: ${error.message}`,
+        error.stack,
+      );
+      return false;
+    }
 
     if (orderResponse?.status !== 'success') {
       this.logger.warn(`Failed sell retry for ${transactionId}`);
@@ -337,20 +348,33 @@ export class FailedCompanyLiquidityService {
     });
     if (!tx || !swap || !failed.fromCurrency || !failed.toCurrency) return false;
 
-    const quotationRes = await axios.post(
-      `${process.env.QUIDAX_API_URL}/users/me/swap_quotation`,
-      {
-        from_currency: failed.fromCurrency.toLowerCase(),
-        to_currency: failed.toCurrency.toLowerCase(),
-        from_amount: swap.amountOriginal,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+    let quotationRes;
+    try {
+      quotationRes = await axios.post(
+        `${process.env.QUIDAX_API_URL}/users/me/swap_quotation`,
+        {
+          from_currency: failed.fromCurrency.toLowerCase(),
+          to_currency: failed.toCurrency.toLowerCase(),
+          from_amount: swap.amountOriginal,
         },
-      },
-    ).then((res) => res.data);
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          },
+        },
+      ).then((res) => res.data);
+
+      this.logger.log(
+        `Quidax swap quotation response: ${JSON.stringify(quotationRes)}`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `Quidax swap quotation API call failed for ${transactionId}: ${error.message}`,
+        error.stack,
+      );
+      return false;
+    }
 
     if (!quotationRes?.data?.id) return false;
     if (swap.quotedPriceOriginal) {
@@ -369,16 +393,29 @@ export class FailedCompanyLiquidityService {
       }
     }
 
-    const confirmRes = await axios.post(
-      `${process.env.QUIDAX_API_URL}/users/me/swap`,
-      { quotation_id: quotationRes.data.id },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+    let confirmRes;
+    try {
+      confirmRes = await axios.post(
+        `${process.env.QUIDAX_API_URL}/users/me/swap`,
+        { quotation_id: quotationRes.data.id },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+          },
         },
-      },
-    ).then((res) => res.data);
+      ).then((res) => res.data);
+
+      this.logger.log(
+        `Quidax swap confirm response: ${JSON.stringify(confirmRes)}`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `Quidax swap confirm API call failed for ${transactionId}: ${error.message}`,
+        error.stack,
+      );
+      return false;
+    }
 
     if (!confirmRes?.data?.id) return false;
 

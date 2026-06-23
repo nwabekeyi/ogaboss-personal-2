@@ -48,6 +48,7 @@ model User {
   AutoStack             AutoStack[]
   BillPayment           BillPayment[]
   walletMovements       WalletMovement[]
+  DailyBalanceSnapshot  DailyBalanceSnapshot[]
 
   @@index([email])
   @@index([quidaxAccountId])

@@ -5,7 +5,7 @@ export class UpdateBufferTierDto {
   minAmount?: string;
 
   @IsOptional()
-  maxAmount?: string;
+  maxAmount?: string | null;
 
   @IsOptional()
   @IsNumber()

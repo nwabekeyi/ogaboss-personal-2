@@ -21,7 +21,7 @@ export class CircuitBreakerService implements OnModuleDestroy {
     resetTimeout: 30000,
     errorFilter: (error: Error) => {
       if (error instanceof HttpServiceException) {
-        return error.status < 500;
+        return error.status >= 500;
       }
       return false;
     },

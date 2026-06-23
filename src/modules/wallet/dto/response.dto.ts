@@ -21,22 +21,27 @@ export class TransformedWalletDto {
 
   @ApiProperty({
     example: '0.025',
-    description: 'Current available balance in the wallet (formatted string)',
+    description: 'Current balance in the wallet (formatted string)',
   })
   balance: string;
 
   @ApiProperty({
-    example: '0',
-    description: 'Reserved balance in display units (formatted string)',
+    example: 0,
+    description: 'Current reserved balance in the wallet',
   })
   reservedBalance: string;
 
   @ApiProperty({
-    example: '0.025',
-    description:
-      'Total wallet balance in display units, including locked/stacked funds (formatted string)',
+    example: 0,
+    description: 'Current urgent-loan collateral locked in the wallet',
   })
-  totalBalance: string;
+  loanCollateralBalance: string;
+
+  @ApiProperty({
+    example: 0,
+    description: 'Urgent-loan collateral converted to NGN',
+  })
+  loanCollateralBalanceInNaira: number;
 
   @ApiProperty({
     example: 145000,
@@ -49,6 +54,12 @@ export class TransformedWalletDto {
     description: 'Total wallet balance converted to NGN (balance * ngnPrice)',
   })
   ngnBalance: number;
+
+  @ApiProperty({
+    example: '0.025',
+    description: 'Total wallet balance including locked, stacked and loan collateral',
+  })
+  totalBalance: string;
 
   @ApiProperty({
     example: true,
@@ -74,15 +85,9 @@ export class TransformedWalletDto {
 export class WalletSummaryResponseDto {
   @ApiProperty({
     example: 156250,
-    description: 'Total available balance across all wallets in NGN',
+    description: 'Total balance across all wallets in NGN',
   })
   totalBalanceInNaira: number;
-
-  @ApiProperty({
-    example: 0,
-    description: 'Total reserved balance across all wallets in NGN',
-  })
-  totalReservedBalanceInNaira: number;
 
   @ApiProperty({
     example: 'NGN',
@@ -98,17 +103,17 @@ export class WalletSummaryResponseDto {
 
   @ApiProperty({
     example: 5.25,
-    description: 'Percentage change in total balance since yesterday',
+    description: 'Percentage change in total balance over the current week (Monday – Sunday)',
   })
-  percentChangeSinceYesterday: number;
+  weeklyPercentChange: number;
 
   @ApiProperty({
-    example: 'up',
+    example: '1',
     description:
-      'Trend direction: up (positive change), down (negative change), no_change (zero change)',
-    enum: ['up', 'down', 'no_change'],
+      'Trend direction: 1 (positive change), 2 (negative change), 0 (zero change)',
+    enum: ['1', '2', '0'],
   })
-  trend: 'up' | 'down' | 'no_change';
+  trend: '1' | '2' | '0';
 
   @ApiProperty({
     type: [TransformedWalletDto],

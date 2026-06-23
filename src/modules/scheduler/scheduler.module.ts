@@ -26,6 +26,7 @@ import { AutoStackModule } from '../autostack/autostack.module';
 import { isDedicatedSchedulerRuntime } from './scheduler-runtime.util';
 import { XpresspayModule } from '../../infrastructure/providers/xpresspay/xpresspay.module';
 import { BillPaymentRetryScheduler } from './schedulers/bill-payment-retry.scheduler';
+import { WeeklyBalanceSnapshotScheduler } from './schedulers/weekly-balance-snapshot.scheduler';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { BillPaymentRetryScheduler } from './schedulers/bill-payment-retry.sched
     BillPaymentRetryScheduler,
     QueueService,
     AutoStackInterestScheduler,
+    WeeklyBalanceSnapshotScheduler,
     ...(isDedicatedSchedulerRuntime() ? [SchedulerJobsWorker] : []),
     SchedulerExecutionStateService,
   ],

@@ -11,6 +11,7 @@ import {
   PaymentStatus,
   Prisma,
   PrismaService,
+  UrgentLiquidityLoanStatus,
 } from '../../../../infrastructure';
 import {
   PaymentType,
@@ -18,7 +19,9 @@ import {
   TransactionStatus,
   TransactionType,
 } from '../../../../infrastructure/databases/prisma';
+import { PaystackService } from '../../../../infrastructure/providers/paystack';
 import { PaystackWebhookEvent } from '../../../../infrastructure/providers/paystack/type';
+import { QuidaxOrderService } from '../../../../infrastructure/providers/quidax';
 import { QuidaxTickerService } from '../../../../infrastructure/providers/quidax/jobs/quidax-ticker.service';
 import {
   CompanyLiquidityService,
@@ -36,66 +39,17 @@ import {
   toDecimal,
 } from '../../../../shared';
 import Decimal from 'decimal.js';
-import axios from 'axios';
 import { QUIDAX_COMPANY_USERID } from '../../../transaction/constants';
 
 @Injectable()
 export class PaystackWebhookHandler {
   private readonly logger = new Logger(PaystackWebhookHandler.name);
   private readonly baseCurrency = BASE_CURRENCY.toUpperCase();
-  private readonly quidaxBaseUrl = process.env.QUIDAX_API_URL;
-
-  private getPaystackSecretKey(): string {
-    return process.env.NODE_ENV === 'development'
-      ? process.env.PAYSTACK_SECRET_KEY_TEST
-      : process.env.PAYSTACK_SECRET_KEY_LIVE;
-  }
-
-  private paystackHeaders() {
-    return {
-      Authorization: `Bearer ${this.getPaystackSecretKey()}`,
-      'Content-Type': 'application/json',
-    };
-  }
-
-  private quidaxHeaders() {
-    return {
-      Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
-      'Content-Type': 'application/json',
-    };
-  }
-
-  private async verifyPaystackTransaction(reference: string) {
-    const { data } = await axios.get(
-      `https://api.paystack.co/transaction/verify/${reference}`,
-      { headers: this.paystackHeaders() },
-    );
-    return data;
-  }
-
-  private async refundPaystackTransaction(payload: Record<string, any>) {
-    const { data } = await axios.post(
-      'https://api.paystack.co/refund',
-      payload,
-      { headers: this.paystackHeaders() },
-    );
-    return data;
-  }
-
-  private async createQuidaxOrder(
-    userId: string,
-    payload: Record<string, any>,
-  ) {
-    const { data } = await axios.post(
-      `${this.quidaxBaseUrl}/users/${userId}/orders`,
-      payload,
-      { headers: this.quidaxHeaders() },
-    );
-    return data;
-  }
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly paystackService: PaystackService,
+    private readonly quidaxOrderService: QuidaxOrderService,
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionService: TransactionService,
     private readonly transactionNotificationService: TransactionNotificationService,
@@ -155,7 +109,10 @@ export class PaystackWebhookHandler {
         return;
       }
 
-      const verification = await this.verifyPaystackTransaction(reference);
+      const verification = await this.paystackService.verifyTransaction(
+        reference,
+        { skipCircuitBreaker: true },
+      );
       if (!verification.status || !verification.data) {
         throw new BadRequestException(
           `Verification failed: ${verification.message}`,
@@ -324,12 +281,16 @@ export class PaystackWebhookHandler {
 
     if (!shouldProceed) return;
 
-    const response = await this.createQuidaxOrder(companyUserId, {
-      market,
-      side: 'buy',
-      ord_type: 'market',
-      volume: executedCryptoVolume.toString(),
-    });
+    const response = await this.quidaxOrderService.buyOrSellOrderRequest(
+      companyUserId,
+      {
+        market,
+        side: 'buy',
+        ord_type: 'market',
+        volume: executedCryptoVolume.toString(),
+      },
+      { skipCircuitBreaker: true },
+    );
 
     if (response.status !== 'success') {
       await this.prisma.transaction.update({
@@ -579,9 +540,10 @@ export class PaystackWebhookHandler {
     }
 
     try {
-      const refund = await this.refundPaystackTransaction({
-        transaction: data.reference,
-      });
+      const refund = await this.paystackService.refundTransaction(
+        { transaction: data.reference },
+        { skipCircuitBreaker: true },
+      );
 
       if (!refund?.status) {
         throw new Error(refund?.message || 'Refund request failed');
@@ -754,8 +716,54 @@ export class PaystackWebhookHandler {
     });
 
     if (!order) {
-      this.logger.warn(
-        `Sell payout order not found for transfer reference ${reference}`,
+      const urgentLoan = await this.prisma.urgentLiquidityLoan.findFirst({
+        where: { paystackTransferId: reference },
+      });
+
+      if (!urgentLoan) {
+        this.logger.warn(
+          `Sell payout order not found for transfer reference ${reference}`,
+        );
+        return;
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT "id" FROM "urgent_liquidity_loans"
+          WHERE "id" = ${urgentLoan.id}
+          FOR UPDATE
+        `;
+        const fresh = await tx.urgentLiquidityLoan.findUnique({
+          where: { id: urgentLoan.id },
+          select: { status: true },
+        });
+
+        if (
+          fresh?.status === UrgentLiquidityLoanStatus.DISBURSED ||
+          fresh?.status === UrgentLiquidityLoanStatus.REPAID ||
+          fresh?.status === UrgentLiquidityLoanStatus.DEADLINE_EXCEEDED
+        ) {
+          this.logger.warn(
+            `Urgent liquidity loan ${urgentLoan.id} already finalized`,
+          );
+          return;
+        }
+
+        if (fresh?.status !== UrgentLiquidityLoanStatus.QUIDAX_COMPLETED) {
+          this.logger.warn(
+            `Urgent liquidity loan ${urgentLoan.id} Paystack success arrived before Quidax settlement`,
+          );
+          return;
+        }
+
+        await tx.urgentLiquidityLoan.update({
+          where: { id: urgentLoan.id },
+          data: { status: UrgentLiquidityLoanStatus.DISBURSED },
+        });
+      });
+
+      this.logger.log(
+        `Urgent liquidity loan ${urgentLoan.id} disbursed successfully`,
       );
       return;
     }
@@ -957,8 +965,51 @@ export class PaystackWebhookHandler {
     });
 
     if (!order) {
+      const urgentLoan = await this.prisma.urgentLiquidityLoan.findFirst({
+        where: { paystackTransferId: reference },
+      });
+
+      if (!urgentLoan) {
+        this.logger.warn(
+          `Sell payout order not found for transfer reference ${reference}`,
+        );
+        return;
+      }
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          SELECT "id" FROM "urgent_liquidity_loans"
+          WHERE "id" = ${urgentLoan.id}
+          FOR UPDATE
+        `;
+        const fresh = await tx.urgentLiquidityLoan.findUnique({
+          where: { id: urgentLoan.id },
+          select: { status: true },
+        });
+
+        if (
+          fresh?.status === UrgentLiquidityLoanStatus.FAILED ||
+          fresh?.status === UrgentLiquidityLoanStatus.DISBURSED ||
+          fresh?.status === UrgentLiquidityLoanStatus.REPAID ||
+          fresh?.status === UrgentLiquidityLoanStatus.DEADLINE_EXCEEDED
+        ) {
+          this.logger.warn(
+            `Urgent liquidity loan ${urgentLoan.id} already finalized`,
+          );
+          return;
+        }
+
+        await tx.urgentLiquidityLoan.update({
+          where: { id: urgentLoan.id },
+          data: {
+            status: UrgentLiquidityLoanStatus.FAILED,
+            failureReason: `Paystack transfer failed: ${event}`,
+          },
+        });
+      });
+
       this.logger.warn(
-        `Sell payout order not found for transfer reference ${reference}`,
+        `Urgent liquidity loan ${urgentLoan.id} transfer FAILED: ${reference}`,
       );
       return;
     }

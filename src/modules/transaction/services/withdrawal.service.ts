@@ -31,11 +31,13 @@ import { TransactionService } from './transaction.service';
 import { TempStoreService } from '../../../infrastructure';
 import { randomUUID } from 'crypto';
 import Decimal from 'decimal.js';
-import axios from 'axios';
 import { CompanyLiquidityService } from './company-liquidity.service';
 import { TransactionNotificationService } from './transaction-notification.service';
 import { QueueService } from '../../../infrastructure/bullMQ/bullmq.service';
 import { QueueName } from '../../../infrastructure/bullMQ/types';
+import { QuidaxWithdrawalService } from '../../../infrastructure/providers/quidax';
+import { ExternalProviderApiLogService } from '../../../infrastructure/provider-api-log';
+import axios from 'axios';
 
 @Injectable()
 export class WithdrawalService {
@@ -48,6 +50,8 @@ export class WithdrawalService {
     private readonly companyLiquidityService: CompanyLiquidityService,
     private readonly transactionNotificationService: TransactionNotificationService,
     private readonly queueService: QueueService,
+    private readonly quidaxWithdrawalService: QuidaxWithdrawalService,
+    private readonly providerApiLogService: ExternalProviderApiLogService,
   ) {}
 
   private async notifySuperAdminLiquidityInsufficient(
@@ -77,6 +81,7 @@ export class WithdrawalService {
       normalizedCurrency,
       normalizedNetwork,
     );
+    console.log(normalizedNetwork);
 
     const wallet = await this.prisma.wallet.findFirst({
       where: {
@@ -130,23 +135,66 @@ export class WithdrawalService {
       normalizedCurrency,
     );
 
-    const feeRes = await axios
-      .get(`${process.env.QUIDAX_API_URL}/fee`, {
-        params: { currency: currencyKey, network: networkKey },
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
-        },
-      })
-      .then((res) => res.data);
+    let feeRes;
+    try {
+      feeRes = await this.quidaxWithdrawalService.getWithdrawerFees({
+        currency: currencyKey,
+        network: networkKey,
+      });
 
-    if (!feeRes || feeRes.status !== 'success') {
+      this.logger.log(
+        `Quidax fee API response for ${currencyKey}/${networkKey}: ${JSON.stringify(feeRes)}`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `Quidax fee API call failed for ${currencyKey}/${networkKey}: ${error.message}`,
+        error.stack,
+      );
       throw new BadRequestException(
-        feeRes.message || 'Service unavailable to calculate fees',
+        error.response?.data?.message ||
+          error.message ||
+          'Service unavailable to calculate fees',
       );
     }
 
+    if (feeRes.status !== 'success') {
+      const errorMessage =
+        feeRes.message ||
+        feeRes.data?.message ||
+        'Service unavailable to calculate fees';
+
+      // Detect network mismatch: Quidax may be returning an error for a different network
+      // than what was requested (e.g., using company wallet's default network)
+      const networkMismatchMatch = errorMessage.match(
+        /Fee Config for \w+ on (\w+) network not Found/i,
+      );
+      if (networkMismatchMatch && networkMismatchMatch[1] !== networkKey) {
+        const wrongNetwork = networkMismatchMatch[1].toLowerCase();
+        this.logger.warn(
+          `Quidax fee API network mismatch for ${currencyKey}/${networkKey}: API returned error for ${wrongNetwork} network. ` +
+            `This may indicate the company wallet default network is ${wrongNetwork}, not ${networkKey}. ` +
+            `Clear Redis cache 'quidax:company:wallets' or configure correct default network.`,
+        );
+      }
+
+      this.logger.warn(
+        `Quidax fee API returned non-success for ${currencyKey}/${networkKey}: ${JSON.stringify(feeRes)}`,
+      );
+      throw new BadRequestException(errorMessage);
+    }
+
     const networkFeeTiers = feeRes.data.fee ?? [];
+
+    // Defensive check: if Quidax returned empty fee tiers for a valid network request,
+    // this may indicate the company wallet's default network differs from the requested one.
+    // Quidax may be using the wrong network internally.
+    if (networkFeeTiers.length === 0 && networkKey) {
+      this.logger.warn(
+        `Quidax fee API returned no fee tiers for ${currencyKey}/${networkKey}. ` +
+          `This may indicate the company wallet is configured for a different default network. ` +
+          `Verify Redis cache 'quidax:company:wallets' has correct network for ${currencyKey}.`,
+      );
+    }
 
     let networkFeeHuman = '0';
     const amountDec = new Decimal(amount);
@@ -285,6 +333,17 @@ export class WithdrawalService {
         });
 
         if (existingWithdrawal) {
+          const transaction = existingWithdrawal.transaction;
+          if (
+            !transaction.cryptoAmountOriginal ||
+            transaction.cryptoAmountOriginal === '0'
+          ) {
+            existingWithdrawal.transaction = await tx.transaction.update({
+              where: { id: transaction.id },
+              data: { cryptoAmountOriginal: preview.requestedAmount },
+            });
+          }
+
           return {
             transaction: existingWithdrawal.transaction,
             withdrawal: existingWithdrawal,
@@ -320,6 +379,7 @@ export class WithdrawalService {
             transactionUniqueId: previewId,
             currency: preview.currency,
             network: preview.network,
+            cryptoAmountOriginal: preview.requestedAmount,
             cryptoAmountBase: toDecimal(requestedAmountBase),
             platformFeeBase: toDecimal(platformFeeBase),
             networkFeeBase: toDecimal(networkFeeBase),
@@ -436,12 +496,13 @@ export class WithdrawalService {
     let providerWithdrawalId: string;
 
     try {
+      const url = `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`;
       const response = await axios
         .post(
-          `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`,
+          url,
           {
             user_id: QUIDAX_COMPANY_USERID,
-            currency: preview.currency,
+            currency: preview.currency.toLowerCase(),
             amount: preview.requestedAmount,
             fund_uid: preview.toAddress,
             fund_uid2: isXRP ? preview.destinationTag : undefined,
@@ -458,6 +519,10 @@ export class WithdrawalService {
           },
         )
         .then((res) => res.data);
+
+      this.logger.log(
+        `Quidax withdraw API response: ${JSON.stringify(response)}`,
+      );
 
       if (response.status !== 'success' || !response.data?.id) {
         await this.compensateFailedWithdrawal(
@@ -477,6 +542,22 @@ export class WithdrawalService {
       providerWithdrawalId = response.data.id;
     } catch (error: any) {
       if (error instanceof BadRequestException) throw error;
+
+      await this.providerApiLogService.log({
+        provider: 'QUIDAX',
+        method: 'POST',
+        url: `${process.env.QUIDAX_API_URL}/users/${QUIDAX_COMPANY_USERID}/withdraws`,
+        success: false,
+        errorMessage: error.response?.data?.message || error.message,
+        responseBody: error.response?.data,
+        metadata: {
+          transactionId: transaction.id,
+          withdrawalId: withdrawal.id,
+          userId,
+          currency: preview.currency,
+          amount: preview.requestedAmount,
+        },
+      });
 
       await this.compensateFailedWithdrawal(
         transaction.id,
@@ -595,18 +676,48 @@ export class WithdrawalService {
     }
 
     // PROCESSING: provider was called — we must tell Quidax to cancel first
-    const response = await axios
-      .post(
-        `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
-        { user_id: 'me', withdrawal_id: withdrawal.providerWithdrawalId },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+    let response;
+    try {
+      response = await axios
+        .post(
+          `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
+          { user_id: 'me', withdrawal_id: withdrawal.providerWithdrawalId },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
+            },
           },
+        )
+        .then((res) => res.data);
+
+      this.logger.log(
+        `Quidax cancel withdrawal response: ${JSON.stringify(response)}`,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `Quidax cancel withdrawal API call failed: ${error.message}`,
+        error.stack,
+      );
+      await this.providerApiLogService.log({
+        provider: 'QUIDAX',
+        method: 'POST',
+        url: `${process.env.QUIDAX_API_URL}/users/me/withdraws/${withdrawal.providerWithdrawalId}/cancel`,
+        success: false,
+        errorMessage: error.response?.data?.message || error.message,
+        responseBody: error.response?.data,
+        metadata: {
+          transactionId: transaction.id,
+          withdrawalId: withdrawal.id,
+          userId,
         },
-      )
-      .then((res) => res.data);
+      });
+      throw new BadRequestException(
+        error.response?.data?.message ||
+          error.message ||
+          'Failed to cancel withdrawal with provider',
+      );
+    }
 
     if (response.status !== 'success') {
       throw new BadRequestException(

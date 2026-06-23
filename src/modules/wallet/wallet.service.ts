@@ -3,7 +3,6 @@ import { PrismaService } from '../../infrastructure/databases/prisma';
 import { QuidaxTickerService } from '../../infrastructure/providers/quidax';
 import { TransformedWallet, WalletSummary } from './interface';
 import {
-  BASE_CURRENCY,
   ConvertCurrency,
   CryptoNetwork,
   toBigInt,
@@ -46,88 +45,57 @@ export class WalletService {
     return Number(ConvertCurrency.fromBase(toBigInt(amount as any), currency));
   }
 
-  private getUsdPrice(tickers: Record<string, any>, currency: string): number {
-    const curr = currency.toLowerCase();
+  private lookupTickerPrice(
+    tickers: Record<string, any>,
+    currency: string,
+    usdtNgnRate: number,
+  ): number {
+    const currUpper = currency.toUpperCase();
+    const currLower = currency.toLowerCase();
 
-    if (curr === 'usdt' || curr === 'usdc') {
-      return tickers['usdtusd']?.ticker?.last
-        ? parseFloat(tickers['usdtusd'].ticker.last)
-        : 1.0;
-    }
-
-    const usdtPair = `${curr}usdt`;
-    if (tickers[usdtPair]?.ticker?.last) {
-      return parseFloat(tickers[usdtPair].ticker.last);
-    }
-
-    const ngnPair = `${curr}${BASE_CURRENCY}`;
-    const usdtNgnRate = this.getUsdtNgnRate(tickers);
-
-    if (tickers[ngnPair]?.ticker?.last && usdtNgnRate > 0) {
-      return parseFloat(tickers[ngnPair].ticker.last) / usdtNgnRate;
-    }
-
-    return 0;
-  }
-
-  private getUsdtNgnRate(tickers: Record<string, any>): number {
-    return tickers['usdtngn']?.ticker?.last
-      ? parseFloat(tickers['usdtngn'].ticker.last)
-      : 1463.7;
-  }
-
-  private getNgnPrice(tickers: Record<string, any>, currency: string): number {
-    const curr = currency.toLowerCase();
-
-    const usdtNgnRate = tickers['usdtngn']?.ticker?.last
-      ? parseFloat(tickers['usdtngn'].ticker.last)
-      : 0;
-
-    if (curr === 'usdt' || curr === 'usdc') {
-      return usdtNgnRate;
-    }
-
-    const directNgnPair = `${curr}ngn`;
-    if (tickers[directNgnPair]?.ticker?.last) {
-      const price = parseFloat(tickers[directNgnPair].ticker.last);
+    const directLower = `${currLower}ngn`;
+    const directUpper = `${currUpper}NGN`;
+    const direct = tickers[directLower]?.ticker?.last || 
+                   tickers[directUpper]?.ticker?.last;
+    if (direct) {
+      const price = parseFloat(direct);
       if (price > 0) return price;
     }
 
-    const usdtPair = `${curr}usdt`;
-    if (tickers[usdtPair]?.ticker?.last && usdtNgnRate > 0) {
-      return parseFloat(tickers[usdtPair].ticker.last) * usdtNgnRate;
+    const usdtLower = `${currLower}usdt`;
+    const usdtUpper = `${currUpper}USDT`;
+    const usdtPrice = tickers[usdtLower]?.ticker?.last || 
+                      tickers[usdtUpper]?.ticker?.last;
+    if (usdtPrice && usdtNgnRate > 0) {
+      const price = parseFloat(usdtPrice) * usdtNgnRate;
+      if (price > 0) return price;
     }
 
     return 0;
   }
 
   async userWallets(userId: string): Promise<WalletSummary> {
-    const t0 = Date.now();
-
     const wallets = await this.prisma.wallet.findMany({ where: { userId } });
 
-    const tickers = await this.tickerService
+    let tickers = await this.tickerService
       .getCachedTickers()
       .then((t) => t || {});
+    
+    if (Object.keys(tickers).length === 0) {
+      try {
+        await this.tickerService.fetchAndCacheTickers();
+        tickers = await this.tickerService.getCachedTickers().then((t) => t || {});
+      } catch (err) {
+        this.logger.warn('Failed to fetch live tickers, using empty cache', err);
+      }
+    }
 
-    const dailyCache = await this.prisma.userDailyPercentage.findFirst({
-      where: {
-        userId,
-        calculatedAt: {
-          gte: new Date(new Date().toISOString().split('T')[0]),
-          lt: new Date(
-            new Date(new Date().toISOString().split('T')[0]).getTime() +
-              24 * 60 * 60 * 1000,
-          ),
-        },
-      },
-      orderBy: { calculatedAt: 'desc' },
-    });
-
-    const usdtNgnRate = this.getUsdtNgnRate(tickers);
-    const usdtNgnRateSafe = usdtNgnRate > 0 ? usdtNgnRate : 1463.7;
-
-    const priceMap = this.buildPriceMap(tickers, usdtNgnRate);
+    const usdtNgnRate = tickers['usdtngn']?.ticker?.last ||
+                        tickers['USDTNGN']?.ticker?.last
+      ? parseFloat(
+          tickers['usdtngn']?.ticker?.last || tickers['USDTNGN']?.ticker?.last,
+        )
+      : 1463.7;
 
     let totalNairaBalance = 0;
     let totalReservedNaira = 0;
@@ -161,37 +129,49 @@ export class WalletService {
         w.defaultNetwork,
       );
 
-      const availableBalance = balanceNum - reservedNum;
-      const totalBalance = balanceNum + lockedNum + stackedNum;
+      const loanCollateralNum = this.fromStoredWalletBase(
+        w.loanCollateralAmount || 0,
+        w.currency,
+        w.isCrypto,
+        w.defaultNetwork,
+      );
+
+      const availableBalance = Math.max(
+        0,
+        balanceNum - reservedNum - loanCollateralNum,
+      );
+      const totalBalance = balanceNum + lockedNum + stackedNum + loanCollateralNum;
       const currencyLower = w.currency.toLowerCase();
 
       let ngnPrice: number;
       let ngnBalance: number;
+      let loanCollateralNgn: number;
       let reservedNgn: number;
 
-      if (w.isCrypto) {
-        const prices = priceMap.get(currencyLower) || { ngn: 0, usd: 0 };
-        ngnPrice = prices.ngn;
+      if (currencyLower === 'ngn') {
+        ngnPrice = 1;
+        ngnBalance = availableBalance;
+        loanCollateralNgn = loanCollateralNum;
+        reservedNgn = reservedNum;
+      } else if (currencyLower === 'usd') {
+        ngnPrice = usdtNgnRate;
+        ngnBalance = availableBalance * usdtNgnRate;
+        loanCollateralNgn = loanCollateralNum * usdtNgnRate;
+        reservedNgn = reservedNum * usdtNgnRate;
+      } else if (w.isCrypto) {
+        ngnPrice = this.lookupTickerPrice(tickers, w.currency, usdtNgnRate);
         ngnBalance = availableBalance * ngnPrice;
+        loanCollateralNgn = loanCollateralNum * ngnPrice;
         reservedNgn = reservedNum * ngnPrice;
       } else {
-        if (currencyLower === 'ngn') {
-          ngnPrice = 1;
-          ngnBalance = availableBalance;
-          reservedNgn = reservedNum;
-        } else if (currencyLower === 'usd') {
-          ngnPrice = usdtNgnRateSafe;
-          ngnBalance = availableBalance * usdtNgnRateSafe;
-          reservedNgn = reservedNum * usdtNgnRateSafe;
-        } else {
-          ngnPrice = 0;
-          ngnBalance = 0;
-          reservedNgn = 0;
-        }
+        ngnPrice = 0;
+        ngnBalance = 0;
+        loanCollateralNgn = 0;
+        reservedNgn = 0;
       }
 
-      totalNairaBalance += ngnBalance;
-      totalReservedNaira += reservedNgn;
+      totalNairaBalance += ngnBalance + loanCollateralNgn;
+      totalReservedNaira += reservedNgn + loanCollateralNgn;
 
       return {
         id: w.id,
@@ -203,6 +183,12 @@ export class WalletService {
         reservedBalance: w.isCrypto
           ? reservedNum.toFixed(8).replace(/\.?0+$/, '')
           : reservedNum.toFixed(2),
+        loanCollateralBalance: w.isCrypto
+          ? loanCollateralNum.toFixed(8).replace(/\.?0+$/, '')
+          : loanCollateralNum.toFixed(2),
+        loanCollateralBalanceInNaira: Math.round(
+          loanCollateralNgn * 100,
+        ) / 100,
         totalBalance: w.isCrypto
           ? totalBalance.toFixed(8).replace(/\.?0+$/, '')
           : totalBalance.toFixed(2),
@@ -214,12 +200,16 @@ export class WalletService {
       };
     });
 
-    processed.sort((a, b) => b.ngnBalance - a.ngnBalance);
+    processed.sort((a, b) => {
+      const aPriority = this.PRIORITY_SET.has(a.currency) ? 0 : 1;
+      const bPriority = this.PRIORITY_SET.has(b.currency) ? 0 : 1;
+      if (aPriority !== bPriority) return aPriority - bPriority;
+      return b.ngnBalance - a.ngnBalance;
+    });
 
-    const daily = this._computeDailyChange(
-      dailyCache,
+    const weekly = await this._computeWeeklyChange(
+      userId,
       totalNairaBalance,
-      usdtNgnRate,
     );
 
     return {
@@ -227,70 +217,38 @@ export class WalletService {
       totalReservedBalanceInNaira: Math.round(totalReservedNaira * 100) / 100,
       displayCurrency: 'NGN',
       currencySymbol: '₦',
-      ...daily,
+      ...weekly,
       wallets: processed,
     };
   }
 
-  private buildPriceMap(
-    tickers: Record<string, any>,
-    usdtNgnRate: number,
-  ): Map<string, { ngn: number; usd: number }> {
-    const priceMap = new Map<string, { ngn: number; usd: number }>();
-    const currencies = [
-      'btc',
-      'eth',
-      'bnb',
-      'usdt',
-      'usdc',
-      'trx',
-      'xrp',
-      'doge',
-      'sol',
-      'dot',
-    ];
-
-    for (const curr of currencies) {
-      const ngnPrice = this.getNgnPrice(tickers, curr);
-      const usdPrice = this.getUsdPrice(tickers, curr);
-      priceMap.set(curr, { ngn: ngnPrice, usd: usdPrice });
-    }
-
-    return priceMap;
-  }
-
-  private _computeDailyChange(
-    cached: any,
+  private async _computeWeeklyChange(
+    userId: string,
     currentTotalNgn: number,
-    usdtNgnRate: number,
-  ) {
-    if (!cached) {
-      return { percentChangeSinceYesterday: 0, trend: 'no_change' as const };
+  ): Promise<{ weeklyPercentChange: number; trend: WalletSummary['trend'] }> {
+    const snapshot = await this.prisma.dailyBalanceSnapshot.findFirst({
+      where: { userId },
+      orderBy: { snapshotDate: 'desc' },
+    });
+
+    if (!snapshot) {
+      return { weeklyPercentChange: 0, trend: '0' };
     }
 
-    const previousTotalNgn = Number(cached.previousTotal || 0);
-    const previousNetChangeNgn = Number(cached.netChange || 0);
-
-    const currentTotalInNgn = currentTotalNgn;
-    const previousTotalInNgn = previousTotalNgn + previousNetChangeNgn;
+    const lastWeekTotal = snapshot.totalBalanceNgn.toNumber();
 
     let percentChange = 0;
-    if (previousTotalInNgn > 0) {
-      percentChange =
-        ((currentTotalInNgn - previousTotalInNgn) / previousTotalInNgn) * 100;
-    } else if (currentTotalInNgn > 0) {
-      percentChange = 100;
+    if (lastWeekTotal > 0) {
+      percentChange = ((currentTotalNgn - lastWeekTotal) / lastWeekTotal) * 100;
+    } else if (currentTotalNgn > 0) {
+      percentChange = parseFloat((currentTotalNgn / 10).toFixed(2));
     }
 
     const percent = Number(percentChange.toFixed(2));
+
     return {
-      percentChangeSinceYesterday: percent,
-      trend:
-        percent > 0
-          ? ('up' as const)
-          : percent < 0
-            ? ('down' as const)
-            : ('no_change' as const),
+      weeklyPercentChange: percent,
+      trend: percent > 0 ? '1' : percent < 0 ? '2' : '0',
     };
   }
 
@@ -318,6 +276,10 @@ export class WalletService {
       },
     });
 
-    return addresses;
+    // Filter out unsupported networks (arbitrum, lsk) that should not be exposed to frontend
+    const EXCLUDED_NETWORKS = ['arbitrum', 'lsk'];
+    return addresses.filter(
+      (addr) => !EXCLUDED_NETWORKS.includes(addr.network?.toLowerCase() ?? ''),
+    );
   }
 }

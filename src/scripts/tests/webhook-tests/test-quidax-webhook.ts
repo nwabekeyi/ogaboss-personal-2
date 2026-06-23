@@ -290,30 +290,29 @@ function buildWithdrawSuccessfulPayload() {
 }
 
 function buildWalletAddressGeneratedPayload() {
-  const ts = new Date().toISOString();
   return {
     event: 'wallet.address.generated',
     data: {
-      id: `addr_${Date.now()}`,
-      reference: null,
-      currency: 'btc',
-      address: 'bc1qgenerated123456',
-      network: 'bitcoin',
-      destination_tag: null,
-      total_payments: 0,
+      id: "bc9d86d1-84be-43e5-a199-451309115b8d",
       user: {
-        id: 'quidax_test_user_123',
-        email: 'test@example.com',
-        sn: 'sn_12345',
+        id: "17331dda-12f6-49ef-91e4-d283af9a0dba",
+        sn: "QDX2O5GO3QN",
+        email: "amaremo2@mailinator.com",
+        last_name: "Bunmi",
         reference: null,
-        first_name: 'Test',
-        last_name: 'User',
+        created_at: "2026-06-18T09:00:22.000Z",
+        first_name: "Amaremo",
+        updated_at: "2026-06-18T09:00:22.000Z",
         display_name: null,
-        created_at: ts,
-        updated_at: ts,
       },
-      created_at: ts,
-      updated_at: ts,
+      address: "0x6b0e37Ce4e33b008Df4bF991651FebD0Da87889e",
+      network: "bep20",
+      currency: "usdc",
+      reference: null,
+      created_at: "2026-06-18T09:00:27.000Z",
+      updated_at: "2026-06-18T09:00:27.000Z",
+      total_payments: null,
+      destination_tag: null,
     },
   };
 }

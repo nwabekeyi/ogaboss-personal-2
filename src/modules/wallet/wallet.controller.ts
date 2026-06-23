@@ -54,9 +54,9 @@ Each wallet includes converted balances in both NGN and USD based on current mar
 
 ## Response Details
 - **totalBalanceInNaira**: Sum of all wallet balances converted to NGN
-- **totalBalanceInUsd**: Sum of all wallet balances converted to USD  
-- **percentChangeSinceYesterday**: Percentage change from yesterday's total balance
-- **trend**: Direction of change (up/down/no_change)
+- **totalReservedBalanceInNaira**: Total reserved balance in NGN
+- **weeklyPercentChange**: Percentage change over the current week (Monday → Sunday)
+- **trend**: Direction of change (1=up, 2=down, 0=no_change)
 - **wallets**: Array of individual wallet details
 
 ## Wallet Details

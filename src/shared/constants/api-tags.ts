@@ -23,6 +23,7 @@ export const apiTags = {
   urgentLiquidity: 'admin/urgent-liquidity',
   autoStacking: 'admin/auto-stacking',
   adminLiquidity: 'admin/liquidity',
+  urgentLiquidityClient: 'urgent-liquidity',
   vault: 'vaults',
   settings: 'settings',
 };

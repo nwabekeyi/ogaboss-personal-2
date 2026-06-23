@@ -1,0 +1,22 @@
+model DailyBalanceSnapshot {
+  id               String    @id @default(cuid())
+  userId           String
+  snapshotDate     DateTime  @db.Date
+  totalBalanceNgn  Decimal   @db.Decimal(78, 2)
+  ngnBalance       Decimal   @default(0) @db.Decimal(78, 2)
+  usdBalance       Decimal   @default(0) @db.Decimal(78, 2)
+  cryptoBalanceNgn Decimal   @default(0) @db.Decimal(78, 2)
+  walletCount      Int       @default(0)
+  tickerSnapshot   Json?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([userId, snapshotDate])
+  @@index([userId])
+  @@index([snapshotDate])
+  @@index([userId, snapshotDate])
+  @@index([createdAt])
+  @@map("daily_balance_snapshots")
+}

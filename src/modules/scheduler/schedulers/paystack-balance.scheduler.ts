@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
+import { Cron} from '@nestjs/schedule';
 import { PrismaService, RedisService } from '../../../infrastructure';
 import { PaystackService } from '../../../infrastructure/providers/paystack';
 import { ConvertCurrency } from '../../../shared';
@@ -26,9 +26,9 @@ export class CompanyPaystackScheduler implements OnModuleInit {
     await this.syncPaystackLiquidity();
   }
 
-  /** Run every minute */
-  @Cron('* * * * *')
-  async syncPaystackLiquidityCron() {
+   /** Run every minute */
+   @Cron('* * * * *')
+   async syncPaystackLiquidityCron() {
     if (!isDedicatedSchedulerRuntime()) return;
     await this.syncPaystackLiquidity();
   }
@@ -63,7 +63,6 @@ export class CompanyPaystackScheduler implements OnModuleInit {
       const paystackLiquidity = await this.prisma.companyLiquidity.upsert({
         where: { id: COMPANY_PAYSTACK_NGN_WALLET_ID },
         update: {
-          network: null,
           totalBalance: totalBalanceBase,
           updatedAt: new Date(),
         },
@@ -72,7 +71,6 @@ export class CompanyPaystackScheduler implements OnModuleInit {
           totalBalance: totalBalanceBase,
           reservedBalance: '0',
           currency: BASE_CURRENCY,
-          network: null,
         },
       });
 

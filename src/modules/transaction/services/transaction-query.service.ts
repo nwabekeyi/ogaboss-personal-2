@@ -6,10 +6,34 @@ import {
 import { PrismaService } from '../../../infrastructure/databases/prisma';
 import { GetUserTransactionsDto } from '../dto/get-user-transactions.dto';
 import { ConvertCurrency } from '../../../shared';
+import { TransactionContext } from '../../../infrastructure';
 
 @Injectable()
 export class TransactionQueryService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private resolveCryptoAmountOriginal(transaction: any): string | null {
+    const original = transaction.cryptoAmountOriginal?.toString();
+    const isEmptyOriginal =
+      !original || original.trim() === '0' || /^0(\.0+)?$/.test(original);
+
+    if (transaction.transactionContext !== TransactionContext.WITHDRAWAL) {
+      return original ?? null;
+    }
+
+    if (!isEmptyOriginal) {
+      return original;
+    }
+
+    if (!transaction.cryptoAmountBase) {
+      return original ?? null;
+    }
+
+    return ConvertCurrency.fromBase(
+      transaction.cryptoAmountBase.toString(),
+      transaction.currency,
+    );
+  }
 
   async getUserTransactions(userId: string, dto: GetUserTransactionsDto = {}) {
     const {
@@ -53,6 +77,7 @@ export class TransactionQueryService {
           transactionUniqueId: true,
           currency: true,
           cryptoAmountOriginal: true,
+          cryptoAmountBase: true,
           fiatAmountOriginal: true,
           status: true,
           transactionType: true,
@@ -82,10 +107,17 @@ export class TransactionQueryService {
         paymentMetadata,
         executedCryptoAmountBase,
         executedFiatAmountBase,
+        cryptoAmountBase,
         network,
         currency,
         ...rest
       }) => {
+        const cryptoAmountOriginal = this.resolveCryptoAmountOriginal({
+          ...rest,
+          cryptoAmountBase,
+          currency,
+        });
+
         const executedCryptoAmountOriginal = executedCryptoAmountBase
           ? ConvertCurrency.fromBase(
               executedCryptoAmountBase.toString(),
@@ -99,6 +131,7 @@ export class TransactionQueryService {
 
         return {
           ...rest,
+          cryptoAmountOriginal,
           currency,
           network,
           executedCryptoAmountOriginal,
@@ -147,6 +180,7 @@ export class TransactionQueryService {
         transactionUniqueId: true,
         currency: true,
         cryptoAmountOriginal: true,
+        cryptoAmountBase: true,
         fiatAmountOriginal: true,
         status: true,
         transactionType: true,
@@ -177,10 +211,16 @@ export class TransactionQueryService {
       paymentMetadata,
       executedCryptoAmountBase,
       executedFiatAmountBase,
+      cryptoAmountBase,
       network,
       currency,
       ...rest
     } = transaction;
+    const cryptoAmountOriginal = this.resolveCryptoAmountOriginal({
+      ...rest,
+      cryptoAmountBase,
+      currency,
+    });
     const executedCryptoAmountOriginal = executedCryptoAmountBase
       ? ConvertCurrency.fromBase(executedCryptoAmountBase.toString(), currency)
       : null;
@@ -189,6 +229,7 @@ export class TransactionQueryService {
       : null;
     const sanitized = {
       ...rest,
+      cryptoAmountOriginal,
       currency,
       network,
       executedCryptoAmountOriginal,
@@ -218,6 +259,7 @@ export class TransactionQueryService {
         transactionUniqueId: true,
         currency: true,
         cryptoAmountOriginal: true,
+        cryptoAmountBase: true,
         fiatAmountOriginal: true,
         status: true,
         transactionType: true,
@@ -245,11 +287,17 @@ export class TransactionQueryService {
         ({
           executedCryptoAmountBase,
           executedFiatAmountBase,
+          cryptoAmountBase,
           network,
           currency,
           ...rest
         }) => ({
           ...rest,
+          cryptoAmountOriginal: this.resolveCryptoAmountOriginal({
+            ...rest,
+            cryptoAmountBase,
+            currency,
+          }),
           currency,
           network,
           executedCryptoAmountOriginal: executedCryptoAmountBase

@@ -250,7 +250,7 @@ export class BillPaymentRetryScheduler {
         billingStatus: 'PAYING_RETRY',
         billingRetryLockedAt: new Date().toISOString(),
         billingRequiresRetry: true,
-      };
+      } as Record<string, any>;
 
       await tx.transaction.update({
         where: { id: transaction.id },

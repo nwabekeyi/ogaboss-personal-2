@@ -44,9 +44,11 @@ export class DepositService {
       throw new NotFoundException(`No wallet found for ${currency}`);
     }
 
-    let paymentAddress = wallet.paymentAddresses.find(
-      (addr) => addr.network?.toUpperCase() === networkUpper,
-    );
+    // Filter out arbitrum and lsk networks which are not supported
+    const EXCLUDED_NETWORKS = ['arbitrum', 'lsk'];
+    let paymentAddress = wallet.paymentAddresses
+      .filter((addr) => !EXCLUDED_NETWORKS.includes(addr.network?.toLowerCase() ?? ''))
+      .find((addr) => addr.network?.toUpperCase() === networkUpper);
 
     if (!paymentAddress || !paymentAddress.address) {
       throw new BadRequestException(

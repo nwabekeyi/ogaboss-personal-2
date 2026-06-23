@@ -233,7 +233,11 @@ export interface IQuidaxTransaction {
     user: IAccount;
 }
 
-export type CreateWithdrawerRequestResponse = IQuidaxTransaction;
+export interface CreateWithdrawerRequestResponse {
+    status: "success" | "error" | string;
+    message: string;
+    data: IQuidaxTransaction;
+}
 
 export type WithdrawalState = "processing" | "done" | "rejected" | "submitted";
 

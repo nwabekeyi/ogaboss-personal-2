@@ -343,8 +343,8 @@ export async function cleanup(prisma: PrismaService, userId: string) {
 }
 
 const TEST_USER_ID = 'test_webhook_user_001';
-const QUIDAX_ACCOUNT_ID = 'quidax_test_account_001';
-const QUIDAX_SN = 'sn_test_001';
+const QUIDAX_ACCOUNT_ID = "17331dda-12f6-49ef-91e4-d283af9a0dba";
+const QUIDAX_SN = "QDX2O5GO3QN";
 
 export async function seedUser(prisma: PrismaService) {
   const logger = new Logger('Seed');
@@ -360,9 +360,9 @@ export async function seedUser(prisma: PrismaService) {
   const user = await prisma.user.create({
     data: {
       id: TEST_USER_ID,
-      firstName: 'Test',
-      lastName: 'WebhookUser',
-      email: 'test-webhook@example.com',
+      firstName: 'Amaremo',
+      lastName: 'Bunmi',
+      email: 'amaremo2@mailinator.com',
       quidaxAccountId: QUIDAX_ACCOUNT_ID,
       quidaxSnId: QUIDAX_SN,
       isEmailVerified: true,

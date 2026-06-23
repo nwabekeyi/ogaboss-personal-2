@@ -61,11 +61,19 @@ async function syncPaymentAddresses() {
             continue;
           }
 
-          // Upsert each address
-          for (const addr of addressesRes.data) {
-            const network = addr.network || 'main';
+// Upsert each address
+           for (const addr of addressesRes.data) {
+             const network = (addr.network || 'main').toLowerCase();
 
-            await prisma.paymentAddress.upsert({
+             // Skip unsupported networks (arbitrum, lsk) that should not be synced
+             if (network === 'arbitrum' || network === 'lsk') {
+               console.log(
+                 `[${user.email}] Skipping unsupported network ${network} for ${wallet.currency}`,
+               );
+               continue;
+             }
+
+             await prisma.paymentAddress.upsert({
               where: { quidaxAddressId: addr.id },
               create: {
                 quidaxAddressId: addr.id,

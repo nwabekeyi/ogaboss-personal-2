@@ -1,40 +1,10 @@
 // src/infrastructure/providers/quidax/swap/swap.service.ts
-import { BadGatewayException, Injectable } from '@nestjs/common';
-import { HttpService } from '../../httpService';
-import { ErrorMessages, Providers } from '../../../shared';
+import { Injectable } from '@nestjs/common';
+import { BaseQuidaxService } from './base-quidax.service';
 import * as t from './types';
 
 @Injectable()
-export class QuidaxSwapService {
-  constructor(private readonly httpService: HttpService) {}
-
-  private async request<T = any>(config: {
-    url: string;
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-    data?: any;
-    params?: Record<string, any>;
-    skipCircuitBreaker?: boolean;
-  }): Promise<T> {
-    try {
-      return await this.httpService.request<T>(
-        config.method,
-        `${process.env.QUIDAX_API_URL}${config.url}`,
-        config.data,
-        {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.QUIDAX_API_SECRET_KEY}`,
-        },
-        { params: config.params },
-        config.skipCircuitBreaker ? undefined : Providers.QUIDAX,
-      );
-    } catch (error: any) {
-      const status = error.response?.status;
-      if (status === 500 || status === 502 || status === 503) {
-        throw new BadGatewayException(`Quidax service unavailable (${status})`);
-      }
-      throw new BadGatewayException(ErrorMessages.SERVICE_UNAVAILABLE);
-    }
-  }
+export class QuidaxSwapService extends BaseQuidaxService {
   async createInstantSwapRequest(
     user_id: string,
     options: t.CreateInstantSwapRequestOptions,
@@ -55,7 +25,6 @@ export class QuidaxSwapService {
     return this.request({
       url: `/users/${options.user_id}/swap_quotation/${options.quotation_id}/confirm`,
       method: 'POST',
-      data: {},
       ...opts,
     });
   }

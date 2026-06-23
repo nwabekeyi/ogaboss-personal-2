@@ -231,8 +231,19 @@ enum AutoStackStatus {
   PENDING
   ACTIVE
   ENDED
+  TERMINATED
 }
 
+
+enum UrgentLiquidityLoanStatus {
+  PENDING
+  QUIDAX_COMPLETED
+  PAYSTACK_COMPLETED
+  DISBURSED
+  FAILED
+  REPAID
+  DEADLINE_EXCEEDED
+}
 
 enum BillPaymentStatus {
   PENDING

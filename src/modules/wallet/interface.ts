@@ -7,6 +7,8 @@ export interface TransformedWallet {
   currency: string;
   balance: string;
   reservedBalance: string;
+  loanCollateralBalance: string;
+  loanCollateralBalanceInNaira: number;
   totalBalance: string;
   ngnPrice: number;
   ngnBalance: number;
@@ -23,7 +25,7 @@ export interface WalletSummary {
   totalReservedBalanceInNaira: number;
   displayCurrency: string;
   currencySymbol: string;
-  percentChangeSinceYesterday: number;
-  trend: 'up' | 'down' | 'no_change';
+  weeklyPercentChange: number;
+  trend: '1' | '0' | '2';
   wallets: TransformedWallet[];
 }

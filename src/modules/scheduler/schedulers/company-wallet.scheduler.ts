@@ -7,6 +7,7 @@ import { PrismaService, RedisService } from '../../../infrastructure';
 import { Prisma } from '../../../infrastructure/databases/prisma/generated/prisma/client';
 import { isDedicatedSchedulerRuntime } from '../scheduler-runtime.util';
 import { COMPANY_WALLETS_KEY, ConvertCurrency } from '../../../shared';
+import { FIAT_DECIMALS } from '../../../shared/constants/allowed-currencies';
 
 @Injectable()
 export class CompanyWalletScheduler implements OnModuleInit {
@@ -113,8 +114,18 @@ export class CompanyWalletScheduler implements OnModuleInit {
   ): Promise<void> {
     try {
       const normalizedCurrency = currency.toLowerCase();
+      
+      // For fiat currencies, ensure balance has appropriate decimal places
+      let processedBalance = balance;
+      if (normalizedCurrency in FIAT_DECIMALS || normalizedCurrency === 'ngn') {
+        const decimals = FIAT_DECIMALS[normalizedCurrency] ?? 2;
+        const [whole = '0', fraction = ''] = processedBalance.split('.');
+        const truncatedFraction = fraction.slice(0, decimals);
+        processedBalance = whole + (truncatedFraction ? '.' + truncatedFraction : '');
+      }
+      
       const totalBalanceBase = ConvertCurrency.toBase(
-        balance,
+        processedBalance,
         normalizedCurrency,
       );
 
@@ -140,13 +151,23 @@ export class CompanyWalletScheduler implements OnModuleInit {
         error.code === 'P2002'
       ) {
         try {
+          // For fiat currencies, ensure balance has appropriate decimal places
+          let processedBalance = balance;
+          const normalizedCurrency = currency.toLowerCase();
+          if (normalizedCurrency in FIAT_DECIMALS || normalizedCurrency === 'ngn') {
+            const decimals = FIAT_DECIMALS[normalizedCurrency] ?? 2;
+            const [whole = '0', fraction = ''] = processedBalance.split('.');
+            const truncatedFraction = fraction.slice(0, decimals);
+            processedBalance = whole + (truncatedFraction ? '.' + truncatedFraction : '');
+          }
+          
           await this.prisma.companyLiquidity.update({
-            where: { currency: currency.toLowerCase() },
+            where: { currency: normalizedCurrency },
             data: {
               network: network,
               totalBalance: ConvertCurrency.toBase(
-                balance,
-                currency.toLowerCase(),
+                processedBalance,
+                normalizedCurrency,
               ).toString(),
               updatedAt: new Date(),
             },

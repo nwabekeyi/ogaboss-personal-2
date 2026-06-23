@@ -36,6 +36,7 @@ export class BaseQuidaxService {
         config.skipCircuitBreaker ? undefined : Providers.QUIDAX,
       );
 
+      // console.log(`[Quidax] Request successful: ${config.method} ${config.url}, ${JSON.stringify(response)}`);
       return response;
     } catch (error: any) {
       // Log the full error response for debugging

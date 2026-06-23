@@ -100,4 +100,10 @@ export const schema = {
   // Vault
   VAULT_TRANSACTION_FEE: Joi.number().required(),
   VAULT_QUOTE_TTL_SECONDS: Joi.number().default(300),
+
+  // Internal
+  SUPERADMIN_EMAIL: Joi.string().required(),
+
+  // Scheduler
+  ENABLE_SCHEDULERS: Joi.string().required(),
 };

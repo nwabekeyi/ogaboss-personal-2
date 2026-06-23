@@ -8,6 +8,7 @@ import {
   PaymentStatus,
   AutoStackStatus,
   PaymentType,
+  UrgentLiquidityLoanStatus,
 } from '../../../../infrastructure/databases/prisma/generated/prisma/client';
 import { DashboardStatsQueueService } from '../../../dashboard/dashboard-stats-queue';
 import {
@@ -27,67 +28,22 @@ import {
   TransactionService,
   TransactionNotificationService,
 } from '../../../../modules/transaction/services';
+import { PaystackService } from '../../../../infrastructure/providers/paystack';
 import { CompensatedError } from '../../compensated-error';
-import axios from 'axios';
+import { XpresspayService } from '../../../../infrastructure/providers/xpresspay/xpresspay.service';
 
 @Injectable()
 export class OrderDoneHandler {
   private readonly logger = new Logger(OrderDoneHandler.name);
 
-  private getPaystackSecretKey(): string {
-    return process.env.NODE_ENV === 'development'
-      ? process.env.PAYSTACK_SECRET_KEY_TEST
-      : process.env.PAYSTACK_SECRET_KEY_LIVE;
-  }
-
-  private paystackHeaders() {
-    return {
-      Authorization: `Bearer ${this.getPaystackSecretKey()}`,
-      'Content-Type': 'application/json',
-    };
-  }
-
-  private xpresspayHeaders() {
-    return {
-      Authorization: `Bearer ${process.env.XPRESSPAY_API_KEY ?? ''}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    };
-  }
-
-  private async createTransferRecipient(payload: Record<string, any>) {
-    const { data } = await axios.post(
-      'https://api.paystack.co/transferrecipient',
-      payload,
-      { headers: this.paystackHeaders() },
-    );
-    return data;
-  }
-
-  private async initiateTransfer(payload: Record<string, any>) {
-    const { data } = await axios.post(
-      'https://api.paystack.co/transfer',
-      payload,
-      { headers: this.paystackHeaders() },
-    );
-    return data;
-  }
-
-  private async payBill(payload: Record<string, any>) {
-    const { data } = await axios.post(
-      `${process.env.XPRESSPAY_BASE_URL ?? ''}/bills/pay`,
-      payload,
-      { headers: this.xpresspayHeaders() },
-    );
-    return data;
-  }
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly dashboardStatsQueueService: DashboardStatsQueueService,
     private readonly companyLiquidityService: CompanyLiquidityService,
+    private readonly paystackService: PaystackService,
     private readonly transactionService: TransactionService,
     private readonly transactionNotificationService: TransactionNotificationService,
+    private readonly xpresspayService: XpresspayService,
   ) {}
 
   private frequencyDays(frequency?: string): number {
@@ -124,9 +80,62 @@ export class OrderDoneHandler {
     });
 
     if (!order) {
-      this.logger.error(
-        `Order not found for Quidax reference: ${quidaxReference}`,
-      );
+      const urgentLoan = await this.prisma.urgentLiquidityLoan.findFirst({
+        where: { quidaxSwapId: quidaxReference },
+      });
+
+      if (!urgentLoan) {
+        this.logger.error(
+          `Order not found for Quidax reference: ${quidaxReference}`,
+        );
+        return;
+      }
+
+      const status = data.status?.toLowerCase();
+      const isFailure = ['cancelled', 'rejected', 'failed'].includes(status);
+
+      if (isFailure) {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`
+            SELECT "id" FROM "urgent_liquidity_loans"
+            WHERE "id" = ${urgentLoan.id}
+            FOR UPDATE
+          `;
+          const fresh = await tx.urgentLiquidityLoan.findUnique({
+            where: { id: urgentLoan.id },
+            select: { status: true },
+          });
+
+          if (
+            fresh?.status === UrgentLiquidityLoanStatus.DISBURSED ||
+            fresh?.status === UrgentLiquidityLoanStatus.FAILED ||
+            fresh?.status === UrgentLiquidityLoanStatus.REPAID ||
+            fresh?.status === UrgentLiquidityLoanStatus.DEADLINE_EXCEEDED ||
+            fresh?.status === UrgentLiquidityLoanStatus.QUIDAX_COMPLETED ||
+            fresh?.status === UrgentLiquidityLoanStatus.PAYSTACK_COMPLETED
+          ) {
+            this.logger.warn(
+              `Urgent liquidity loan ${urgentLoan.id} already finalized`,
+            );
+            return;
+          }
+
+          await tx.urgentLiquidityLoan.update({
+            where: { id: urgentLoan.id },
+            data: {
+              status: UrgentLiquidityLoanStatus.FAILED,
+              failureReason: `Quidax sell order failed: ${status}`,
+            },
+          });
+        });
+
+        this.logger.warn(
+          `Urgent liquidity sell order FAILED for loan ${urgentLoan.id}`,
+        );
+        return;
+      }
+
+      await this.processUrgentLiquidityPayout(urgentLoan.id, data);
       return;
     }
 
@@ -692,7 +701,7 @@ export class OrderDoneHandler {
             return;
           }
 
-          const providerResponse = await this.payBill({
+          const providerResponse = await this.xpresspayService.payBill({
             amount: new Decimal(billingMeta.billAmountNgn || 0).toString(),
             category: billingMeta.category,
             billerCode: billingMeta.billerCode,
@@ -901,14 +910,17 @@ export class OrderDoneHandler {
           return updatedMeta;
         });
 
-        const recipient = await this.createTransferRecipient({
-          type: 'nuban',
-          name: freshAccountName,
-          account_number: freshAccountNumber,
-          bank_code: freshBankCode,
-          currency: BASE_CURRENCY.toUpperCase(),
-          metadata: { transactionId: transaction.id, orderId: order.id },
-        });
+        const recipient = await this.paystackService.createTransferRecipient(
+          {
+            type: 'nuban',
+            name: freshAccountName,
+            account_number: freshAccountNumber,
+            bank_code: freshBankCode,
+            currency: BASE_CURRENCY.toUpperCase(),
+            metadata: { transactionId: transaction.id, orderId: order.id },
+          },
+          { skipCircuitBreaker: true },
+        );
 
         if (!recipient?.status || !recipient?.data?.recipient_code) {
           throw new Error(
@@ -916,12 +928,15 @@ export class OrderDoneHandler {
           );
         }
 
-        const transfer = await this.initiateTransfer({
-          source: 'balance',
-          amount: String(transaction.fiatAmountBase ?? '0'),
-          recipient: recipient.data.recipient_code,
-          reason: `Sell payout ${transaction.id}`,
-        });
+        const transfer = await this.paystackService.initiateTransfer(
+          {
+            source: 'balance',
+            amount: String(transaction.fiatAmountBase ?? '0'),
+            recipient: recipient.data.recipient_code,
+            reason: `Sell payout ${transaction.id}`,
+          },
+          { skipCircuitBreaker: true },
+        );
 
         if (!transfer?.status || !transfer?.data?.reference) {
           throw new Error(
@@ -1078,5 +1093,207 @@ export class OrderDoneHandler {
     );
 
     await this.transactionService.syncCompanyLiquidityCache();
+  }
+
+  private async processUrgentLiquidityPayout(
+    loanId: string,
+    data: any,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id" FROM "urgent_liquidity_loans"
+        WHERE "id" = ${loanId}
+        FOR UPDATE
+      `;
+      const fresh = await tx.urgentLiquidityLoan.findUnique({
+        where: { id: loanId },
+        select: {
+          id: true,
+          userId: true,
+          status: true,
+          paystackTransferId: true,
+          bankAccountName: true,
+          bankAccountNumber: true,
+          bankCode: true,
+          loanAmount: true,
+          collateralAssetId: true,
+          collateralAssetSymbol: true,
+        },
+      });
+
+      if (
+        fresh?.status === UrgentLiquidityLoanStatus.DISBURSED ||
+        fresh?.status === UrgentLiquidityLoanStatus.FAILED ||
+        fresh?.status === UrgentLiquidityLoanStatus.REPAID ||
+        fresh?.status === UrgentLiquidityLoanStatus.DEADLINE_EXCEEDED
+      ) {
+        this.logger.warn(`Urgent liquidity loan ${loanId} already finalized`);
+        return;
+      }
+
+      if (
+        fresh?.status === UrgentLiquidityLoanStatus.QUIDAX_COMPLETED ||
+        fresh?.status === UrgentLiquidityLoanStatus.PAYSTACK_COMPLETED
+      ) {
+        this.logger.warn(
+          `Urgent liquidity loan ${loanId} already passed Quidax settlement`,
+        );
+        return;
+      }
+
+      if (fresh?.paystackTransferId) {
+        this.logger.warn(
+          `Urgent liquidity loan ${loanId} payout already initiated`,
+        );
+        return;
+      }
+
+      const fiat = data.market.quote_unit.toUpperCase();
+      const executedVolumeStr = data.executed_volume?.amount || '0';
+      const avgPriceStr = data.avg_price?.amount || '0';
+
+      const executedCryptoAmountBase = ConvertCurrency.toBase(
+        executedVolumeStr,
+        fresh.collateralAssetSymbol,
+      );
+      const executedFiatAmountBase = ConvertCurrency.toBase(
+        new Decimal(executedVolumeStr).mul(new Decimal(avgPriceStr)).toString(),
+        fiat,
+      );
+      const remainingCollateralBase = BigInt(
+        new Decimal(executedCryptoAmountBase.toString())
+          .mul(20)
+          .div(30)
+          .floor()
+          .toFixed(0),
+      );
+
+      if (executedCryptoAmountBase <= 0n || executedFiatAmountBase <= 0n) {
+        throw new Error('Invalid urgent liquidity Quidax sell execution');
+      }
+
+      await this.companyLiquidityService.updateInternalBalance(
+        fresh.collateralAssetSymbol,
+        toDecimal(executedCryptoAmountBase),
+        'subtract',
+        tx,
+      );
+      await this.companyLiquidityService.updateInternalBalance(
+        fiat,
+        toDecimal(executedFiatAmountBase),
+        'add',
+        tx,
+      );
+
+      const wallet = await tx.wallet.findFirst({
+        where: {
+          userId: fresh.userId,
+          OR: [
+            { currencyId: fresh.collateralAssetId },
+            {
+              currency: {
+                equals: fresh.collateralAssetSymbol,
+                mode: 'insensitive',
+              },
+            },
+          ],
+        },
+        select: {
+          id: true,
+          defaultNetwork: true,
+        },
+      });
+
+      if (!wallet) {
+        throw new Error(
+          `Wallet not found for urgent liquidity loan ${loanId} ${fresh.collateralAssetSymbol}`,
+        );
+      }
+
+      const cryptoDec = toDecimal(executedCryptoAmountBase);
+      const remainingCollateralDec = toDecimal(remainingCollateralBase);
+      const walletUpdates = await tx.$queryRaw<
+        { baseBalance: string; loanCollateralAmount: string }[]
+      >`
+        UPDATE "wallets"
+        SET
+          "baseBalance" = "baseBalance" - ${cryptoDec},
+          "loanCollateralAmount" = "loanCollateralAmount" + ${remainingCollateralDec}
+        WHERE "id" = ${wallet.id}
+          AND "baseBalance" >= ${cryptoDec}
+        RETURNING "baseBalance", "loanCollateralAmount"
+      `;
+
+      if (walletUpdates.length === 0) {
+        throw new Error(
+          `Insufficient ${fresh.collateralAssetSymbol} balance for urgent liquidity loan ${loanId}`,
+        );
+      }
+
+      const [{ baseBalance: newBaseStr }] = walletUpdates;
+      const newOriginalBalance = ConvertCurrency.fromBase(
+        BigInt(String(newBaseStr)),
+        fresh.collateralAssetSymbol,
+        wallet.defaultNetwork as any,
+      );
+
+      await tx.wallet.update({
+        where: { id: wallet.id },
+        data: { originalBalance: newOriginalBalance },
+      });
+
+      await tx.urgentLiquidityLoan.update({
+        where: { id: loanId },
+        data: {
+          status: UrgentLiquidityLoanStatus.QUIDAX_COMPLETED,
+        },
+      });
+
+      const recipient = await this.paystackService.createTransferRecipient(
+        {
+          type: 'nuban',
+          name: fresh.bankAccountName,
+          account_number: fresh.bankAccountNumber,
+          bank_code: fresh.bankCode,
+          currency: BASE_CURRENCY.toUpperCase(),
+          metadata: { loanId },
+        },
+        { skipCircuitBreaker: true },
+      );
+
+      if (!recipient?.status || !recipient?.data?.recipient_code) {
+        throw new Error(
+          'Failed creating transfer recipient for urgent liquidity loan',
+        );
+      }
+
+      const transfer = await this.paystackService.initiateTransfer(
+        {
+          source: 'balance',
+          amount: String(fresh.loanAmount),
+          recipient: recipient.data.recipient_code,
+          reason: `Urgent liquidity loan disbursement ${loanId}`,
+        },
+        { skipCircuitBreaker: true },
+      );
+
+      if (!transfer?.status || !transfer?.data?.reference) {
+        throw new Error(
+          'Failed initiating transfer for urgent liquidity loan',
+        );
+      }
+
+      await tx.urgentLiquidityLoan.update({
+        where: { id: loanId },
+        data: {
+          paystackTransferId: transfer.data.reference,
+          status: UrgentLiquidityLoanStatus.PAYSTACK_COMPLETED,
+        },
+      });
+
+      this.logger.log(
+        `Paystack transfer initiated for urgent liquidity loan ${loanId}: ${transfer.data.reference}`,
+      );
+    });
   }
 }

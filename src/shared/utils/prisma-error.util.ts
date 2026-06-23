@@ -1,27 +1,27 @@
 import { Logger } from '@nestjs/common';
-import { Prisma } from '../../infrastructure/databases/prisma/generated/prisma/client';
+import { PrismaClientKnownRequestError } from '@prisma/client-runtime-utils';
 
 const TRANSIENT_CODES = new Set([
-  'P1000', // Authentication failed
-  'P1001', // Can't reach database server
-  'P1002', // Database server connection timed out
-  'P1003', // Database does not exist
-  'P1008', // Operations timed out
-  'P1010', // User was denied access
-  'P1011', // Error opening a TLS connection
-  'P1017', // Server has closed the connection
-  'P2024', // Connection pool timeout
-  'P2034', // Transaction conflict / write conflict
+  'P1000',
+  'P1001',
+  'P1002',
+  'P1003',
+  'P1008',
+  'P1010',
+  'P1011',
+  'P1017',
+  'P2024',
+  'P2034',
 ]);
 
 export function isPrismaError(
   err: unknown,
-): err is Prisma.PrismaClientKnownRequestError {
-  return err instanceof Prisma.PrismaClientKnownRequestError;
+): err is PrismaClientKnownRequestError {
+  return err instanceof PrismaClientKnownRequestError;
 }
 
 export function isTransientPrismaError(err: unknown): boolean {
-  return isPrismaError(err) && TRANSIENT_CODES.has(err.code);
+  return isPrismaError(err) && TRANSIENT_CODES.has((err as PrismaClientKnownRequestError).code);
 }
 
 export function handleWebhookDbError(
@@ -30,15 +30,16 @@ export function handleWebhookDbError(
   logger: Logger,
 ): { shouldRetry: boolean } {
   if (isPrismaError(err)) {
+    const code = (err as PrismaClientKnownRequestError).code;
     if (isTransientPrismaError(err)) {
       logger.error(
-        `Transient Prisma error in ${context} [${err.code}]: ${err.message}`,
+        `Transient Prisma error in ${context} [${code}]: ${(err as Error).message}`,
       );
       return { shouldRetry: true };
     }
 
     logger.warn(
-      `Non-transient Prisma error in ${context} [${err.code}]: ${err.message}`,
+      `Non-transient Prisma error in ${context} [${code}]: ${(err as Error).message}`,
     );
     return { shouldRetry: false };
   }

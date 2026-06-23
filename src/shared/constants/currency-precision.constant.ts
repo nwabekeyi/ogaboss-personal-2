@@ -28,7 +28,6 @@ export type CryptoNetwork =
   | 'celo'
   | 'optimism'
   | 'ton'
-  | 'arbitrum'
   | 'base'
   | 'doge'
   | 'ripple';
@@ -48,7 +47,6 @@ export const CURRENCY_PRECISION: Record<CryptoCurrency, NetworkInfo[]> = {
     { id: 'celo', name: 'Celo Network', decimals: 6 },
     { id: 'optimism', name: 'Optimism Network', decimals: 6 },
     { id: 'ton', name: 'Ton Network', decimals: 6 },
-    { id: 'arbitrum', name: 'Arbitrum Network', decimals: 6 },
   ],
   usdc: [
     { id: 'bep20', name: 'Binance Smart Chain', decimals: 18 },
@@ -57,7 +55,6 @@ export const CURRENCY_PRECISION: Record<CryptoCurrency, NetworkInfo[]> = {
     { id: 'polygon', name: 'Polygon Network', decimals: 6 },
     { id: 'solana', name: 'Solana Network', decimals: 6 },
     { id: 'base', name: 'Base Network', decimals: 6 },
-    { id: 'arbitrum', name: 'Arbitrum Network', decimals: 6 },
   ],
   eth: [
     { id: 'erc20', name: 'Ethereum Network', decimals: 18 },
@@ -84,7 +81,6 @@ const VALID_NETWORKS = new Set<string>([
   'celo',
   'optimism',
   'ton',
-  'arbitrum',
   'base',
   'doge',
   'ripple',
@@ -101,7 +97,6 @@ const NETWORK_ALIASES: Record<string, CryptoNetwork> = {
   'celo network': 'celo',
   'optimism network': 'optimism',
   'ton network': 'ton',
-  'arbitrum network': 'arbitrum',
   'base network': 'base',
 };
 
